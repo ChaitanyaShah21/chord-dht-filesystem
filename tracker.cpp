@@ -13,12 +13,15 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fstream>
 
 //******todo:make it so that all missed updates are synced when peer gets online, also if pne tracker goes offline client should sitch to other peer tracker availible************/
 using namespace std;
 
 unordered_map<string,string> users; //username,password
 unordered_set<string> online_users;
+
+atomic<size_t> next_seq{0};//sequence number for updates
 
 int listen_at_port = 0;//needed to send tracker list
 
@@ -48,10 +51,30 @@ mutex state_mtx;//just a lock/unlock variable to handle race condition if multip
 mutex peer_mtx;
 mutex log_mtx;
 vector<int> peer_sockets;// connections to other peers
+vector<size_t> peer_last_seq;
 
 vector<pair<string,int>> peer_addrs; //remember peer address
 
 int connect_to_peer(const string &ip,int port);
+std::string state_filename;
+
+void append_update_to_file(const std::string &update)// store updates to file so that data is saved even if all trackers go down
+{
+    lock_guard<mutex> log_lock(log_mtx);
+    size_t seq = next_seq++;
+    ostringstream oss;
+    oss<<seq<<" "<<update;
+    string line = oss.str();
+
+    update_log.push_back(line);
+    ofstream ofs(state_filename, ios::app);
+
+    if(ofs)
+    {
+        ofs<<line<<"\n";
+    }
+}
+
 bool send_all(int sock, const string &msg)
 {
     string out = msg;
@@ -91,10 +114,12 @@ void peer_reconnect_thread()
             if(s>=0)
             {
                 lock_guard<mutex> log_lock(log_mtx);
-                for(const string &cmd : update_log)
+                size_t last_sent = (i<peer_last_seq.size()) ? peer_last_seq[i]:0;
+                for(size_t j = last_sent; j<update_log.size(); j++)
                 {
-                    send_all(s,"SYNC "+cmd);
+                    send_all(s,"SYNC "+update_log[j]);
                 }
+                peer_last_seq[i] = update_log.size();//update last seen index
                 cerr<<"[tracker] reconnected to peer "<<ip<<":"<<port<<"\n";
                 lock_guard<mutex> lock(peer_mtx);
                 if(i<peer_sockets.size())
@@ -136,18 +161,23 @@ int connect_to_peer(const string &ip,int port)
     return s;
 }
 
-void broadcast_sync(const string &cmdline)
+void broadcast_sync(const string &cmdline, int exclude_sock = -1)
 {
-    string msg = "SYNC " + cmdline;
+    lock_guard<mutex> lock(log_mtx);
+    string msg = "SYNC " + update_log.back();
     lock_guard<mutex> lock(peer_mtx);
     for(size_t i=0; i<peer_sockets.size();i++)
     {
         int sock = peer_sockets[i];
-        if(sock<0)
+        if(sock<0 || sock == exclude_sock)
         {
             continue;
         }
-        if(!send_all(sock,msg))
+        if(send_all(sock,msg))
+        {
+            peer_last_seq[i] = update_log.size();//all updates sent to peer
+        }
+        else
         {
             cerr<<"[tracker] peer socket "<<sock<<" disconnected\n";
             close(sock);
@@ -156,7 +186,7 @@ void broadcast_sync(const string &cmdline)
     }
 }
 
-string handle_command(const string &cmdline) 
+string handle_command(const string &cmdline, const string &client_user="", bool record = true) 
 //*********right now any client can send command for any user, change that later*******
 {
     istringstream iss(cmdline);
@@ -185,8 +215,10 @@ string handle_command(const string &cmdline)
         }
 
         users[user] = pass;
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }
         return "User created succesfully";
     }
 
@@ -212,26 +244,31 @@ string handle_command(const string &cmdline)
         }
 
         online_users.insert(user);
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
-        return "Login succesfull";
+
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }    
+        return "LOGIN_SUCCESS " + user;
     }
 
     else if(cmd == "logout")
     {
         string user;
         iss>>user;
-        if(user.empty())
+        if(user.empty() || client_user.empty() || user!= client_user)
         {
-            return "Invalid input.\nUse: logout <user>";
+            return "Error: You can only log out yourself";
         }
         if(!online_users.count(user))
         {
             return "User not logged in";
         }
         online_users.erase(user);
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }    
         return "Logged out succesfully";
     }
 
@@ -241,10 +278,16 @@ string handle_command(const string &cmdline)
     {
         string gid,owner;
         iss>>gid>>owner;
+
         if(gid.empty()||owner.empty())
         {
             return "Invalid input.\nUse: create_group <groupid> <owner>";
-        }    
+        } 
+        
+        if(client_user.empty() || owner != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
+        }
         if(!online_users.count(owner))
         {
             return "Owner must be logged in";
@@ -258,8 +301,10 @@ string handle_command(const string &cmdline)
         g.owner = owner;
         g.members.insert(owner);
         groups[gid] = g;
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }    
         return "Group Created";
     }
 
@@ -267,9 +312,15 @@ string handle_command(const string &cmdline)
     {
         string gid,user;
         iss>>gid>>user;
+
         if(gid.empty()||user.empty())
         {
             return "Invalid input.\nUse: join_group <groupid> <user>";
+        }
+
+        if(client_user.empty() || user != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
         }
         if(!online_users.count(user))
         {
@@ -285,8 +336,10 @@ string handle_command(const string &cmdline)
         }
 
         groups[gid].pending.insert(user);
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }    
         return "Joining request sent(waiting for approval)";
     }
 
@@ -294,10 +347,17 @@ string handle_command(const string &cmdline)
     {
         string gid,owner;
         iss>>gid>>owner;
+        
         if(gid.empty()||owner.empty())
         {
             return "Invalid input.\nUse: list_requests <groupid> <owner>";
         }
+
+        if(client_user.empty() || owner != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
+        }
+
         if(!groups.count(gid))
         {
             return "Group not found";
@@ -331,6 +391,10 @@ string handle_command(const string &cmdline)
         {
             return "Invalid input.\nUse: accept_request <groupid> <owner> <user>";
         }
+        if(client_user.empty() || owner != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
+        }
         if(!groups.count(gid))
         {
             return "No such group";
@@ -348,8 +412,10 @@ string handle_command(const string &cmdline)
 
         g.pending.erase(user);
         g.members.insert(user);
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }    
         return "User added to group";
     }
 
@@ -408,6 +474,11 @@ string handle_command(const string &cmdline)
             return "Invalid input.\nUse: leave_group <groupid> <user>";
         }
 
+        if(client_user.empty() || user != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
+        }
+
         if(!groups.count(gid))
         {
             return "Group not found";
@@ -426,16 +497,20 @@ string handle_command(const string &cmdline)
             if(g.members.empty())
             {
                 groups.erase(gid);
-                lock_guard<mutex> log_lock(log_mtx);
-                update_log.push_back(cmdline);
+                if(record)
+                {
+                    append_update_to_file(cmdline);
+                }    
                 return "No members left, deleting group";
             }
             else
             {
                 string new_owner = *g.members.begin();
                 g.owner = new_owner;
-                lock_guard<mutex> log_lock(log_mtx);
-                update_log.push_back(cmdline);
+                if(record)
+                {
+                    append_update_to_file(cmdline);
+                }    
                 return "Owner left, new leader: " + new_owner;
             }
         }
@@ -443,8 +518,10 @@ string handle_command(const string &cmdline)
         else
         {
             g.members.erase(user);
-            lock_guard<mutex> log_lock(log_mtx);
-            update_log.push_back(cmdline);
+            if(record)
+            {
+                append_update_to_file(cmdline);
+            }    
             return "User left";
         }
     }
@@ -457,6 +534,10 @@ string handle_command(const string &cmdline)
         if(gid.empty() || user.empty() || filename.empty() || size_str.empty())
         {
             return "Invalid input.\nUse: upload_file <groupid> <user> <filename> <size> <piecehashes...>";
+        }
+        if(client_user.empty() || user != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
         }
         if(!groups.count(gid))
         {
@@ -489,8 +570,10 @@ string handle_command(const string &cmdline)
         fi.seeders.insert(user);
 
         group_files[gid][filename] = fi;
-        lock_guard<mutex> log_lock(log_mtx);
-        update_log.push_back(cmdline);
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }    
 
         return "File uploaded: " + filename;
 
@@ -538,6 +621,7 @@ string handle_command(const string &cmdline)
 
 void client_handler(int client_sock)//create tcp connection with client and peers
 {
+    string logged_in_user;
     ostringstream oss;
     oss<<"TRACKERS 127.0.0.1:"<<listen_at_port;
     for(auto [ip,port]:peer_addrs)
@@ -567,30 +651,17 @@ void client_handler(int client_sock)//create tcp connection with client and peer
         {
             string line = partial.substr(0,pos);
             partial.erase(0,pos+1);
-            if(!line.empty())
-            {
-                size_t endpos = line.find_last_not_of(" \t\r\n");
-                if(endpos != string::npos)
-                {
-                    line.erase(endpos + 1);
-                }
-                else
-                {
-                    line.clear();
-                }
 
-                if(!line.empty())
-                {
-                    size_t startpos = line.find_first_not_of(" \t\r\n");
-                    if(startpos != string::npos)
-                    {
-                        line.erase(0,startpos);
-                    }
-                    else
-                    {
-                        line.clear();
-                    }
-                }
+            size_t endpos = line.find_last_not_of(" \t\r\n");
+            if(endpos != string::npos) 
+            {
+                line.erase(endpos +1);
+            }
+
+            size_t startpos = line.find_first_not_of(" \t\r\n");
+            if(startpos != string::npos)
+            {
+                line.erase(0,startpos);
             }
 
             if(line.empty())
@@ -598,19 +669,38 @@ void client_handler(int client_sock)//create tcp connection with client and peer
                 continue;
             }
 
-
             if(line.rfind("SYNC",0) == 0)//syncing tracker
             {
-                string cmd = line.substr(5);   
-                handle_command(cmd);
+                string rest = line.substr(5);   
+                size_t space_pos = rest.find(' ');
+                if(space_pos == string::npos)
+                {
+                    continue;
+                }
+                size_t seq = stoull(rest.substr(0,space_pos));
+                string cmd = rest.substr(space_pos+1);
+                if(seq<next_seq)//skip if already done
+                {
+                    continue;
+                }
+                handle_command(cmd,"",false);
+                lock_guard<mutex> log_lock(log_mtx);
+                update_log.push_back(rest);
+                next_seq = seq+1;
             }
             else
             {
                 cerr<<"[tracker] recieved: "<<line<<"\n";
-                string resp = handle_command(line);
-                send_all(client_sock,resp);
+                string resp = handle_command(line, logged_in_user);
+
+                if(resp.rfind("LOGIN_SUCCESS ",0) == 0)
+                {
+                    logged_in_user = resp.substr(14);
+                    resp = "LOGIN successfull";
+                }
+                send_all(client_sock, resp);
                 broadcast_sync(line);
-            }
+            }    
 
         }
     }
@@ -627,7 +717,40 @@ int main(int argc, char** argv)
     }
 
 
-    listen_at_port = atoi(argv[1]);
+    listen_at_port = atoi(argv[1]); 
+
+    state_filename = "state_" + std::to_string(listen_at_port)+".log";
+
+    ifstream ifs(state_filename);
+    string prev;
+    while(getline(ifs,prev))//load log changes in memory from file
+    {
+        if(prev.empty())
+        {
+            continue;
+        }
+
+        lock_guard<mutex> lock(log_mtx);
+        update_log.push_back(prev);
+
+        //update next_seq
+        size_t space_pos = prev.find(' ');
+        if(space_pos != string::npos)
+        {
+            size_t seq = stoull(prev.substr(0,space_pos));
+            if(seq >= next_seq)
+            {
+                next_seq = seq +1;
+            }
+        }
+    }
+
+    for(const auto &u: update_log)
+    {
+        size_t space = u.find(' ');
+        string cmdline = (space!=string::npos)?u.substr(space+1):u;//to removesequence number before handling command
+        handle_command(u,"",false);
+    }
 
     //connecting to peer
     //*******in future implement peer groups so that every tracker automically syns to all linked trackers without mentioning at time of creation********/
@@ -647,12 +770,14 @@ int main(int argc, char** argv)
         {
             cerr<<"[tracker] connected to peer"<<peer<<"\n";
             peer_sockets.push_back(psock);
+            peer_last_seq.push_back(update_log.size());
         }
 
         else
         {
             cerr<<"[tracker] failed to connect peer "<<peer<<"\n";
             peer_sockets.push_back(-1);//not connected
+            peer_last_seq.push_back(0);
         }
     }
 
@@ -690,9 +815,7 @@ int main(int argc, char** argv)
     }
 
     cerr<<"[tracker] listening on port "<<listen_at_port<<"\n";
-
     //keep accepting clients
-
     while(true)
     {
         sockaddr_in cli{};//zero-initialiaises{} a variable of type sockaddr

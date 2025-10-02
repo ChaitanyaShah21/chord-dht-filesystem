@@ -1,0 +1,8 @@
+create_user alice password123
+create_user bob mypass
+login alice password123
+create_group group1 alice
+accept_request group1 alice bob
+upload_file group1 alice file1.txt 1024 hash1 hash2 hash3
+logout alice
+login bob mypass

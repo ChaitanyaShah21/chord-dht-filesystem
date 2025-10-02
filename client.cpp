@@ -9,12 +9,14 @@
 #include <vector>
 #include <mutex>
 #include <sstream>
+#include <algorithm>
 
 using namespace std;
 
 vector<pair<string,int>> tracker_addrs;
 int current_sock = -1;
 mutex sock_mtx;
+string logged_in_user;
 
 //sending bytes to tracker
 bool send_all(int sock, const char *buff, size_t len)
@@ -196,7 +198,20 @@ int main(int argc, char **argv)
             cerr<<"[client] exiting\n";
             break;
         }
+        if(!logged_in_user.empty())
+        {
+            istringstream iss(line);
+            string cmd;
+            iss>>cmd;
 
+            //insert current user name in commands that need it
+            vector<string>no_user = {"create_user","login","list_groups","list_members","list_files","quit","exit"};
+
+            if(find(no_user.begin(), no_user.end(),cmd) == no_user.end())
+            {
+                line = cmd + " " + logged_in_user+ " " + line.substr(cmd.size());
+            }
+        }
         if(!send_line(sock,line))
         {
             cerr<<"[client] send failed ... connection lost\n";
@@ -287,6 +302,20 @@ int main(int argc, char **argv)
         }
 
         cout<<response<<"\n";
+
+        //track login/logout status
+        if(response.find("LOGIN successful") != string::npos)
+        {
+            istringstream iss(line);
+            string cmd,user;
+            iss>>cmd>>user;
+            logged_in_user = user;
+        }
+
+        else if(response.find("Logout successful") != string::npos)
+        {
+            logged_in_user.clear();
+        }
     }
 
     close(sock);
