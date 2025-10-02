@@ -575,7 +575,7 @@ string handle_command(const string &cmdline, const string &client_user="", bool 
             append_update_to_file(cmdline);
         }    
 
-        return "File uploaded: " + filename;
+        return "UPLOAD_SUCCESS " + filename;
 
     }
 
@@ -692,6 +692,11 @@ void client_handler(int client_sock)//create tcp connection with client and peer
             {
                 cerr<<"[tracker] recieved: "<<line<<"\n";
                 string resp = handle_command(line, logged_in_user);
+
+                if(resp.rfind("UPLOAD_SUCCESS ",0) == 0)
+                {
+                    cerr<<"[tracker] File upload successful: "<<resp.substr(15)<<"\n";
+                }
 
                 if(resp.rfind("LOGIN_SUCCESS ",0) == 0)
                 {
