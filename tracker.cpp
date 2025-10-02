@@ -611,6 +611,37 @@ string handle_command(const string &cmdline, const string &client_user="", bool 
         return oss.str();
     }
 
+    else if(cmd == "get_file_info")
+    {
+        string gid,filename;
+        iss>>gid>>filename;
+
+        if(gid.empty()||filename.empty())
+        {
+            return "Usage: get_file_info <groupid> <filename>";
+        }    
+        if(!group_files.count(gid) || !group_files[gid].count(filename))
+        {
+            return "File not found in group";
+        }
+
+        const FileInfo &fi = group_files[gid][filename];
+        ostringstream oss;
+        oss<<"FILE_INFO " <<filename<<" "<<fi.size<<" OWNER "<<fi.owner;
+        for(auto &h:fi.piece_hashes)
+        {
+            oss<<" "<<h;
+        }
+        oss<<" SEEDERS";
+        for(auto &s:fi.seeders)
+        {
+            oss<<" "<<s;
+        }
+
+        return oss.str();
+    
+    }
+
     else
     {
         return "Unknown command";
