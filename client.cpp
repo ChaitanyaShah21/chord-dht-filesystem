@@ -10,8 +10,13 @@
 #include <mutex>
 #include <sstream>
 #include <algorithm>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include "sha1.h"
 
 using namespace std;
+
+#define PIECE_SIZE 512*1024 //512KB
 
 vector<pair<string,int>> tracker_addrs;
 int current_sock = -1;
@@ -131,6 +136,58 @@ void handle_trackers_line(const string &line)
     cerr<<"[client] updated tracker list ("<<tracker_addrs.size()<<" entries)\n";
 }
 
+bool upload_file_to_tracker(const string &filepath, const string &groupid, const string &username,int sock)
+{
+    int fd = open(filepath.c_str(), O_RDONLY);
+    if(fd<0)
+    {
+        cerr<<"Error: Cannot open file "<<filepath<<"\n";
+        return false;
+    }
+
+    struct stat st;
+    if(fstat(fd, &st) <0)
+    {
+        cerr<<"Error: Cannot stat file "<<filepath<<"\n";
+        close(fd);
+        return false;
+    }
+
+    size_t filesize = st.st_size;
+
+    vector<string> piece_hashes;
+    char buffer[PIECE_SIZE];
+
+    ssize_t n;
+    while((n = read(fd, buffer, PIECE_SIZE)) > 0)
+    {
+        piece_hashes.push_back(sha1_bytes(reinterpret_cast<unsigned char*>(buffer), n));
+    }
+
+    if(n<0)
+    {
+        cerr<<"Error: Read failed for "<<filepath<<"\n";
+        close(fd);
+        return false;
+    }
+
+    close(fd);
+
+    string cmd = "upload_file " + groupid + " " + username + " " + filepath + " " + to_string(filesize);
+    for(const auto &h:piece_hashes)
+    {
+        cmd += " " + h;
+    }
+
+    if(!send_line(sock, cmd))
+    {
+        cerr<<"Failed to send upload command\n";
+        return false;
+    }
+    cerr<<"File upload metadata sent for "<<filepath<<"\n";
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     if(argc<3)
@@ -211,6 +268,32 @@ int main(int argc, char **argv)
             {
                 line = cmd + " " + logged_in_user+ " " + line.substr(cmd.size());
             }
+        }
+
+        if(line.rfind("upload_file",0) == 0)
+        {
+            istringstream iss(line);
+            string cmd, groupid, filepath;
+            iss>>cmd>>groupid>>filepath;
+
+            if(groupid.empty() || filepath.empty())
+            {
+                cerr<<"Usage: upload_file <group> <filepath> \n";
+                continue;
+            }
+
+            if(logged_in_user.empty())
+            {
+                cerr<<"You must be logged in to upload\n";
+                continue;
+            }
+
+            if(!upload_file_to_tracker(filepath, groupid, logged_in_user, sock))
+            {
+                cerr<<"Upload failed\n";
+            }
+
+            continue;//skip sending totracker as metadata already sent
         }
         if(!send_line(sock,line))
         {
