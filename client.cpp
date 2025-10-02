@@ -18,6 +18,20 @@ using namespace std;
 
 #define PIECE_SIZE 512*1024 //512KB
 
+struct DownloadTask
+{
+    string groupid;
+    string filename;
+    string dest_path;
+    size_t filesize;
+    vector<string> piece_hashes;
+    vector<bool> received;
+    vector<int> piece_sizes;
+};
+
+vector<DownloadTask>active_downloads;
+mutex download_mtx;
+
 vector<pair<string,int>> tracker_addrs;
 int current_sock = -1;
 mutex sock_mtx;
@@ -188,6 +202,126 @@ bool upload_file_to_tracker(const string &filepath, const string &groupid, const
     return true;
 }
 
+bool download_piece(int sock, const string &groupid, const string &filename, size_t piece_index, char *buffer, size_t &out_len)
+{
+    //send request to tracker orpeer for piece
+    string req = "get_piece "+ groupid +" "+filename+" "+to_string(piece_index);
+    if(!send_line(sock,req)) 
+    {
+        return false;
+    }
+
+    //read piece size at first
+    string line;
+    string recv_buf;
+    if(!recv_line(sock, recv_buf,line))
+    {
+        return false;
+    }
+
+    out_len = stoul(line); // piece size returned
+
+    size_t total = 0;
+    while(total <out_len)
+    {
+        ssize_t n = recv(sock, buffer + total, out_len - total, 0);
+        if(n<=0)
+        {
+            return false;
+        }
+        total += (size_t)n;
+    }
+
+    return true;
+}
+
+bool start_download(const string &groupid, const string &filename, const string &dest_path, int sock)
+{
+    //request fileinfo from tracker
+    string cmd = "get_file_info "+groupid+" "+filename;
+    if(!send_line(sock,cmd))
+    {
+        return false;
+    }
+
+    string line;
+    string recv_buf;
+
+    if(!recv_line(sock,recv_buf,line))
+    {
+        return false;
+    }
+    if(line.rfind("FILE_INFO",0) != 0)
+    {
+        cerr<<"File not found or error\n";
+        return false;
+    }
+
+    istringstream iss(line);
+    string token;
+    size_t filesize;
+    iss>>token>>token;//skip file info, filename
+    iss>>filesize>>token>>token;//skip owner label, get owner
+
+    vector<string> piece_hashes;
+    while(iss>>token && token != "SEEDERS")
+    {
+        piece_hashes.push_back(token);
+    }
+
+    DownloadTask task;
+    task.groupid = groupid;
+    task.filename = filename;
+    task.dest_path = dest_path;
+    task.filesize = filesize;
+    task.piece_hashes = piece_hashes;
+    task.received.assign(piece_hashes.size(), false);
+
+    // create file
+    int fd = open(dest_path.c_str(),O_CREAT|O_WRONLY, 0666);
+    if(fd <0)
+    {
+        cerr<<"Cannot create destination file\n";
+        return false;
+    }
+
+    // download pieces sequentially
+    char buffer[PIECE_SIZE];
+    for(size_t i=0; i<piece_hashes.size();i++)
+    {
+        size_t len;
+        if(!download_piece(sock,groupid,filename,i,buffer,len))
+        {
+            cerr<<"Failed to download piece "<<i<<"\n";
+            close(fd);
+            return false;
+        }
+
+        string hash = sha1_bytes((unsigned char*)buffer, len);
+        if(hash != piece_hashes[i])
+        {
+            cerr<<"Piece hash mismatch at piece "<<i<<"\n";
+            close(fd);
+            return false;
+        }
+
+        //write to file at offset
+        if(pwrite(fd, buffer,len,i*PIECE_SIZE) != (ssize_t)len)
+        {
+            cerr<<"Write failed at piece "<<i<<"\n";
+            close(fd);
+            return false;
+        }
+
+        task.received[i] = true;
+        cerr<<"Downloaded piece "<<i+1<<"/"<<piece_hashes.size()<<"\n"; 
+    }
+
+    close(fd);
+    cerr<<"Download complete: "<<dest_path<<"\n";
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     if(argc<3)
@@ -295,6 +429,29 @@ int main(int argc, char **argv)
 
             continue;//skip sending totracker as metadata already sent
         }
+
+        if(line.rfind("download_file", 0) == 0)
+        {
+            istringstream iss(line);
+            string cmd, groupid, filename, dest;
+            iss>>cmd>>groupid>>filename>>dest;
+
+            if(groupid.empty() || filename.empty() ||dest.empty())
+            {
+                cerr<<"Usage: download_file <groupid> <filename> <destination>\n";
+                continue;
+            }
+
+            if(logged_in_user.empty())
+            {
+                cerr<<"You must be logged in to download\n";
+                continue;
+            }
+
+            start_download(groupid, filename, dest, sock);
+            continue;
+        }
+
         if(!send_line(sock,line))
         {
             cerr<<"[client] send failed ... connection lost\n";
