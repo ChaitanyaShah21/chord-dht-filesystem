@@ -42,6 +42,8 @@ struct DownloadTask
     vector<string> piece_hashes;
     vector<bool> received;
     vector<int> piece_sizes;
+
+    atomic<size_t> pieces_done{0};
 };
 
 vector<DownloadTask>active_downloads;
@@ -801,10 +803,20 @@ int main(int argc, char **argv)
                 continue;
             }
 
-            size_t total_pieces = (filesize + PIECE_SIZE -1)/PIECE_SIZE;
-            vector<char> piece_ok(total_pieces,0);
-            mutex piece_mtx;
-            atomic<size_t> pieces_done{0};
+            DownloadTask task;
+            task.groupid = groupid;
+            task.filename = filename;
+            task.dest_path = destpath;
+            task.filesize = filesize;
+            task.piece_hashes = piece_hashes;
+            task.received.assign(piece_hashes.size(), false);
+            task.pieces_done = 0;
+
+            // adding to active downloads
+            {
+                lock_guard<mutex> lg(download_mtx);
+                active_downloads.push_back(task);
+            }
 
             //worker func to fetch a piece from a chosen seeder
             auto fetch_piece = [&](size_t piece_idx, pair<string,int> peer_addr) -> bool{
@@ -871,13 +883,8 @@ int main(int argc, char **argv)
                     return false;
                 }
 
-                {
-                    lock_guard<mutex> lg(piece_mtx);
-                    if(!piece_ok[piece_idx]) {
-                        piece_ok[piece_idx] = 1;
-                        ++pieces_done;
-                    }
-                }
+                task.received[piece_idx] = true;
+                task.pieces_done.fetch_add(1);
                 return true;
             };
 
@@ -893,7 +900,7 @@ int main(int argc, char **argv)
                     while(true)
                     {
                         size_t piece_idx = next_piece.fetch_add(1);
-                        if(piece_idx >= total_pieces) break;
+                        if(piece_idx >= task.piece_hashes.size()) break;
                         // attempt to fetch from multiple peers (round-robin with retries)
                         bool success = false;
                         for(size_t attempt_peer = 0; attempt_peer < seeder_addr.size(); ++attempt_peer)
@@ -919,7 +926,7 @@ int main(int argc, char **argv)
 
             close(outfd);
 
-            if(pieces_done.load() == total_pieces)
+            if(task.pieces_done.load() == task.piece_hashes.size())
             {
                 cerr << "Download completed: " << destpath << "\n";
                 // register downloaded file 
@@ -931,13 +938,28 @@ int main(int argc, char **argv)
             }
             else
             {
-                cerr << "Download incomplete: " << pieces_done.load() << " / " << total_pieces << " pieces\n";
+                cerr << "Download incomplete: " << task.pieces_done.load() << " / " << task.piece_hashes.size() << " pieces\n";
             }
 
             continue; // skip sending this line to tracker
             
 
         }
+
+        if(line == "show_downloads")
+        {
+            lock_guard<mutex> lg(download_mtx);
+            for(auto &d : active_downloads)
+            {
+                size_t total_pieces = d.piece_hashes.size();
+                size_t done = d.pieces_done.load();
+                string status = (done == total_pieces) ? "[C]" : "[D]";
+                cout << status << " [" << d.groupid << "] " << d.filename
+                    << " " << done << "/" << total_pieces << " pieces downloaded\n";
+            }
+            continue;
+        }
+
 
         if(!send_line(sock,line))
         {
