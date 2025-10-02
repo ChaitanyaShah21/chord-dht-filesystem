@@ -642,6 +642,49 @@ string handle_command(const string &cmdline, const string &client_user="", bool 
     
     }
 
+    else if(cmd == "stop_share")
+    {
+        string gid,user, filename;
+        iss>>gid>>user>>filename;
+
+        if(gid.empty() || user.empty() || filename.empty())
+        {
+            return "Invalid input.\nUse: stop_share <groupid> <user> <filename>";
+        }
+        if(client_user.empty() || user != client_user)
+        {
+            return "Error: you can only perform this command as yourself";
+        }
+        if(!groups.count(gid))
+        {
+            return "Group not found";
+        }
+
+        if(!group_files.count(gid) || !group_files[gid].count(filename))
+        {
+            return "File not found in group";
+        }
+
+        FileInfo &fi = group_files[gid][filename];
+        if(!fi.seeders.count(user))
+        {
+            return "You are not sharing this file";
+        }
+
+        fi.seeders.erase(user); //remove user from seeders
+
+        if(fi.seeders.empty())
+        {
+            group_files[gid].erase(filename);
+        }
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }
+
+        return "Stopped sharing file " + filename;
+    }
+
     else
     {
         return "Unknown command";
@@ -785,7 +828,7 @@ int main(int argc, char** argv)
     {
         size_t space = u.find(' ');
         string cmdline = (space!=string::npos)?u.substr(space+1):u;//to removesequence number before handling command
-        handle_command(u,"",false);
+        handle_command(cmdline,"",false);
     }
 
     //connecting to peer
