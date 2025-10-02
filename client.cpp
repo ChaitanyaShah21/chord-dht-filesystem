@@ -529,6 +529,26 @@ bool download_piece(int sock, const string &groupid, const string &filename, siz
 //     return true;
 // }
 
+void seeder_heartbeat_thread(int sock, const string &username)
+{
+    while(true)
+    {
+        lock_guard<mutex> lg(seeding_mtx);
+        for(const auto &sf : seeding_files)
+        {
+            string cmd = "update_seeder "+username+" "+sf.groupid+" "+sf.filename;
+            lock_guard<mutex> s_lock(sock_mtx);
+            if(current_sock>=0)
+            {
+                send_line(current_sock,cmd);
+            }
+
+        }
+
+        this_thread::sleep_for(chrono::seconds(30));
+    }
+}
+
 int main(int argc, char **argv)
 {
     if(argc<3)
@@ -637,6 +657,13 @@ int main(int argc, char **argv)
             if(!upload_file_to_tracker(filepath, groupid, logged_in_user, sock))
             {
                 cerr<<"Upload failed\n";
+            }
+
+            else
+            {
+                //register upload file for seeding
+                lock_guard<mutex> lg(seeding_mtx);
+                seeding_files.push_back({groupid, filepath});
             }
 
             continue;//skip sending totracker as metadata already sent
@@ -895,6 +922,12 @@ int main(int argc, char **argv)
             if(pieces_done.load() == total_pieces)
             {
                 cerr << "Download completed: " << destpath << "\n";
+                // register downloaded file 
+                lock_guard<mutex> lg(seeding_mtx);
+                seeding_files.push_back({groupid,filename});
+
+                string update_cmd = "update_seeder "+logged_in_user +" "+groupid+" "+filename;
+                send_line(sock,update_cmd);
             }
             else
             {
@@ -1004,6 +1037,13 @@ int main(int argc, char **argv)
             string cmd,user;
             iss>>cmd>>user;
             logged_in_user = user;
+
+            static bool heartbeat_started = false;
+            if(!heartbeat_started)
+            {
+                thread(seeder_heartbeat_thread, sock, logged_in_user).detach();
+                heartbeat_started = true;
+            }
         }
 
         else if(response.find("Logout successful") != string::npos)

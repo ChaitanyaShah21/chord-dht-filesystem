@@ -685,6 +685,41 @@ string handle_command(const string &cmdline, const string &client_user="", bool 
         return "Stopped sharing file " + filename;
     }
 
+    else if(cmd == "update_seeder")
+    {
+        string gid,user,filename;
+        iss>>gid>>user>>filename;
+
+        if(gid.empty() || user.empty() || filename.empty())
+        {
+            return "Invalid input.\nUse: update_seeder <groupid> <user> <filename>";
+        }
+
+        if(client_user.empty() || user!=client_user)
+        {
+            return "Error: you can only perform this command as youself";
+        }
+
+        if(!groups.count(gid))
+        {
+            return "Group not found";
+        }
+        if(!group_files.count(gid) || !group_files[gid].count(filename))
+        {
+            return "File not found in group";
+        }
+
+        FileInfo &fi = group_files[gid][filename];
+        fi.seeders.insert(user);
+
+        if(record)
+        {
+            append_update_to_file(cmdline);
+        }
+
+        return "Seeder updated for "+filename;
+    }
+
     else
     {
         return "Unknown command";
