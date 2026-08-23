@@ -1,6 +1,8 @@
 {
     "files.associations": {
         "thread": "cpp",
-        "iomanip": "cpp"
+        "iomanip": "cpp",
+        "iostream": "cpp",
+        "sstream": "cpp"
     }
 }
