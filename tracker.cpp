@@ -229,8 +229,22 @@ string handle_command(const string &cmdline, const string &client_user="", bool 
         group_files[gid][filename] = fi;
         if(record) append_update_to_file(cmdline);
 
-        // record the uploader’s address
-        user_address_map[user] = user_info.substr(user.find('@') + 1);
+        // Record the uploader's address as "ip:port" only -- NOT "user@ip:port".
+        //
+        // This line used to read:
+        //     user_address_map[user] = user_info.substr(user.find('@') + 1);
+        // which searched `user` ("alice", no '@' in it) but sliced `user_info`
+        // ("alice@127.0.0.1:6881"). find() returned npos == SIZE_MAX, npos + 1
+        // wrapped around to 0, and substr(0) handed back the whole string. So the
+        // map held "alice" -> "alice@127.0.0.1:6881", get_file_info emitted
+        // "alice@alice@127.0.0.1:6881", the downloader split on the first '@' and
+        // fed "alice@127.0.0.1" to inet_pton, which failed. Every download died
+        // three components away from the typo. See docs/failures.md, defect R2.
+        //
+        // `atpos` is the offset computed above from user_info itself. Only record
+        // an address when there actually is one; a bare username carries none.
+        if (atpos != string::npos)
+            user_address_map[user] = user_info.substr(atpos + 1);
 
         return "UPLOAD_SUCCESS " + filename;
     }
@@ -450,6 +464,19 @@ int main(int argc, char **argv) {
 
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if(s < 0) { perror("socket"); return 1; }
+
+    // Without SO_REUSEADDR, a restart within the TIME_WAIT window fails with
+    // EADDRINUSE: connections accepted by the previous tracker still occupy this
+    // local port even after that process is gone. This blocked repeated runs
+    // entirely, so it blocked benchmarking. See docs/failures.md, defect B5.
+    // Note this is SO_REUSEADDR, not SO_REUSEPORT: it permits binding past those
+    // lingering sockets, it does NOT permit a second live tracker on the same port.
+    int opt = 1;
+    if(setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt(SO_REUSEADDR)");
+        return 1;
+    }
+
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
     sa.sin_port = htons(listen_at_port);
