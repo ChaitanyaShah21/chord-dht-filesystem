@@ -19,10 +19,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${TMPDIR:-/tmp}/p2p-edge-$$"
 TRACKER_PORT="${TRACKER_PORT:-7100}"
 
-cleanup() {
-  for v in TPID APID BPID ATL BTL; do
-    [[ -n "${!v:-}" ]] && kill -9 "${!v}" 2>/dev/null
+# Reap every process this suite starts, and wait until the ports are actually free.
+# Killing by PID was not enough: the clients run inside process substitution, so
+# killing the `tail` that feeds them leaves the client alive holding 6881/6882. The
+# next run then dies with a bind error that looks exactly like a product bug.
+reap () {
+  pkill -9 -f "$ROOT/tracker" 2>/dev/null
+  pkill -9 -f "$ROOT/client"  2>/dev/null
+  pkill -9 -f 'tail -f -n [+]1' 2>/dev/null
+  local i
+  for i in $(seq 40); do
+    ss -ltn 2>/dev/null | grep -qE ":(${TRACKER_PORT}|6881|6882)[[:space:]]" || return 0
+    sleep 0.25
   done
+  echo "WARN: ports still held after 10s:"
+  ss -ltn | grep -E ":(${TRACKER_PORT}|6881|6882)[[:space:]]"
+  return 1
+}
+
+cleanup() {
+  reap >/dev/null 2>&1
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -43,6 +59,7 @@ CASES=(
 
 mkdir -p "$WORK/alice" "$WORK/bob"
 cd "$WORK" || exit 1
+reap || { echo "FAIL: ports busy, cannot start"; exit 1; }
 
 "$ROOT/tracker" "$TRACKER_PORT" >tracker.out 2>tracker.err & TPID=$!; disown
 sleep 1

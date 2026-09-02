@@ -20,7 +20,7 @@ trade-off accepted → how recurrence is prevented → the interview question it
 | B2 | `client` fails to link: undefined reference to `SHA1` | Blocker | **FIXED** |
 | B5 | Tracker cannot restart within the TIME_WAIT window (`EADDRINUSE`) | High | **FIXED** |
 | R2 | Every download fails; a full-size file of zeros is left on disk | Critical | **FIXED** (root cause) |
-| R3 | Permanent request/response desync after the first successful download | Critical | **OPEN** — fork below |
+| R3 | Permanent request/response desync after the first successful download | Critical | **FIXED** 2 Sep 2026 |
 | R4 | A zero-byte file cannot be uploaded at all | Medium | **OPEN** |
 | R2b | A failed download still leaves a full-size zero-filled file behind | High | **OPEN** — fork below |
 | R1 | Tracker state does not survive a restart | Critical | **OPEN** — next |
@@ -404,8 +404,8 @@ proves the defect is not a race. A mutex around the socket would not have preven
 nothing here is concurrent. The broken invariant is *send-then-receive as a pair*, and no lock
 expresses that.
 
-**Status:** OPEN. The fix is a design fork, recorded in `ARCHITECTURE.md` § Open Forks as F6,
-and is not being taken silently (R6, R11):
+**Status: FIXED, 2 Sep 2026.** The fix was taken as a decision rather than silently
+(R6, R11) — `ARCHITECTURE.md` D-007 and D-008. The options were:
 
 | Option | What it means | Cost |
 |---|---|---|
@@ -413,10 +413,39 @@ and is not being taken silently (R6, R11):
 | Delete the `send_line` call | One line; the desync is gone immediately | A peer that finished downloading never announces that it can now seed, so the swarm never grows past the original uploader |
 | Fire-and-forget on a second connection | Keeps the announcement, removes the shared stream | An extra connection per announcement; the same fix D2 needs |
 
+**What was done:** the tracker implements `update_seeder` and the client reads the reply, so
+one rule holds everywhere — every request gets exactly one response, read before the next is
+sent. The heartbeat thread, which had the same bug *with* a second thread (defect D2), was
+given its **own connection** instead of a bigger lock.
+
+**Two things found while fixing it, both of which changed the fix:**
+
+- `sock_mtx` was taken in **exactly one place** — the heartbeat's `send`. The main loop's
+  send/recv pair took no lock at all. The lock that looked like the socket's defence was
+  serialising the heartbeat against nothing.
+- There is **no `seeders.erase` anywhere** in the tracker. Nothing ever removes a seeder, so
+  the 30-second re-announcement achieved nothing at all. *A heartbeat with no timeout on the
+  receiving side is not a heartbeat; it is traffic.* Expiry is fork F4.
+
+**Verified:** `scripts/e2e-edge.sh` goes from 1/7 to 6/7 passing (the remaining failure is R4,
+the zero-byte file) and the one-row size shift is gone. A downloader now becomes an advertised
+seeder — `alice@...:6881` before, `bob@...:6882 alice@...:6881` after — confirmed on three
+consecutive runs.
+
+**Also fixed at the same time — a defect in the test harness, not the product.** The first
+attempt at that verification failed with `Connection refused`, and the cleanup in both e2e
+scripts turned out to kill by PID variables (`APID`, `BPID`) that were **never assigned**. The
+clients run inside process substitution, so killing the `tail` that feeds them leaves the client
+alive holding ports 6881/6882. The next run then failed at `bind` — which my own new diagnostic
+reported correctly, and which looks exactly like a product bug. Cleanup now kills by pattern and
+waits for the ports to actually free. **A test suite that leaks processes manufactures failures
+that cost more to diagnose than the bugs it finds.**
+
 **Interview question it answers:** *"You have a mutex on the socket and the protocol still
 desynchronised. Why?"* — because a mutex makes each *send* atomic, and the invariant that
 matters is *send-then-receive* atomic as a pair. R3 sharpens it further: here there was no
-second thread at all.
+second thread at all, so no lock could ever have helped. The general form: **a mutex protects
+state; this is a rule about sequence.**
 
 ---
 

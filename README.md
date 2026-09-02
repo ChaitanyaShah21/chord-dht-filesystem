@@ -127,6 +127,25 @@ byte by chance.
 length-prefixing everything makes the human-readable control protocol harder to debug by hand,
 which matters a lot while the system is being built.
 
+### One conversation per thread, and every request is read to completion
+
+The client used to send `update_seeder` and never read the reply. The tracker answered anyway,
+that reply stayed in the socket buffer, and **every later response was one behind — for the
+life of the connection.** It surfaced as downloads that sized the destination from one file and
+verified the bytes against a different file's hashes.
+
+The rule now has no exceptions: every request is followed by exactly one response, read before
+the next request is sent. Where a background thread needs to talk to the tracker, it opens
+**its own connection** rather than sharing the main loop's.
+
+That second half is the part worth arguing about. The obvious fix is a mutex on the socket —
+and it does not work, because **a mutex protects state and this is a rule about sequence.** Two
+threads cannot share one request/response conversation no matter how it is locked, since one
+can consume the other's reply. The fix is to remove the sharing, not to guard it.
+
+Cost: one extra connection per client, and one round trip per completed download — per file,
+not per piece.
+
 ### The tracker never sees file bytes
 
 It holds manifests and peer addresses only. This keeps its state small enough to replicate

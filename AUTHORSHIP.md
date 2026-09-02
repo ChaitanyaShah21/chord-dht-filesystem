@@ -31,7 +31,7 @@ attacked, and a keyword that cannot be defended is worse than an absent one.
 | File | Author | Defence | Notes |
 |---|---|---|---|
 | `tracker.cpp` | **H** | ⚠️ | Written Sep–Nov 2025. Re-taught 23 Aug 2026 (Parts 1–2: system shape, framing). The R2 address-map fix and `SO_REUSEADDR` are ✅ — both were reproduced, isolated and written up by hand. **Not yet covered:** data structures, the three mutexes and their ordering, `handle_command`'s guard, the replay path in `main`. Part 3, in progress 1 Sep 2026. |
-| `client.cpp` | **H** | ⚠️ | Same. Framing and the desync are ✅. **Not yet covered:** the peer server, `DownloadTask`'s move constructor, the worker pool, `write_piece`. |
+| `client.cpp` | **H**, announcer rewritten **AH** | ⚠️ | Same. Framing and the desync are ✅ — R3 was found, diagnosed and fixed by hand, and the `condition_variable` + generation-counter announcer is understood (predicate guards against both a lost notify and a spurious wake). **Not yet covered:** the peer server, `DownloadTask`'s move constructor, the worker pool, `write_piece`. |
 | `sha1.h` | **H** wrapper over **X** | ⚠️ | The wrapper is trivial and understood. **The library internals are ❌** — see below. |
 | `Makefile` | **H**, repaired **AH** | ⚠️ | B1 and B2 fixed 1 Sep 2026. **Can explain:** why there is no `sha1.o` (header-only, all `inline`), and why `-lcrypto` is a *link*-time flag on the client rule only. **Not yet covered:** why the explicit `$(CLIENT_OBJ): sha1.h` line matters. |
 | `.gitignore` | **A** | ✅ | Skill template, project binaries named by hand. |
