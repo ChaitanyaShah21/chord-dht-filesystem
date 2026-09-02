@@ -30,11 +30,12 @@ attacked, and a keyword that cannot be defended is worse than an absent one.
 
 | File | Author | Defence | Notes |
 |---|---|---|---|
-| `tracker.cpp` | **H** | ⚠️ | Written Sep–Nov 2025. Re-taught 23 Aug 2026 (Parts 1–2 done: system shape, framing). **Not yet covered:** data structures, the three mutexes and their ordering, `handle_command`'s guard, the replay path in `main`. |
+| `tracker.cpp` | **H** | ⚠️ | Written Sep–Nov 2025. Re-taught 23 Aug 2026 (Parts 1–2: system shape, framing). The R2 address-map fix and `SO_REUSEADDR` are ✅ — both were reproduced, isolated and written up by hand. **Not yet covered:** data structures, the three mutexes and their ordering, `handle_command`'s guard, the replay path in `main`. Part 3, in progress 1 Sep 2026. |
 | `client.cpp` | **H** | ⚠️ | Same. Framing and the desync are ✅. **Not yet covered:** the peer server, `DownloadTask`'s move constructor, the worker pool, `write_piece`. |
 | `sha1.h` | **H** wrapper over **X** | ⚠️ | The wrapper is trivial and understood. **The library internals are ❌** — see below. |
-| `Makefile` | **H** | ⚠️ | **Broken (B1, B2) and never committed.** Being fixed as the next step. |
+| `Makefile` | **H**, repaired **AH** | ⚠️ | B1 and B2 fixed 1 Sep 2026. **Can explain:** why there is no `sha1.o` (header-only, all `inline`), and why `-lcrypto` is a *link*-time flag on the client rule only. **Not yet covered:** why the explicit `$(CLIENT_OBJ): sha1.h` line matters. |
 | `.gitignore` | **A** | ✅ | Skill template, project binaries named by hand. |
+| `scripts/e2e-smoke.sh`, `scripts/e2e-edge.sh` | **A** | ⚠️ | Written 1 Sep 2026. **The reason `e2e-edge.sh` exists is ✅** — a single-file test cannot see R3, because the desync is *caused by* the first success. **Not yet covered:** the `tail -f` driving trick and why `disown` is there. |
 | `scripts/make-testdata.sh` | **A** | ⚠️ | Generated 23 Aug 2026. The `pipefail`/`head`/`SIGPIPE` interaction is understood and written up as `PROGRESS.md` E1. The AES-CTR-for-determinism trick is understood in principle; **not yet able to explain CTR mode itself.** |
 | `CLAUDE.md`, `PROGRESS.md`, `ARCHITECTURE.md`, `DEFENCE.md`, `BENCHMARKS.md`, `GLOSSARY.md`, `LEARNING.md`, `SCALE_NOTES.md`, `AUTHORSHIP.md` | **A** from skill templates, filled from a real audit | n/a | Working documents, not deliverables. The **audit findings inside them were reproduced on this machine**, not assumed. |
 | `README.md` | **X** (coursework-era) | ❌ | **Claims multi-tracker synchronisation that has never existed** (defect C1). Must be replaced before the repository is public — this is currently the single most dangerous file here. |
