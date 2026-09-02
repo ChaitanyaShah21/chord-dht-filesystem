@@ -1,0 +1,59 @@
+# ---- Build output: never commit. Binaries in git history are a smell a reviewer notices. ----
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# ---- Compiled binaries at the repo root (name them here as they appear) ----
+/tracker
+/client
+/node
+
+# ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----
+# Regenerate deterministically with scripts/make-testdata.sh
+*.iso
+*.bin
+*.dat
+*.mp4
+*.avi
+*.jpg
+testdata/
+downloads*/
+
+# ---- Per-port tracker state and any other runtime logs ----
+*.log
+
+# ---- Benchmark raw output: the summary belongs in BENCHMARKS.md, the raw dumps do not ----
+bench/raw/
+*.csv.gz
+
+# ---- Keep the figures. They are the Results section. ----
+!docs/figures/*.png
+!docs/figures/*.svg
+
+# ---- Language-specific ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+target/
+
+# ---- Editors and operating systems ----
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*:Zone.Identifier
+
+# ---- Secrets. Never. ----
+.env
+*.pem
+*.key
