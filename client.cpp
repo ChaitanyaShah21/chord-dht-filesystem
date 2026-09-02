@@ -395,11 +395,19 @@ void peer_server_thread_func(int port) {
     sa.sin_port = htons(port);
     sa.sin_addr.s_addr = INADDR_ANY;
 
+    // These two failures used to return silently. That is the worst possible
+    // behaviour here: with no peer server the client still logs in, still uploads
+    // its manifest, and still advertises itself as a seeder -- so every peer that
+    // tries to fetch from it fails, and nothing anywhere says why. Announce it.
     if (bind(lsock, (sockaddr*)&sa, sizeof(sa)) < 0) {
+        perror("[client] peer-server bind");
+        cerr << "[client] FATAL: cannot serve pieces on port " << port
+             << "; this client will advertise files it cannot actually serve\n";
         close(lsock);
         return;
     }
     if (listen(lsock, 10) < 0) {
+        perror("[client] peer-server listen");
         close(lsock);
         return;
     }

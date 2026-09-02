@@ -125,6 +125,9 @@ decided before the paper is one that cannot be defended in December.
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | OPEN — decide end of W1 |
 | **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | OPEN — number by end of W1, curve in W5 |
 
+| **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | OPEN — decide before R1 |
+| **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
+
 ---
 
 ## Decision log
@@ -342,3 +345,63 @@ earn. **The real answer comes from F3**, which is where this system actually cho
 written here the moment F3 resolves.
 
 **To flip it:** — pending F3.
+
+---
+
+### D-005 — Fix the build with the smallest change that is *true*, not the smallest change that works
+**Date:** 1 Sep 2026 · **Phase:** 0 · **Commit:** this session
+
+**The fork:** `client` failed to link with `undefined reference to SHA1`. Where does `-lcrypto` go?
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Add `-lcrypto` to `CXXFLAGS` | One line, works immediately, both binaries get it | Links a cryptography library into `tracker`, which hashes nothing today. Also conflates compile-time flags with link-time libraries, which is how a `Makefile` stops being readable |
+| A separate `CRYPTO_LDLIBS`, applied to the `client` rule only | Names the dependency where it is real | Two lines instead of one, and it must be revisited when the tracker starts hashing |
+| Move `sha1.h` to a real `sha1.cpp` and build `sha1.o` | Makes the original `Makefile` correct rather than deleting its claim | Solves a problem that does not exist — the header is genuinely header-only, and this adds a translation unit to justify a line that was simply wrong |
+
+**Chosen:** a separate `CRYPTO_LDLIBS` on the `client` rule.
+
+**Reasoning:** the `Makefile` should state what is true. `tracker.cpp` does not include `sha1.h`
+and links clean without `-lcrypto` — verified, not assumed. The tracker *will* need SHA-1 in
+Phase 2, when node identifiers and keys are hashed onto the ring; the flag gets added to its
+rule then, when it is true. A dependency added early "because we'll need it" is a dependency
+nobody can later explain.
+
+**Rejected because:** the global-`CXXFLAGS` version is indistinguishable from not having
+thought about it, and "why does your tracker link OpenSSL?" is a question with no good answer.
+
+**What would change my mind:** the moment `tracker.cpp` hashes anything, which is Phase 2.
+
+**Evidence:** `docs/failures.md` B1, B2. `make clean && make` builds both binaries with zero warnings.
+**Defence entry:** `DEFENCE.md` D-005
+
+---
+
+### D-006 — A failing test is committed on purpose
+**Date:** 1 Sep 2026 · **Phase:** 0 · **Commit:** this session
+
+**The fork:** `scripts/e2e-edge.sh` sweeps file sizes across the piece boundary and currently
+fails five of seven cases, because it found defects R3 and R4 which are not yet fixed. Does a
+failing test get committed?
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Commit it failing, with the expectation documented in the script header | The known defect is pinned by something executable. Anyone who fixes R3 sees the row turn green | A red test in the repository, which looks like carelessness to someone who does not read the header |
+| Hold it back until R3 and R4 are fixed | The repository is always green | The defect exists only as prose until then, and prose does not detect a regression |
+| Mark the failing cases as skipped | Green, and the cases are still there | A skipped test is a test nobody looks at. The failure *is* the information |
+
+**Chosen:** commit it failing, with the expectation stated in the script header and in
+`docs/failures.md`.
+
+**Reasoning:** the sweep is what found R3, and R3 is invisible to any test that transfers one
+file. Its value is precisely that it is red. The output is also self-diagnosing — the one-row
+shift in the size column names the defect without reading any code.
+
+**Rejected because:** holding it back means the only record of R3 is a paragraph, and a
+paragraph cannot tell you when the bug comes back.
+
+**What would change my mind:** if the repository ever gets continuous integration that gates
+merges, this moves behind an explicit `expected-failure` marker rather than a plain red.
+
+**Evidence:** `docs/failures.md` R3, R4. `PROGRESS.md` error log E3.
+**Defence entry:** `DEFENCE.md` D-006

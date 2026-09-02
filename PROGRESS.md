@@ -8,13 +8,14 @@ Read this first in every session (R16), together with `ARCHITECTURE.md` and anyt
 ## Where we are right now
 
 **Phase:** 0 — Resurrection and audit
-**Last completed step:** Repository hygiene — November state committed and tagged
-`pre-resurrection`; build output, runtime logs and editor config untracked; 121 MB of test
-blobs replaced by `scripts/make-testdata.sh`; document set installed.
-**Next step:** Teaching pass on the existing code (Part 3 — tracker data structures, the three
-mutexes and their lock ordering, and the `handle_command` guard that breaks persistence), then
-fix **B1 + B2** (the Makefile) so `make` works for the first time.
-**Blocked on:** nothing.
+**Last completed step:** **The system builds and transfers a file end to end for the first
+time.** Fixed B1 + B2 (the Makefile), B5 (`SO_REUSEADDR`, found this session) and the root
+cause of R2 (the address-map typo). `scripts/e2e-smoke.sh` transfers a 300 KB file and the
+SHA-1 matches. Adversarial size sweep `scripts/e2e-edge.sh` added; it found **R3 and R4**, both
+new. All of it written up in `docs/failures.md`.
+**Next step:** decide forks **F6** (the `update_seeder` desync) and **F7** (zero-file left by a
+failed download) — both in `ARCHITECTURE.md` § Open Forks — then fix **R1** (persistence).
+**Blocked on:** F6 and F7 are Chaitanya's calls (R6). Nothing else.
 
 **Days to 28 Sep 2026 (hard deadline):** 36
 
@@ -131,8 +132,9 @@ raw material for `docs/postmortem-resurrection.md`, which is a deliverable, not 
 
 | ID | Defect | Status |
 |---|---|---|
-| B1 | `make` dies instantly: `No rule to make target 'sha1.o'`. `Makefile:14` lists `sha1.cpp` as a source; only header-only `sha1.h` exists, and no `sha1.cpp` ever did. | **OPEN** — Phase 0 |
-| B2 | Link fails with `undefined reference to SHA1`. `sha1.h` calls OpenSSL's `SHA1()`; `CXXFLAGS` has no `-lcrypto`. | **OPEN** — Phase 0 |
+| B1 | `make` dies instantly: `No rule to make target 'sha1.o'`. `Makefile:14` lists `sha1.cpp` as a source; only header-only `sha1.h` exists, and no `sha1.cpp` ever did. | **FIXED** 1 Sep 2026 — `docs/failures.md` B1 |
+| B2 | Link fails with `undefined reference to SHA1`. `sha1.h` calls OpenSSL's `SHA1()`; `CXXFLAGS` has no `-lcrypto`. **Correction to this entry:** it affects `client` only — `tracker.cpp` does not include `sha1.h` and links clean without `-lcrypto`. The original entry was written from reading, not from running. | **FIXED** 1 Sep 2026 — `docs/failures.md` B2 |
+| **B5** | **Found 1 Sep 2026, not in the original audit.** Tracker cannot restart inside the TIME_WAIT window: `bind: Address already in use` with **no process listening**. Connections accepted by the previous tracker still hold the local port; `SO_REUSEADDR` was never set. Blocked repeated benchmark runs entirely. | **FIXED** 1 Sep 2026 — `docs/failures.md` B5 |
 | B3 | **Committed** `tracker.cpp` at `3c2ff00` did not compile: `broadcast_sync()` declared two `lock_guard<mutex>` variables both named `lock` in the same scope. | FIXED in `7f724c8` (Nov 2025, pre-portfolio) |
 | B4 | **Committed** `client.cpp` at `3c2ff00` did not compile: `vector<DownloadTask>::push_back` requires a copy constructor, which the `atomic<size_t>` member deletes. | FIXED in `7f724c8` (Nov 2025, pre-portfolio) |
 
@@ -143,7 +145,10 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 | ID | Defect | Status |
 |---|---|---|
 | **R1** | **Persistence is dead.** Start tracker on 7100 → `create_group g1` → restart → `list_groups` returns **`No groups`**. Root cause: `tracker.cpp:448` replays the log via `handle_command(cmdline, "", false)` with an **empty `client_user`**, and every recorded command is rejected by its own guard — `if(client_user.empty() \|\| owner != client_user) return "Error: you can only perform this command as yourself"`. `create_group`/`join_group`/`upload_file` additionally require `online_users.count(user)`, and nobody is logged in during replay. **Historical fingerprint:** the old `state_8000.log` contained `create_group g1 alice` **six times** — every restart silently lost it and it was recreated. | **OPEN** — Phase 0, next |
-| **R2** | **Download fails end-to-end and leaves silent corruption.** Two clients, one 300 KB file: `failed to download piece 0 from all peers`, `Download incomplete: 0 / 1 pieces` — and a **full-size 300,000-byte file of zeros** left on disk. `ftruncate` at `client.cpp:783` preallocates, nothing is written, nothing is cleaned up. Wrong SHA-1, nothing on stdout. Root cause **not yet isolated**. | **OPEN** — Phase 0 |
+| **R2** | **Download fails end-to-end and leaves silent corruption.** Root cause **isolated 1 Sep 2026**: `tracker.cpp:233` read `user_info.substr(user.find('@') + 1)` — searching `user` (already stripped to `"alice"`, no `'@'`) while slicing `user_info`. `find` returned `npos`; `npos + 1` **wrapped to 0**; `substr(0)` returned the whole string. The address map held `alice -> alice@127.0.0.1:6881`, `get_file_info` emitted `alice@alice@127.0.0.1:6881`, and `inet_pton` rejected `"alice@127.0.0.1"`. Every peer connection failed before a socket was opened. | **FIXED** 1 Sep 2026 — `docs/failures.md` R2 |
+| **R2b** | The *silent-corruption half* of R2, still live: a **failed** download leaves a full-size zero-filled file, because `ftruncate` preallocates and nothing cleans up. Size alone is not evidence of completeness. | **OPEN** — fork **F7** |
+| **R3** | **Found 1 Sep 2026 by the adversarial size sweep, not in the original audit. Permanent request/response desync after the first successful download.** `client.cpp:822` sends `update_seeder` and never reads the reply; the tracker does not implement `update_seeder`, so it returns `Unknown command` (`tracker.cpp:358`), which the next `recv_line` eats. From then on every reply is one behind — the downloader sizes the destination from one file and verifies against another file's hashes. **Same class as D2 but with no concurrency at all**, which proves a socket mutex was never the answer. | **OPEN** — fork **F6** |
+| **R4** | **Found 1 Sep 2026.** A **zero-byte file cannot be uploaded**: the manifest loop `while ((n = read(...)) > 0)` never executes, `piece_hashes` is empty, and the tracker rejects it with `Error: no piece hashes given`. The client never reads that reply, so it reports success. | **OPEN** — Phase 5 |
 
 ### Claimed but never implemented
 
@@ -202,6 +207,76 @@ reused.
 
 **Tellable in 90 seconds?** YES — it is a good small example of "each part correct, the
 composition wrong", which is the shape of most real concurrency bugs too.
+
+---
+
+---
+
+### E2 — the build was fixed, then the second test run failed and the first had passed
+**Date:** 1 Sep 2026 · **Commit that fixed it:** see `docs/failures.md` B5
+
+**Symptom:** `bind: Address already in use` on the second and every later run of the end-to-end
+test, with **nothing listening on the port**.
+
+**How it was found:** by running the same script twice. The first run passed. A test that only
+fails on its second run is the signature worth learning — it means state survived that should
+not have.
+
+**Root cause:** the listening socket dies with the process, but the connections it *accepted* do
+not; they sit in `FIN-WAIT` then `TIME_WAIT`, still holding the local port. The kernel refuses
+to bind a port any socket still occupies. `SO_REUSEADDR` was never set on the tracker.
+
+**Why it was hard to see:** the message says "address already in use", so every instinct is to
+hunt for the process holding it. There is none. `ss -ltn` — listening sockets, the flag people
+reach for — shows nothing; `ss -tan` shows the lingering connections.
+
+**Fix:** `setsockopt(SO_REUSEADDR)` before `bind`, return value checked.
+
+**Trade-off accepted:** it weakens TIME_WAIT's protection against a delayed packet from an old
+connection landing in a new one on the same four-tuple. Sequence numbers make that essentially
+impossible in practice, and the alternative is a service that cannot be restarted for 60
+seconds — which means it cannot be benchmarked in a loop, and R13 requires that.
+
+**Not to be confused with:** `SO_REUSEPORT`, which allows several *live* listeners to share a
+port. `SO_REUSEADDR` still refuses a second live listener.
+
+---
+
+### E3 — one file transferred correctly; seven files revealed the transfer was one reply behind
+**Date:** 1 Sep 2026 · **Status:** root cause found, fix is fork F6
+
+**Symptom:** the size sweep across piece boundaries produced this:
+
+```
+CASE              EXPECT_SZ     GOT_SZ  VERDICT
+empty                     0          -  FAIL
+one_byte                  1          1  PASS
+minus1               524287          -  FAIL
+exact_1piece         524288     524287  FAIL
+plus1                524289     524288  FAIL
+exact_2piece        1048576     524289  FAIL
+multi               3000000    1048576  FAIL
+```
+
+**How it was found:** not by the error messages, which say only "failed to download piece 0".
+By the **sizes**. Each row received the *previous* row's size. A shift of exactly one is a
+stream desync, and the constant offset is the whole diagnosis.
+
+**Root cause:** after a successful download the client sends `update_seeder` and never reads
+the reply. The tracker does not implement that command, so it answers `Unknown command`. That
+reply stays in the receive buffer and the next `recv_line` consumes it instead of the response
+being waited for. Permanently one behind, for the life of the connection.
+
+**Why it was hard to see:** *the first download succeeds.* The desync is caused by that success
+and only the second download pays for it. A test that transfers one file passes forever. This
+is the entire argument for the adversarial sweep existing (R10).
+
+**Why it is the better version of D2:** D2 is the same broken invariant with a background
+heartbeat thread involved, which invites "so add a mutex". R3 has **no second thread at all**.
+It proves the invariant that was violated is *send-then-receive as a pair*, and that no lock
+expresses that invariant.
+
+**Fix:** deliberately not taken yet — fork **F6** in `ARCHITECTURE.md` (R6, R11).
 
 ---
 

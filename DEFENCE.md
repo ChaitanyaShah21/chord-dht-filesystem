@@ -16,8 +16,9 @@ off the resume.
 
 | | Count |
 |---|---|
-| Answers I can give cold | 0 — nothing rehearsed yet |
-| Marked `WEAK` — scheduled | 6 |
+| Answers I can give cold | 0 — nothing rehearsed out loud yet |
+| Marked SOLID on the facts | 9 |
+| Marked `WEAK` — scheduled | 7 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -162,6 +163,166 @@ the paper. Scheduled: W1 with the Chord reading.
 
 ---
 
+### D-005 · The build
+
+**They ask:** "It didn't compile when you came back to it. What was actually wrong?"
+
+**I answer:**
+Two things, and they failed at two different stages, which is the useful part. First, the
+`Makefile` listed `sha1.cpp` as a source file. There is no `sha1.cpp` — `sha1.h` is header-only,
+every function in it is `inline`, so it compiles into whatever includes it and there is no
+object file to build. `make` died looking for a rule to produce `sha1.o`.
+
+Second, once that was gone, `client` compiled but would not link: `undefined reference to
+SHA1`. `sha1.h` calls OpenSSL's `SHA1()`. The declaration comes from a header that is present,
+so compiling succeeds; the machine code lives in `libcrypto`, and nothing named that library at
+link time. That is the distinction the error is telling you — a missing header is a compile
+error and names a file, a missing library is a link error and names a symbol.
+
+I put `-lcrypto` on the client's link rule only, not in the global flags, because
+`tracker.cpp` does not include `sha1.h` and links clean without it. I checked that rather than
+assuming it — my own audit note had claimed both binaries were affected, and it was wrong.
+
+**The alternative I rejected:** `-lcrypto` in `CXXFLAGS` globally. One line shorter, and it
+links a crypto library into a binary that does not use it. "Why does your tracker link OpenSSL?"
+has no good answer.
+
+**Where they push next:** "Given `undefined reference to X`, what are the three possibilities?"
+> The library was never named. It was named but placed before the object that needs it, and the
+> linker resolves left to right so it had nothing to satisfy yet. Or the symbol is mangled
+> differently than expected — a C symbol referenced from C++ without `extern "C"`.
+
+**Evidence:** `docs/failures.md` B1, B2. `ARCHITECTURE.md` D-005.
+
+**Confidence:** SOLID.
+
+---
+
+### D-006 · The bug I am most pleased with
+
+**They ask:** "Tell me about a bug you found and how you debugged it."
+
+**I answer:**
+Every download failed and left a full-size file of zeros at the destination — right size,
+entirely wrong content, nothing printed. That is worse than a crash, because the file passes
+the only check most people apply.
+
+I bisected the pipeline by speaking each protocol by hand instead of reading code. I opened a
+socket to the seeder and typed `GET_PIECE` myself: it returned the correct header and 300,000
+bytes with the correct SHA-1, so the whole serving side was clear in one command. Then I asked
+the tracker for the manifest by hand, and the seeder field came back as
+`alice@alice@127.0.0.1:6881`. The username was in there twice.
+
+The cause was one line in the tracker's upload handler:
+`user_address_map[user] = user_info.substr(user.find('@') + 1)`. It searches `user` and slices
+`user_info`. By that point `user` has already been stripped to `"alice"`, which has no `'@'`, so
+`find` returns `npos`. `npos` is `SIZE_MAX`, not −1, so `npos + 1` wraps to zero, and
+`substr(0)` returns the whole string. The map ended up holding the address as
+`alice@127.0.0.1:6881` instead of `127.0.0.1:6881`, the manifest doubled the name, and the
+downloader handed `"alice@127.0.0.1"` to `inet_pton`, which rejected it before a socket was ever
+opened.
+
+What makes it interesting is that the unsigned wraparound *suppressed* the crash that would have
+located it. Any other value of `npos + 1` would have made `substr` throw `out_of_range` at the
+exact line at fault. Zero is the one value it accepts as completely normal.
+
+**Where they push next:** "How would you stop that class of bug?"
+> Three things, in order of how much they buy. Stop packing two fields into one token — the
+> whole failure is downstream of `user@ip:port` being a single space-delimited string that
+> something eventually splits in the wrong place. Never compute an index on one string and apply
+> it to another; the guard offset was already computed correctly two lines above and simply was
+> not reused. And test the boundary, not the happy path — I added a size sweep afterwards and it
+> immediately found two more defects.
+
+**Where they push after that:** "Why didn't your tests catch it?"
+> There weren't any, and that is the honest answer. The first thing I wrote after fixing it was
+> an end-to-end script that compares SHA-1, because the failure mode here was silent corruption
+> and only a hash comparison detects that.
+
+**Evidence:** `docs/failures.md` R2. `PROGRESS.md` § Audit R2.
+
+**Confidence:** SOLID — this is the strongest answer in the file.
+
+---
+
+### D-007 · The desync that a mutex would not have fixed
+
+**They ask:** "You have a lock on the socket and the protocol still desynchronised. Why?"
+
+**I answer:**
+Because the lock guards the wrong granularity. It makes each `send` atomic. The invariant that
+actually matters is *send-then-receive* atomic **as a pair**, and no mutex around `send`
+expresses that.
+
+I have two instances of it. The one I like better has no concurrency in it at all. After a
+download completes, the client sends `update_seeder` to the tracker and never reads the reply.
+The tracker does not implement that command, so it answers `Unknown command`. That reply sits in
+the receive buffer, and the next read consumes it instead of the response actually being waited
+for. From then on the client is permanently one response behind — single-threaded, no race, no
+lock that could have helped.
+
+It corrupts data rather than just confusing the user: the downloader ends up reading the
+*previous* file's manifest, so it sizes the destination from one file and verifies the bytes
+against another file's hashes.
+
+**How I found it:** a size sweep across the piece boundary. The error messages only said "failed
+to download piece 0". The diagnosis was in the size column — every file received the previous
+file's size. A constant shift of exactly one is a stream desync, and nothing else looks like
+that.
+
+**Where they push next:** "So what is the fix?"
+> Three options and they are genuinely different. Implement the command and read its reply,
+> which restores the pairing but means specifying what re-announcing a seeder should do. Delete
+> the send, which fixes the desync in one line but means a peer that finished downloading never
+> announces that it can now seed, so the swarm never grows past the original uploader. Or give
+> the announcement its own connection, which keeps the feature and removes the sharing — and
+> that is the same fix the heartbeat thread needs, so it settles both. I have not taken it yet;
+> it is an open fork because it sets the rule for every fire-and-forget message in the system.
+
+**Where they push after that:** "Generalise it."
+> Prefer removing sharing to guarding it. A lock is what you reach for when the sharing is
+> genuinely necessary. A request/response socket is not a shared resource you serialise access
+> to — it is a *conversation*, and conversations do not interleave.
+
+**Evidence:** `docs/failures.md` R3. `PROGRESS.md` error log E3. `ARCHITECTURE.md` F6.
+
+**Confidence:** SOLID on the mechanism. `WEAK` on the fix, deliberately — the fork is open.
+
+---
+
+### D-008 · The restart bug
+
+**They ask:** "Your server won't restart — `Address already in use` — but nothing is listening
+on that port. What's going on?"
+
+**I answer:**
+The listening socket died with the process, but the connections it had *accepted* did not. They
+sit in `FIN-WAIT` and then `TIME_WAIT`, and they still hold that local port. The kernel refuses
+to bind a port any socket still occupies, so `bind` returns `EADDRINUSE`. `ss -ltn` shows
+nothing, because those are not listening sockets; `ss -tan` shows them.
+
+`TIME_WAIT` is not a bug being worked around. It exists so a delayed duplicate packet from the
+old connection cannot be delivered to a new connection that reuses the same four-tuple. It lasts
+twice the maximum segment lifetime — 60 seconds on Linux.
+
+The fix is `SO_REUSEADDR` before `bind`. It says "bind past sockets that are merely winding
+down". What it costs is exactly the protection I just described, which sequence numbers make
+essentially unreachable in practice. What not setting it costs is a service that cannot be
+restarted for a minute — which means it cannot be benchmarked in a loop, and that is why I hit
+it: my second test run failed and my first had passed.
+
+**Where they push next:** "Isn't that `SO_REUSEPORT`?"
+> No, and the difference matters. `SO_REUSEADDR` lets you bind past lingering sockets; it will
+> still refuse a second *live* listener on the same port. `SO_REUSEPORT` is the one that allows
+> several live listeners to share a port with the kernel load-balancing between them — that is a
+> scaling tool, not a restart tool.
+
+**Evidence:** `docs/failures.md` B5. `PROGRESS.md` error log E2.
+
+**Confidence:** SOLID.
+
+---
+
 ## Part 2 — Subsystems
 
 Three to five questions per subsystem, written when that subsystem is finished (R14). These are
@@ -193,11 +354,11 @@ These recur regardless of what was built. Answer each one *about this project*, 
 | Draw the whole architecture on this whiteboard. | Legacy version: yes, it is five boxes. Target Chord version: not until Phase 1 draws it. | `WEAK` — W1 |
 | Walk me through what happens on one request, end to end. | `ARCHITECTURE.md` § The diagram, steps 1–5: manifest up, manifest down, direct peer connect, length-prefixed piece, SHA-1 verify, write at offset. | SOLID for the legacy path |
 | Where does this sit on the consistency/availability trade-off, and how would you flip it? | Right now: **neither, and saying so is the honest answer** — one tracker means nothing to be consistent between and nothing to stay available through. CAP only says something once there is more than one replica. The real answer arrives with fork F3. | `WEAK` — blocked on F3, W1 |
-| What breaks first at 10x the load? | `SCALE_NOTES.md`. Current best answer: the tracker's single global `state_mtx`, then the one-thread-per-client model. | `WEAK` — no measurement yet |
+| What breaks first at 10x the load? | `SCALE_NOTES.md`. Current best answer: the tracker's single global `state_mtx`, then the one-thread-per-client model. Also `recv_line`, which issues **one `recv` syscall per byte** — a 60-byte reply costs 60 kernel round trips (D5). | `WEAK` — no measurement yet |
 | How would you scale it? | — | `WEAK` — W2 |
 | What would you monitor after deployment, and why those metrics? | Planned dashboard: lookup hops, throughput, p99 chunk latency, stabilisation events, leader changes. **Asked verbatim at a target company — this must become a screenshot, not a hypothetical.** | `WEAK` — deployment kit item 3, W10 |
 | How do you log errors? Can you trace one request across components? | Currently: `cerr` with a `[tracker]`/`[client]` prefix and no request identifier — a transfer touching four peers cannot be reconstructed. Planned: `spdlog` with levels and a request id threaded through. | `WEAK` — deployment kit item 4, W10 |
-| How would someone else run this? | Currently: they cannot — `make` fails. That is the first thing being fixed. Target: `docker compose up` brings up a 5-peer ring and the tracker. | `WEAK` — W1 for `make`, W5 for compose |
+| How would someone else run this? | `make clean && make` builds both binaries with zero warnings, and `scripts/e2e-smoke.sh` transfers a file and verifies the SHA-1. Target: `docker compose up` brings up a 5-peer ring and the tracker. | SOLID for `make`; `WEAK` — W5 for compose |
 | How do you know a change did not break it? | Currently: nothing. No tests, no continuous integration. First test lands with the B1/B2 fix. | `WEAK` — W1 and W5 |
 | Tell me about a bug you found and how you debugged it. | Three candidates, strongest first: the socket-sharing desync (D2), the replay-authorisation persistence bug (R1), the `pipefail`+`head` script abort (E1). | SOLID on content, `WEAK` on delivery |
 | What is the hardest part of this, technically? | — | `WEAK` — answer honestly once Chord is built |
