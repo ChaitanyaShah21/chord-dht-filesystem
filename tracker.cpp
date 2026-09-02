@@ -249,7 +249,40 @@ string handle_command(const string &cmdline, const string &client_user="", bool 
         return "UPLOAD_SUCCESS " + filename;
     }
 
-    else if(cmd == "get_file_info") 
+    else if(cmd == "update_seeder")
+    {
+        // update_seeder <groupid> <username> <ip:port> <filename>
+        //
+        // "I hold this file and can serve it." Sent by a peer after it finishes a
+        // download, and re-sent periodically so the set stays fresh.
+        //
+        // The address is its OWN field rather than being packed into the username
+        // as "user@ip:port". That packing is what caused R2: one token carrying two
+        // values gets split in the wrong place eventually. See docs/failures.md.
+        string gid, user, addr, filename;
+        iss >> gid >> user >> addr >> filename;
+
+        if(gid.empty() || user.empty() || addr.empty() || filename.empty())
+            return "Usage: update_seeder <groupid> <user> <ip:port> <filename>";
+        if(addr.find(':') == string::npos)
+            return "Error: address must be ip:port";
+        if(!groups.count(gid)) return "Group not found";
+        if(!groups[gid].members.count(user)) return "User not in group";
+        if(!group_files.count(gid) || !group_files[gid].count(filename))
+            return "File not found in group";
+
+        group_files[gid][filename].seeders.insert(user);
+        user_address_map[user] = addr;
+
+        // Deliberately NOT appended to the update log. Durable state is "this file
+        // exists and here is its manifest"; who currently holds it is SOFT STATE --
+        // liveness information that is only true while the peer is alive. Replaying
+        // it at startup would resurrect peers that are long gone, and the heartbeat
+        // re-establishes the real set within one period anyway.
+        return "SEEDER_OK " + filename;
+    }
+
+    else if(cmd == "get_file_info")
     {
         string gid, filename, user;
         iss >> gid >> filename >> user;  // optional username

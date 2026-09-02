@@ -13,9 +13,13 @@ time.** Fixed B1 + B2 (the Makefile), B5 (`SO_REUSEADDR`, found this session) an
 cause of R2 (the address-map typo). `scripts/e2e-smoke.sh` transfers a 300 KB file and the
 SHA-1 matches. Adversarial size sweep `scripts/e2e-edge.sh` added; it found **R3 and R4**, both
 new. All of it written up in `docs/failures.md`.
-**Next step:** decide forks **F6** (the `update_seeder` desync) and **F7** (zero-file left by a
-failed download) — both in `ARCHITECTURE.md` § Open Forks — then fix **R1** (persistence).
-**Blocked on:** F6 and F7 are Chaitanya's calls (R6). Nothing else.
+**Also done 2 Sep:** forks **F6** and **F6a** decided and implemented (D-007, D-008).
+`update_seeder` is a real tracker command, the client reads its reply, and the announcer thread
+owns its own connection instead of sharing the main loop's socket. `scripts/e2e-edge.sh` goes
+from **1/7 to 6/7 passing**; the only remaining failure is R4, the zero-byte file.
+**Next step:** fix **R1** (persistence — replay is rejected by the commands' own auth guard),
+then decide fork **F7** (zero-filled file left by a failed download).
+**Blocked on:** nothing. F7 is Chaitanya's call when we reach it (R6).
 
 **Days to 28 Sep 2026 (hard deadline):** 36
 
@@ -147,7 +151,7 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 | **R1** | **Persistence is dead.** Start tracker on 7100 → `create_group g1` → restart → `list_groups` returns **`No groups`**. Root cause: `tracker.cpp:448` replays the log via `handle_command(cmdline, "", false)` with an **empty `client_user`**, and every recorded command is rejected by its own guard — `if(client_user.empty() \|\| owner != client_user) return "Error: you can only perform this command as yourself"`. `create_group`/`join_group`/`upload_file` additionally require `online_users.count(user)`, and nobody is logged in during replay. **Historical fingerprint:** the old `state_8000.log` contained `create_group g1 alice` **six times** — every restart silently lost it and it was recreated. | **OPEN** — Phase 0, next |
 | **R2** | **Download fails end-to-end and leaves silent corruption.** Root cause **isolated 1 Sep 2026**: `tracker.cpp:233` read `user_info.substr(user.find('@') + 1)` — searching `user` (already stripped to `"alice"`, no `'@'`) while slicing `user_info`. `find` returned `npos`; `npos + 1` **wrapped to 0**; `substr(0)` returned the whole string. The address map held `alice -> alice@127.0.0.1:6881`, `get_file_info` emitted `alice@alice@127.0.0.1:6881`, and `inet_pton` rejected `"alice@127.0.0.1"`. Every peer connection failed before a socket was opened. | **FIXED** 1 Sep 2026 — `docs/failures.md` R2 |
 | **R2b** | The *silent-corruption half* of R2, still live: a **failed** download leaves a full-size zero-filled file, because `ftruncate` preallocates and nothing cleans up. Size alone is not evidence of completeness. | **OPEN** — fork **F7** |
-| **R3** | **Found 1 Sep 2026 by the adversarial size sweep, not in the original audit. Permanent request/response desync after the first successful download.** `client.cpp:822` sends `update_seeder` and never reads the reply; the tracker does not implement `update_seeder`, so it returns `Unknown command` (`tracker.cpp:358`), which the next `recv_line` eats. From then on every reply is one behind — the downloader sizes the destination from one file and verifies against another file's hashes. **Same class as D2 but with no concurrency at all**, which proves a socket mutex was never the answer. | **OPEN** — fork **F6** |
+| **R3** | **FIXED 2 Sep 2026** (D-007, D-008). Found 1 Sep by the adversarial size sweep, not in the original audit. **Permanent request/response desync after the first successful download.** `client.cpp:822` sends `update_seeder` and never reads the reply; the tracker does not implement `update_seeder`, so it returns `Unknown command` (`tracker.cpp:358`), which the next `recv_line` eats. From then on every reply is one behind — the downloader sizes the destination from one file and verifies against another file's hashes. **Same class as D2 but with no concurrency at all**, which proves a socket mutex was never the answer. | **FIXED** 2 Sep 2026 — `docs/failures.md` R3 |
 | **R4** | **Found 1 Sep 2026.** A **zero-byte file cannot be uploaded**: the manifest loop `while ((n = read(...)) > 0)` never executes, `piece_hashes` is empty, and the tracker rejects it with `Error: no piece hashes given`. The client never reads that reply, so it reports success. | **OPEN** — Phase 5 |
 
 ### Claimed but never implemented
@@ -277,6 +281,39 @@ It proves the invariant that was violated is *send-then-receive as a pair*, and 
 expresses that invariant.
 
 **Fix:** deliberately not taken yet — fork **F6** in `ARCHITECTURE.md` (R6, R11).
+
+---
+
+---
+
+### E4 — a test suite that manufactured its own failures
+**Date:** 2 Sep 2026
+
+**Symptom:** immediately after fixing R3, the edge sweep failed every case with
+`[client] peer-server bind: Address already in use` — a bind error on a port that should have
+been free.
+
+**How it was found:** by the diagnostic added the day before. The old code returned silently
+from a failed `bind`; the new message named the port and said what the consequence was, so the
+cause was visible in the first line of output instead of after an hour of protocol tracing.
+
+**Root cause: in the test harness, not the product.** `cleanup()` killed by PID variables
+`APID` and `BPID` that were **never assigned anywhere**. The clients run inside bash process
+substitution, so killing the `tail` that feeds them does not kill the client — it stays alive
+holding 6881/6882. The next run then failed at `bind`.
+
+**Why it mattered more than it looks:** the failure was indistinguishable from a real
+regression in the code I had just changed. **A test suite that leaks processes manufactures
+failures that cost more to diagnose than the bugs it finds** — and it does it at exactly the
+moment you are least able to tell the difference.
+
+**Fix:** `reap()` kills by pattern and then waits, up to 10 s, for the ports to actually clear;
+it runs both before the suite starts and from the `EXIT` trap. The suite now refuses to start
+rather than producing a misleading red.
+
+**The general lesson:** an unhelpful error message is not a cosmetic problem. The silent
+`return` on a failed `bind` was fixed as a *diagnostic*, on the explicit grounds that it would
+make the next occurrence take a minute instead of an hour. It paid that back within a day.
 
 ---
 

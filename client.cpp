@@ -19,6 +19,7 @@
 #include <cstring>
 #include "sha1.h"
 #include <atomic>
+#include <condition_variable>
 
 using namespace std;
 
@@ -34,6 +35,26 @@ struct SeedFile {
 
 vector<SeedFile> seeding_files;
 mutex seeding_mtx;
+
+// Bumped every time seeding_files changes. The announcer thread compares it against
+// the value it last acted on, which is how it tells a real change from a spurious
+// wake-up -- condition_variable::wait_for is allowed to return for no reason at all.
+size_t seeding_generation = 0;
+condition_variable seeding_cv;
+
+// Record a newly seedable file and wake the announcer immediately, so a peer that
+// just finished a download is advertised in milliseconds rather than at the next
+// 30-second tick.
+static void add_seeding_file(const string &groupid, const string &filename) {
+    {
+        lock_guard<mutex> lg(seeding_mtx);
+        seeding_files.push_back({groupid, filename});
+        ++seeding_generation;
+    }
+    // notify AFTER releasing the lock: waking a thread that then immediately blocks
+    // on the mutex we still hold just makes it sleep again.
+    seeding_cv.notify_one();
+}
 
 struct DownloadPiece {
     size_t index;             // piece index
@@ -597,19 +618,68 @@ void download_file_multipeer(DownloadTask &task) {
     }
 }
 
-void seeder_heartbeat_thread(int sock, const string &username) {
+// Announces which files this peer can serve. It owns its OWN tracker connection.
+//
+// It used to write down the main loop's socket and never read the reply, which put
+// that socket permanently one response behind -- defect D2, and the same broken
+// invariant as R3. A mutex could not fix it: the rule that was violated is
+// "send-then-receive as a pair", and a lock protects state, not sequence.
+//
+// The fix is to stop sharing rather than to guard the sharing. One connection, one
+// thread, and every request here is followed by its own response.
+void seeder_heartbeat_thread(string tracker_ip, int tracker_port, string username) {
+    int hb_sock = connect_to_server(tracker_ip, tracker_port);
+    if (hb_sock < 0) {
+        cerr << "[client] announcer: could not open its own tracker connection; "
+             << "this peer will not be advertised as a seeder\n";
+        return;
+    }
+
+    // The tracker greets every new connection with a TRACKERS line. Read and discard
+    // it. Leaving it in the buffer would put this connection one reply behind from
+    // its very first request -- exactly the bug this thread exists to avoid.
+    string greeting;
+    recv_line(hb_sock, greeting);
+
+    // Our address as the tracker sees us, plus the port our peer server listens on.
+    // getsockname gives the local address of this connection, which is the interface
+    // the tracker is reachable through -- the right one to advertise.
+    const string addr = get_local_ip_from_socket(hb_sock) + ":" + to_string(peer_listen_port);
+
+    size_t seen = 0;
     while (true) {
+        vector<SeedFile> snapshot;
         {
-            lock_guard<mutex> lg(seeding_mtx);
-            for (const auto &sf : seeding_files) {
-                string cmd = "update_seeder " + sf.groupid + " " + username + " " + sf.filename;
-                lock_guard<mutex> s_lock(sock_mtx);
-                if (current_sock >= 0) {
-                    send_line(current_sock, cmd);
-                }
-            }
+            unique_lock<mutex> lk(seeding_mtx);
+            // Wake on a real change, or every 30 s regardless -- the periodic tick is
+            // what makes this a heartbeat rather than a one-shot announcement. The
+            // predicate is what distinguishes a genuine notify from a spurious wake.
+            seeding_cv.wait_for(lk, chrono::seconds(30),
+                                [&] { return seeding_generation != seen; });
+            seen = seeding_generation;
+            // Copy under the lock, then release it. Doing blocking network I/O while
+            // holding seeding_mtx would stall the main loop every time it uploads.
+            snapshot = seeding_files;
         }
-        this_thread::sleep_for(chrono::seconds(30));
+
+        for (const auto &sf : snapshot) {
+            string cmd = "update_seeder " + sf.groupid + " " + username + " "
+                       + addr + " " + sf.filename;
+            if (!send_line(hb_sock, cmd)) {
+                cerr << "[client] announcer: send failed, stopping\n";
+                close(hb_sock);
+                return;
+            }
+            string reply;
+            if (!recv_line(hb_sock, reply)) {
+                cerr << "[client] announcer: tracker closed the connection, stopping\n";
+                close(hb_sock);
+                return;
+            }
+            if (reply.rfind("SEEDER_OK", 0) != 0)
+                cerr << "[client] announcer: tracker refused " << sf.filename
+                     << ": " << reply << "\n";
+        }
     }
 }
 
@@ -691,8 +761,7 @@ int main(int argc, char **argv) {
             if (!upload_file_to_tracker(filepath, groupid, logged_in_user, sock)) {
                 cerr << "Upload failed\n";
             } else {
-                lock_guard<mutex> lg(seeding_mtx);
-                seeding_files.push_back({groupid, filepath});
+                add_seeding_file(groupid, filepath);
             }
             continue;
         }
@@ -816,10 +885,11 @@ int main(int argc, char **argv) {
 
             if (task_ref.completed) {
                 cerr << "Download completed: " << destpath << "\n";
-                lock_guard<mutex> lg(seeding_mtx);
-                seeding_files.push_back({groupid, filename});
-                string update_cmd = "update_seeder " + groupid + " " + logged_in_user + " " + filename;
-                send_line(sock, update_cmd);
+                // Announcing is the announcer thread's job, on its own connection.
+                // Sending update_seeder here, on the main loop's socket, without
+                // reading the reply is defect R3: it put every later response one
+                // behind. See docs/failures.md.
+                add_seeding_file(groupid, filename);
             } else {
                 cerr << "Download incomplete: " << task_ref.pieces_done.load() << " / " << task_ref.piece_hashes.size() << " pieces\n";
             }
@@ -913,14 +983,14 @@ int main(int argc, char **argv) {
             else { istringstream liss(line); string cmd, u; liss >> cmd >> u; if (!u.empty()) logged_in_user = u; }
             static bool heartbeat_started = false;
             if (!heartbeat_started && !logged_in_user.empty()) {
-                thread(seeder_heartbeat_thread, sock, logged_in_user).detach();
+                thread(seeder_heartbeat_thread, ip, port, logged_in_user).detach();
                 heartbeat_started = true;
             }
         } else if (response.find("LOGIN successfull") != string::npos || response.find("LOGIN successful") != string::npos) {
             istringstream liss(line); string cmd, u; liss >> cmd >> u; if (!u.empty()) logged_in_user = u;
             static bool heartbeat_started = false;
             if (!heartbeat_started && !logged_in_user.empty()) {
-                thread(seeder_heartbeat_thread, sock, logged_in_user).detach();
+                thread(seeder_heartbeat_thread, ip, port, logged_in_user).detach();
                 heartbeat_started = true;
             }
         } else if (response.rfind("LOGOUT_SUCCESS", 0) == 0 || response.find("Logged out succesfully") != string::npos || response.find("Logout successful") != string::npos) {
