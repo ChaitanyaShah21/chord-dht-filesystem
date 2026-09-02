@@ -125,7 +125,8 @@ decided before the paper is one that cannot be defended in December.
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | OPEN — decide end of W1 |
 | **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | OPEN — number by end of W1, curve in W5 |
 
-| **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | OPEN — decide before R1 |
+| **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
+| **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
 
 ---
@@ -405,3 +406,98 @@ merges, this moves behind an explicit `expected-failure` marker rather than a pl
 
 **Evidence:** `docs/failures.md` R3, R4. `PROGRESS.md` error log E3.
 **Defence entry:** `DEFENCE.md` D-006
+
+---
+
+### D-007 — Every request gets exactly one response, and it is read before the next is sent
+**Date:** 2 Sep 2026 · **Phase:** 0 · **Fork:** F6
+
+**The fork:** after a download completed the client sent `update_seeder` and never read
+the reply. The tracker did not implement the command, answered `Unknown command`, and that
+reply sat in the buffer — every later response was one behind, for the life of the connection
+(defect R3).
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Implement it and read the reply | Tracker gains a real handler; client consumes the response | One round trip per completed download — **per file, not per piece**, so noise against a transfer that just moved megabytes |
+| Delete the send | One line, desync gone | A peer that finishes downloading never announces it can seed. **Every future download still comes from the original uploader and the swarm never grows** — which removes the property that makes peer-to-peer worth building |
+| One-way notification, tracker never replies | Fastest, no round trip | The protocol now has two classes of message. Anyone who later adds a reply to that command silently re-breaks every subsequent response |
+
+**Chosen:** implement it and read the reply.
+
+**Reasoning:** it keeps **one universal invariant** — every request is followed by exactly one
+response, read before the next request is sent. A rule with no exceptions is one that cannot be
+got wrong by the next person to touch the protocol. The measured cost is one round trip per
+completed file.
+
+**Rejected because:** deleting the send is cheapest and guts the swarm. The one-way variant is
+fastest and buys that speed by introducing a special case, which is exactly the shape of the
+bug being fixed.
+
+**What would change my mind:** if announcements ever became high-frequency — per piece rather
+than per file — the round trip would start to matter and a batched or one-way channel would
+earn its complexity.
+
+**Evidence:** `scripts/e2e-edge.sh` — 6/7 cases pass, up from 1/7; the one-row size shift that
+was R3's signature is gone. Seeder set verified to grow: `alice@...:6881` before bob's
+download, `bob@...:6882 alice@...:6881` after.
+**Defence entry:** `DEFENCE.md` D-007
+
+---
+
+### D-008 — The announcer owns its own connection; sharing is removed rather than guarded
+**Date:** 2 Sep 2026 · **Phase:** 0 · **Fork:** F6a
+
+**The fork:** surfaced while implementing D-007 and stopped for, rather than decided in
+passing (R6). The heartbeat thread wrote `update_seeder` down the **main loop's** socket and
+ignored the reply (defect D2). Fixing F6 without touching it would have re-created the desync
+on a 30-second timer.
+
+Two facts found while investigating, both of which changed the options:
+
+- `sock_mtx` was taken in **exactly one place** — the heartbeat's `send`. The main loop's
+  send/recv pair took no lock at all. The lock everyone assumed was protecting the socket was
+  serialising the heartbeat against nothing.
+- There is **no `seeders.erase` anywhere** in the tracker. Nothing ever removes a seeder, so
+  re-announcing achieved nothing. A heartbeat with no timeout on the receiving side is not a
+  heartbeat; it is traffic.
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Widen `sock_mtx` to span send *and* receive | The lock finally covers the real transaction | The heartbeat briefly blocks the main loop, and one socket is still shared between two threads — the weaker shape |
+| Delete the heartbeat until expiry exists | Removes code that has no effect today | Nothing re-populates the seeder set after a tracker restart; the feature returns with F4 |
+| **Give the announcer its own connection** | One thread, one conversation, no sharing | An extra connection and socket per client |
+
+**Chosen:** its own connection.
+
+**Reasoning:** the invariant that broke is *send-then-receive as a pair*. **A mutex protects
+state; this is a rule about sequence**, and no lock expresses it. Two threads cannot share one
+request/response conversation regardless of locking, because thread A can consume thread B's
+response. Removing the sharing makes the invariant hold by construction rather than by
+discipline.
+
+**Rejected because:** widening the lock makes the bug unreachable while leaving the bad shape
+in place, and it is the fix that looks correct in review while still being one careless commit
+away from breaking. Deleting the heartbeat is defensible today but throws away the mechanism
+F4 needs.
+
+**Implementation notes worth defending:**
+
+- The announcer **reads and discards the tracker's `TRACKERS` greeting** on connect. Leaving it
+  would put the new connection one reply behind from its first request — the same bug, on the
+  connection built to avoid it.
+- It waits on a `condition_variable` with a **predicate over a generation counter**, not a bare
+  `wait_for`. A bare wait would (a) miss a notification that arrives before the first wait and
+  (b) treat a spurious wake-up as a real change. The counter makes both correct.
+- It **copies the seed list under the lock and releases before doing network I/O**. Holding
+  `seeding_mtx` across a blocking `send`/`recv` would stall the main loop on every upload.
+- `update_seeder` is **not written to the update log**. Which peer currently holds a file is
+  **soft state** — true only while that peer is alive. Replaying it at startup would resurrect
+  peers that are long gone. Durable state is "this file exists and here is its manifest".
+
+**Known limitation, stated rather than hidden:** the announcer does not reconnect if its
+connection drops; the peer then stops being re-advertised. Acceptable while nothing expires
+seeders — it becomes real work the moment F4 lands.
+
+**Evidence:** `BENCHMARKS.md` — pending. Verified functionally three consecutive runs.
+**Defence entry:** `DEFENCE.md` D-007, D-009

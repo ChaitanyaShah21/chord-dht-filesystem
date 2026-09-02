@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 9 |
+| Marked SOLID on the facts | 11 |
 | Marked `WEAK` — scheduled | 7 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -284,9 +284,24 @@ that.
 > genuinely necessary. A request/response socket is not a shared resource you serialise access
 > to — it is a *conversation*, and conversations do not interleave.
 
-**Evidence:** `docs/failures.md` R3. `PROGRESS.md` error log E3. `ARCHITECTURE.md` F6.
+**And what I did about it:** implemented the command properly and read the reply, so there is
+one universal rule — every request gets exactly one response, read before the next is sent. Then
+I found the same bug had a twin: a heartbeat thread writing down the *main loop's* socket every
+30 seconds, which would have re-created the desync on a timer. That one got its own connection.
+Two threads cannot share one request/response conversation whatever you do to it, because one
+can consume the other's reply.
 
-**Confidence:** SOLID on the mechanism. `WEAK` on the fix, deliberately — the fork is open.
+Two things I found while fixing it that changed my mind about the shape. The `sock_mtx` everyone
+would point to was taken in exactly one place — the heartbeat's `send` — and the main loop's
+send/recv pair took no lock at all, so it was serialising against nothing. And the tracker has no
+`seeders.erase` anywhere, so re-announcing achieved nothing: a heartbeat with no timeout on the
+receiving side is not a heartbeat, it is traffic. That is why expiry is a scheduled piece of work
+and not something I claim to have.
+
+**Evidence:** `docs/failures.md` R3. `PROGRESS.md` error log E3. `ARCHITECTURE.md` D-007, D-008.
+`scripts/e2e-edge.sh` goes from 1/7 to 6/7 passing, and the one-row size shift is gone.
+
+**Confidence:** SOLID.
 
 ---
 
@@ -320,6 +335,43 @@ it: my second test run failed and my first had passed.
 **Evidence:** `docs/failures.md` B5. `PROGRESS.md` error log E2.
 
 **Confidence:** SOLID.
+
+---
+
+### D-009 · Soft state
+
+**They ask:** "Your tracker replays a log at startup to rebuild state. Does it replay seeder
+announcements too?"
+
+**I answer:**
+No, deliberately. I split the state in two. *"This file exists and here is its manifest"* is
+durable — it stays true whether or not anyone is online, so it goes in the log. *"Peer X
+currently holds this file"* is **soft state**: only true while X is alive. Replaying it at
+startup would resurrect peers that left months ago, and the tracker would confidently hand out
+addresses that refuse every connection.
+
+So seeder announcements are held in memory only, and peers re-announce periodically. After a
+restart the tracker knows what exists immediately and relearns who has it within one
+announcement period. That is the same trade DHCP leases and DNS TTLs make: information with a
+lifetime is refreshed, not persisted.
+
+**Where they push next:** "Then how does a seeder ever get removed?"
+> Today it does not, and that is the honest answer — there is no `seeders.erase` in the tracker
+> at all. Which means the periodic re-announcement is currently doing nothing useful: a
+> heartbeat only means something paired with a timeout on the receiving side. Adding the expiry
+> is fork F4, and it is the same decision as "how do you decide a peer is dead" — the hard part
+> is not the timer, it is distinguishing a peer that is slow from one that is gone.
+
+**Where they push after that:** "What breaks if you set the timeout too low?"
+> A peer that is merely slow gets evicted, its files lose a source, and it re-announces and
+> comes back — so the seeder set flaps. Too high and you keep handing out addresses that are
+> already dead, and every downloader pays a failed connection to find out. It is the same
+> trade-off as any failure detector: detection latency against false positives.
+
+**Evidence:** `ARCHITECTURE.md` D-008. `tracker.cpp` — `update_seeder` does not call
+`append_update_to_file`.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on expiry — not built, scheduled as F4.
 
 ---
 
