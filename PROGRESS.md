@@ -36,20 +36,46 @@ byte-identical to `66ea0ff` across a 20-command conversation.
 *long* is safe for harnesses that wait, so the shell suites are trustworthy again but slow;
 anything measuring **time** stays untrustworthy until this clears, which blocks the Phase 0
 baseline benchmark.
-**Next step:** decide fork **F9** (defect R6, multi-line replies), then fork **F7** (zero-filled
-file left by a failed download), then take the **baseline throughput number** that closes
-Phase 0 — timers permitting.
-**Blocked on:** nothing. F7 is Chaitanya's call when we reach it (R6).
+**Next step:** teaching **Part 6** (the latent defects), then **Part 7** (Chord). The forks
+then follow in this order: **F9** (defect R6, multi-line replies), **F7** (zero-filled file left
+by a failed download), and finally the **baseline throughput number** that closes Phase 0 —
+timers permitting.
+**Blocked on:** nothing. F7 and F9 are Chaitanya's call when we reach them (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
 Part 3 tracker state, data structures and locking ✅ · **Part 4 persistence and the replay
 path ✅** (6 Sep — comprehension checks answered and graded; `std::atomic` re-taught after a
 gap in the Part 3 quiz and re-checked correct: atomic makes each operation indivisible, never a
-sequence of them).
-**Remaining: Part 5 the transfer path · Part 6 the latent defects · Part 7 Chord.**
-Part 7 is the one the project is actually about and nothing before Phase 2 depends on Parts 5–6,
-so if time gets tight, Part 7 goes first and Part 6 folds into the fork discussions it belongs
-to (F9/R6, F7/R2b).
+sequence of them) · **Part 5 the transfer path ✅** (6 Sep — manifest, sentinel parsing,
+preallocation and sparse files, the lock-free work queue, the short-read loop, length-prefixed
+framing for data versus line framing for control; comprehension checks answered and graded, and
+the reading pass found **R7** and **R8**).
+
+**Part 5 grading, 6 Sep — four solid, two to sharpen.** Solid: durable versus session state;
+hash-versus-TCP as two different threat models; the short-read loop. To sharpen, both *delivery*
+gaps rather than knowledge gaps, and both re-checked before the defence rehearsal:
+- **Why R1 is impossible rather than avoided.** The answer is *the guard does not exist on the
+  replay path*, so there is no path to travel down — not "the apply functions do not need
+  authentication", which describes why it works rather than why it cannot break.
+- **Why `fetch_add` is safe when check-then-act is not.** One indivisible read-modify-write
+  versus two atomic operations with a gap between them. "Because it is atomic" invites the
+  follow-up and does not survive it.
+
+**Part 5 also reversed an earlier call.** Part 5 had been ranked skippable; it is not.
+**Chord replaces the lookup, not the transfer** — finding which node holds a chunk becomes a
+routing problem, but moving the bytes stays this code. So the transfer path is permanent, it is
+what the throughput benchmark measures, and "how does a file actually get from A to B" is the
+first question anyone asks about a file system.
+
+**Remaining: Part 6 the latent defects · Part 7 Chord.**
+Part 7 is the one the project is actually about. Part 6 is short and folds into the fork
+discussions it belongs to (F9/R6, F7/R2b), so if time gets tight it goes after Part 7.
+
+**Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
+sessions recorded under the old `os-assignment3` path could not be resumed after the move — the
+directory they point at no longer exists. All four sessions (22 Aug → 6 Sep) are exported as
+readable Markdown to `~/claude-transcripts/chord-dht-filesystem/`, 512 KB, kept **outside** the
+repository so they cannot land in a commit by accident.
 
 **Working-style changes agreed 2 Sep, carried into every later session:**
 - **No assigned required reading.** Teach the concepts inline; `LEARNING.md` is a lookup index
