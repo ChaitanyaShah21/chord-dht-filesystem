@@ -22,9 +22,23 @@ comprehension checks answered. **R1 is now reproduced by a script rather than re
 `scripts/e2e-persistence.sh` builds state, restarts the tracker on the same port and directory,
 and asks for the same four facts back — **1/4 survives**. Committed RED on purpose (D-006
 precedent). Fork **F8** decided: option B, split admission from effect.
-**Next step:** **implement F8/option B and turn `e2e-persistence.sh` green.** After that,
-decide fork **F7** (zero-filled file left by a failed download), then take the **baseline
-throughput number** that closes Phase 0.
+**F8/option B implemented (D-009).** `e2e-persistence.sh` is **4/4 green**, the live path is
+byte-identical to before, and the recovery path survives corrupt logs, coursework-era logs,
+duplicate records and a restart that changes nothing.
+**Then the machine ate it.** The WSL2 restart that fixed the timer fault discarded every write
+still sitting in the page cache: `tracker.cpp` and its binaries came back **zero bytes**, and
+eleven git objects — including the commit holding the fix — came back **zero bytes**, leaving
+the repository unopenable. Full account in error-log entry **E5**. The four documents survived,
+so **D-009 was rebuilt from its own specification on 6 Sep** and re-verified from scratch:
+`e2e-persistence.sh` 4/4, `e2e-smoke.sh` PASS, `e2e-edge.sh` 6/7, and the live path proven
+byte-identical to `66ea0ff` across a 20-command conversation.
+**Timers are still not right:** after the restart `sleep 2` takes about 5 s. Sleeps running
+*long* is safe for harnesses that wait, so the shell suites are trustworthy again but slow;
+anything measuring **time** stays untrustworthy until this clears, which blocks the Phase 0
+baseline benchmark.
+**Next step:** decide fork **F9** (defect R6, multi-line replies), then fork **F7** (zero-filled
+file left by a failed download), then take the **baseline throughput number** that closes
+Phase 0 — timers permitting.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
@@ -168,11 +182,14 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 
 | ID | Defect | Status |
 |---|---|---|
-| **R1** | **Persistence is dead.** Start tracker on 7100 → `create_group g1` → restart → `list_groups` returns **`No groups`**. Root cause: `tracker.cpp:448` replays the log via `handle_command(cmdline, "", false)` with an **empty `client_user`**, and every recorded command is rejected by its own guard — `if(client_user.empty() \|\| owner != client_user) return "Error: you can only perform this command as yourself"`. `create_group`/`join_group`/`upload_file` additionally require `online_users.count(user)`, and nobody is logged in during replay. **Reproduced 6 Sep 2026** by `scripts/e2e-persistence.sh`: the log file is written **correctly and completely** (6 records, every command present and well-formed) and the restarted tracker still answers `No groups` / `Group not found` / `File not found in group`. Only `create_user` survives, because it is the one mutating command with no `client_user` guard. That the write path is provably fine isolates the fault to replay alone. **Correction to the earlier entry:** the `state_8000.log` that held `create_group g1 alice` six times was a local run from the 23 Aug audit and was never committed (logs are gitignored), so it cannot be re-examined; the scripted reproduction replaces it as the evidence. | **OPEN** — fix is F8/option B, in progress |
+| **R1** | **Persistence is dead.** Start tracker on 7100 → `create_group g1` → restart → `list_groups` returns **`No groups`**. Root cause: `tracker.cpp:448` replays the log via `handle_command(cmdline, "", false)` with an **empty `client_user`**, and every recorded command is rejected by its own guard — `if(client_user.empty() \|\| owner != client_user) return "Error: you can only perform this command as yourself"`. `create_group`/`join_group`/`upload_file` additionally require `online_users.count(user)`, and nobody is logged in during replay. **Reproduced 6 Sep 2026** by `scripts/e2e-persistence.sh`: the log file is written **correctly and completely** (6 records, every command present and well-formed) and the restarted tracker still answers `No groups` / `Group not found` / `File not found in group`. Only `create_user` survives, because it is the one mutating command with no `client_user` guard. That the write path is provably fine isolates the fault to replay alone. **Correction to the earlier entry:** the `state_8000.log` that held `create_group g1 alice` six times was a local run from the 23 Aug audit and was never committed (logs are gitignored), so it cannot be re-examined; the scripted reproduction replaces it as the evidence. | **FIXED** 6 Sep 2026 — D-009, `docs/failures.md` R1 |
 | **R2** | **Download fails end-to-end and leaves silent corruption.** Root cause **isolated 1 Sep 2026**: `tracker.cpp:233` read `user_info.substr(user.find('@') + 1)` — searching `user` (already stripped to `"alice"`, no `'@'`) while slicing `user_info`. `find` returned `npos`; `npos + 1` **wrapped to 0**; `substr(0)` returned the whole string. The address map held `alice -> alice@127.0.0.1:6881`, `get_file_info` emitted `alice@alice@127.0.0.1:6881`, and `inet_pton` rejected `"alice@127.0.0.1"`. Every peer connection failed before a socket was opened. | **FIXED** 1 Sep 2026 — `docs/failures.md` R2 |
 | **R2b** | The *silent-corruption half* of R2, still live: a **failed** download leaves a full-size zero-filled file, because `ftruncate` preallocates and nothing cleans up. Size alone is not evidence of completeness. | **OPEN** — fork **F7** |
 | **R3** | **FIXED 2 Sep 2026** (D-007, D-008). Found 1 Sep by the adversarial size sweep, not in the original audit. **Permanent request/response desync after the first successful download.** `client.cpp:822` sends `update_seeder` and never reads the reply; the tracker does not implement `update_seeder`, so it returns `Unknown command` (`tracker.cpp:358`), which the next `recv_line` eats. From then on every reply is one behind — the downloader sizes the destination from one file and verifies against another file's hashes. **Same class as D2 but with no concurrency at all**, which proves a socket mutex was never the answer. | **FIXED** 2 Sep 2026 — `docs/failures.md` R3 |
 | **R4** | **Found 1 Sep 2026.** A **zero-byte file cannot be uploaded**: the manifest loop `while ((n = read(...)) > 0)` never executes, `piece_hashes` is empty, and the tracker rejects it with `Error: no piece hashes given`. The client never reads that reply, so it reports success. | **OPEN** — Phase 5 |
+
+| **R5** | **Found 6 Sep 2026**, by splitting admission from effect (D-009). **Replay is not deterministic for `leave_group`.** When the owner leaves, the successor is `*g.members.begin()` — whichever element `unordered_set` yields first, which depends on hashing and insertion history and on nothing that is recorded in the log. A replay may therefore choose a different owner than the live run did, so a recovered tracker can disagree with the one that crashed about who owns a group. **This is the concrete cost of logging the request rather than the effect** (option C of fork F8, rejected in D-009). | **OPEN** — fix is either a deterministic rule (lexicographically smallest member) or the move to an effect log |
+| **R6** | **Found 6 Sep 2026**, by the adversarial pass on the D-009 fix. **Five reply strings contain an embedded newline** — `"Invalid input.\nUse: create_user <user> <pass>"` and four like it. The client reads one line per reply, so a single command produces two lines and **everything after it is one behind**. That is R3's desync from a completely different cause, and it survives because the malformed-input path is rarely exercised. Reachable from the live path: `upload_file g1 alice@1.2.3.4:1 f.bin NOTASIZE h` desyncs the connection permanently. Pre-existing, not introduced by D-009. | **OPEN** — fork **F9**, decide before Phase 5 |
 
 ### Claimed but never implemented
 
@@ -337,6 +354,66 @@ make the next occurrence take a minute instead of an hour. It paid that back wit
 
 ---
 
+### E5 — the machine returned files that were the right size and full of nothing
+**Date:** 6 Sep 2026 · **Cost:** one commit, one afternoon's implementation, ~2 h to rebuild
+
+**Symptom:** every git command failed with `error: object file .git/objects/64/5d3d… is empty`
+and `fatal: bad object HEAD`. `tracker.cpp` existed, was listed at its normal path, and
+contained **zero bytes**. So did `tracker` and `tracker.o`. The session transcript stopped
+mid-line.
+
+**How it was found:** by not trusting the report. The starting point was "there was more work
+done but I can't see the chat", which sounds like a display problem. `git log` was the first
+command run, and it failed — which moved the problem from the interface to the disk.
+
+**Root cause: an unclean WSL2 shutdown, and git's default durability.** `uptime` said the
+instance had been up 8 minutes. Earlier the same afternoon `nanosleep` had stopped firing on
+this host, and the documented remedy — recorded in this very file — is `wsl --shutdown`. That
+shutdown did not flush the page cache. When a program writes a file, the data sits in kernel
+memory and reaches the disk seconds later; the file's **size** can be committed before its
+**contents**. Kill the machine in that window and the file returns at full length, full of
+zeros. Six artefacts show the same signature: eleven git objects, three build files, the tail
+of `.git/logs/HEAD` as NUL bytes, and one torn line in the session transcript.
+
+Git made it worse than it had to be. **It does not `fsync` loose objects by default** — it
+writes them and trusts the kernel. That is exactly the distinction taught in Teaching Part 4
+about the tracker's own log: an `ofstream` write survives a *process* crash and does not
+survive a *power* loss. The lesson arrived from the environment rather than from the material.
+
+**Why the loss was survivable:** because the design was written down separately from the code.
+`ARCHITECTURE.md` (D-009), `DEFENCE.md`, `docs/failures.md` and `.git/COMMIT_EDITMSG` between
+them named every function, every deletion, the soft-state rule, and both defects the work had
+uncovered. Rebuilding was transcription against a specification, not redesign. **The documents
+that exist for the interview turned out to be the backup.**
+
+**What was checked before concluding it was unrecoverable:** git's loose objects and index,
+VSCode's local history (last entry Nov 2025 — the file was written by tooling, not the editor),
+Claude Code's file-history store, and a filesystem-wide search for any other copy. The last
+intact commit, `66ea0ff`, still held a complete `tracker.cpp`, so the base to rebuild from was
+real.
+
+**Fix:** point `master` at `66ea0ff`, delete the eleven unreadable objects, rebuild the index
+from the commit (`rm .git/index && git reset --mixed 66ea0ff` — the stale index still referenced
+the deleted objects and blocked the reset), restore `tracker.cpp` from the intact blob, then
+re-apply D-009 from the documents.
+
+**Trade-off accepted:** moving the branch discards the lost commits' metadata permanently. The
+alternative — grafting onto unreadable parents — produces a repository that fails `fsck` for
+ever. A full copy of the directory was taken before anything was touched.
+
+**How it is prevented from recurring:** two changes, both overdue.
+`git config core.fsync loose-object,index,reference` makes git wait for the disk, at a small
+cost per commit. And **manual action #2 — a GitHub remote — stopped being a to-do item.** The
+entry in this file already said "nothing is backed up, and the commit history is itself
+evidence". It has now cost real work.
+
+**Tellable in 90 seconds?** YES, and it is the best one available: a durability failure diagnosed
+from the *shape* of the damage rather than from any error message — every affected file the
+right length and full of zeros — plus the reason git was vulnerable to it, and a recovery that
+worked because the design was documented separately from the code.
+
+---
+
 ## Where things live
 
 | What | Path |
@@ -345,7 +422,7 @@ make the next occurrence take a minute instead of an hour. It paid that back wit
 | Build | `Makefile` (repo root) — **currently broken, see B1/B2**, and never committed |
 | Test data generator | `scripts/make-testdata.sh` |
 | Test data (gitignored) | `testdata/` — regenerate with `./scripts/make-testdata.sh` |
-| Tests | `scripts/e2e-smoke.sh` (happy path, R2 regression) · `scripts/e2e-edge.sh` (size sweep across piece boundaries, R3/R4) · `scripts/e2e-persistence.sh` (restart survival, R1 — **currently red on purpose**) |
+| Tests | `scripts/e2e-smoke.sh` (happy path, R2 regression) · `scripts/e2e-edge.sh` (size sweep across piece boundaries, R3/R4) · `scripts/e2e-persistence.sh` (restart survival, R1 — green) |
 | Benchmark harness | not yet — Phase 0, with the baseline measurement |
 | Figures | `docs/figures/` — not yet |
 | Build output (gitignored) | `tracker`, `client`, `*.o` at repo root |

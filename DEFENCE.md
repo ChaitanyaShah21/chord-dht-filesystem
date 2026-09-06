@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 11 |
-| Marked `WEAK` — scheduled | 7 |
+| Marked SOLID on the facts | 12 |
+| Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -305,7 +305,7 @@ and not something I claim to have.
 
 ---
 
-### D-008 · The restart bug
+### B5 · The restart bug
 
 **They ask:** "Your server won't restart — `Address already in use` — but nothing is listening
 on that port. What's going on?"
@@ -338,7 +338,7 @@ it: my second test run failed and my first had passed.
 
 ---
 
-### D-009 · Soft state
+### D-008 · Soft state
 
 **They ask:** "Your tracker replays a log at startup to rebuild state. Does it replay seeder
 announcements too?"
@@ -369,9 +369,77 @@ lifetime is refreshed, not persisted.
 > trade-off as any failure detector: detection latency against false positives.
 
 **Evidence:** `ARCHITECTURE.md` D-008. `tracker.cpp` — `update_seeder` does not call
-`append_update_to_file`.
+`append_update_to_file`; `apply_upload_file` does not touch `seeders` either (D-009).
 
 **Confidence:** SOLID on the reasoning. `WEAK` on expiry — not built, scheduled as F4.
+
+### D-009 · Recovery must not ask permission
+
+**They ask:** "You persist a command log and replay it at startup. Walk me through what
+happens when the process comes back up."
+
+**I answer:**
+It used to come back up empty, and silently. The log was written correctly — every record
+present, every record well-formed — but `main` replayed it by calling the live command handler
+with no user attached. Every mutating command begins by checking two things: that you are who
+you claim to be, and that you are currently logged in. During recovery there is nobody to be,
+and `online_users` is deliberately never persisted, so both checks fail. The handler returned
+an error string, `main` ignored it, and the tracker started up having discarded everything
+anyone had ever done. `create_user` is the one command without those guards, which is why the
+user table was the only thing that ever survived a restart.
+
+The real mistake is not the empty string that got passed. It is that the recovery path was
+**re-running admission checks instead of re-applying effects**. A record in the log is
+something that was already accepted; asking permission for it a second time, on behalf of
+nobody, can only fail.
+
+So I split every mutating command in two. An `apply_*` function holds the state transition and
+nothing else — no requester, no liveness lookup, no soft state. The admission checks stay on
+the live path. Recovery has its own entry point that calls `apply_*` directly, so it cannot
+reach a guard: not because it skips one, but because it does not call the function the guards
+live in.
+
+**Where they push next:** "Why not just pass a flag that says 'I'm replaying, skip the checks'?"
+> Because that leaves the guards in the recovery path, disabled by a boolean, and every guard
+> anyone adds later is a fresh chance to forget it — failing silently, which is exactly how this
+> bug survived ten months. I also deleted the `record` parameter and the default value on
+> `client_user`, so the specific call that caused the bug no longer compiles. I would rather
+> the compiler enforce it than a code review.
+
+**Where they push after that:** "Is replaying the request the right thing to log at all?"
+> No — logging the *effect* is better, and I can show you why in my own code. When a group
+> owner leaves, the successor is whichever member `unordered_set` yields first. Nothing in the
+> log determines that, so a replay can pick a different owner than the live run did. An effect
+> log would have recorded the decision instead of the request, and could not drift. I did not
+> build it because Phase 2 replaces this control plane with a Raft-replicated tracker, which
+> brings the same structure back for a stronger reason — a follower applies entries with no
+> client attached at all. The drift is registered as defect R5 rather than hidden.
+
+**Where they push after that:** "How do you know the split didn't change behaviour?"
+> I drove the old and new trackers through the same eighteen-command conversation — every
+> command, every error case — reading each reply with a blocking read, and diffed the
+> transcripts. Byte-identical on the live path; the only differences are the three answers
+> after a restart, which is the entire intended change. I did it that way because the host's
+> `nanosleep` had stopped firing that afternoon and all three shell test harnesses are built on
+> `sleep`, so their results were worthless. A test whose result depends on the machine's timers
+> is not evidence.
+
+**Where they push after that:** "What did the refactor find that the bug report didn't?"
+> Two things, both because the split forces you to classify every line as durable or soft.
+> `upload_file` was writing soft state — it inserted the uploader into the seeder set and
+> recorded an address, right next to the manifest — so replay would have resurrected peers
+> that are long gone, the exact thing the seeder-announcement handler already refuses to do.
+> And feeding a non-numeric file size to the old tracker killed the whole process: an uncaught
+> `stoull` exception inside a detached thread. One malformed command took down every client's
+> connection.
+
+**Evidence:** `ARCHITECTURE.md` D-009 · `docs/failures.md` R1 · `scripts/e2e-persistence.sh`
+(committed red at `66ea0ff`, green after the fix) · protocol transcript diff.
+
+**Confidence:** SOLID on the reasoning and the evidence. `WEAK` on delivery — not yet said out
+loud in 90 seconds.
+
+---
 
 ---
 

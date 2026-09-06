@@ -503,6 +503,170 @@ observation that size alone is never evidence of completeness.
 
 ---
 
+## R1 — persistence is dead: everything a user did is discarded on every restart
+
+**Found:** 23 Aug 2026 audit. **Reproduced by script:** 6 Sep 2026. **Fixed:** 6 Sep 2026.
+
+### Symptom
+
+Start the tracker, create a group, upload a file, stop the tracker, start it again on the
+same port in the same directory. `list_groups` answers `No groups`. No error is printed
+anywhere, by either process, at any point.
+
+### How it was reproduced
+
+`scripts/e2e-persistence.sh`, committed red at `66ea0ff` before the fix existed. It builds
+state, proves the state is live, restarts the tracker, and asks for the same four facts back:
+
+```
+  PASS  create_user replayed  (alice already exists)
+  FAIL  create_group replayed (list_groups shows g1)
+  FAIL  accept_request replayed (g1 still has bob)
+  FAIL  upload_file replayed  (manifest still known)
+```
+
+The important half of the evidence is the log file it replayed from, which is **complete and
+correct**:
+
+```
+0 create_user alice pw
+1 create_group g1 alice
+2 create_user bob pw
+3 join_group g1 bob
+4 accept_request g1 alice bob
+5 upload_file g1 alice@127.0.0.1:6883 alice/testfile.bin 4096 8681d047...
+```
+
+Six records, every command present and well-formed. That the write path is provably fine is
+what isolates the fault to replay alone. The audit had argued this from a `state_8000.log`
+that contained `create_group g1 alice` six times, once per restart — but that file was a local
+run and was never committed, so it could not be re-examined. A remembered artefact is not
+evidence; this script is.
+
+### Root cause
+
+`main` replayed the log by calling the live command handler with no user:
+
+```cpp
+handle_command(cmdline, "", false);          // tracker.cpp, before the fix
+```
+
+Every mutating command guards itself with two checks that are meaningless during recovery:
+
+```cpp
+if(client_user.empty() || owner != client_user)
+    return "Error: you can only perform this command as yourself";   // authorisation
+if(!online_users.count(owner)) return "Owner must be logged in";     // liveness
+```
+
+`client_user` is empty during replay, so the first check fires on its first clause. Even if it
+had not, `online_users` is deliberately never persisted — it describes live connections — so
+the second check fires instead. `main` ignored the returned error string, so every rejection
+was silent.
+
+`create_user` is the one mutating command with no such guard, which is why the user table was
+the only thing that ever survived a restart.
+
+### Why it is more than a typo
+
+There are two distinct mistakes wearing one costume, and separating them is the whole lesson:
+
+1. **Authorisation** — "may *you* do this?" — belongs at the door, where a request arrives from
+   a socket. Recovery is not a request from anyone; there is no "you" to check.
+2. **Validation against soft state** — "is this user online?" — is non-deterministic with
+   respect to state that recovery deliberately does not restore.
+
+Both reduce to the same thing: **the recovery path re-ran the admission checks instead of
+re-applying the effects.** A command in the log is a record of something that was already
+accepted. Asking permission again, on behalf of nobody, can only fail.
+
+### Fix — decision D-009, fork F8 option B
+
+Each mutating command was split in two:
+
+- an **`apply_*` function** holding the state transition and nothing else — no `client_user`
+  parameter, no `online_users` lookup, no soft state;
+- the **admission checks**, which stay in `handle_command`, the live path.
+
+Recovery gets its own entry point, `replay_command`, which calls `apply_*` directly. It cannot
+reach an authorisation guard because it does not call the function the guards live in. There is
+no flag to remember and no branch to get wrong.
+
+Two supporting changes make the old mistake impossible rather than merely absent:
+
+- `handle_command`'s `bool record = true` parameter was **deleted**, and `client_user` lost its
+  default. The call that caused this bug, `handle_command(cmdline, "", false)`, **no longer
+  compiles.**
+- `replay_command` is an explicit, exhaustive list of what recovery may do. Anything else — a
+  read command, `login`, `update_seeder`, a line from the coursework-era log format — is
+  skipped with a message on stderr rather than executed.
+
+### What the split forced into the open
+
+Doing it properly made two things visible that a flag would have hidden:
+
+- **`upload_file` was writing soft state.** It set `fi.seeders` and `user_address_map` in the
+  same breath as the manifest. Replaying that resurrects peers that are long dead — precisely
+  what the `update_seeder` handler already refuses to do. `apply_upload_file` now records the
+  manifest only; the live path adds the seeder afterwards. After a restart the tracker knows
+  the file exists and waits for a heartbeat to learn who actually holds it.
+- **`leave_group` is not deterministic.** When the owner leaves, the successor is
+  `*g.members.begin()` — whichever element `unordered_set` happens to yield first. Nothing in
+  the log determines it, so a replay may pick a different owner than the live run did. Logged
+  as defect **R5**.
+
+### Verified
+
+Verified twice: once when the fix was first written, and again when it was **rebuilt from these
+documents after the machine lost the implementation** (see the E5 entry in `PROGRESS.md`). The
+numbers below are from the rebuild, re-run from scratch.
+
+`scripts/e2e-persistence.sh` — **4/4**, up from 1/4. After the restart the tracker answers
+`Groups: g1(leader:alice)`, `Members: bob alice`, and a full `FILE_INFO`. Its `SEEDERS` list is
+**empty**, which is the soft-state rule working: the manifest is durable, who holds a copy is
+not, and the tracker waits for a heartbeat rather than inventing a peer.
+
+`scripts/e2e-smoke.sh` PASS. `scripts/e2e-edge.sh` 6/7, unchanged — the remaining failure is R4,
+the zero-byte file, which is a client-side defect and out of scope here.
+
+**The live path is unchanged.** `scratchpad/protocol_diff.py` drives the old binary (built from
+`66ea0ff`) and the new one through the same **20-command conversation**, covering every command
+and every error case, with blocking reads and no `sleep` anywhere. The two transcripts are
+**byte-identical, including the state log each tracker wrote.** This mattered because the host's
+`nanosleep` was unreliable — it had stopped firing entirely, and after a restart still ran at
+roughly half speed — and every shell harness here waits with fixed `sleep`s. A test whose result
+depends on the machine's timers is not evidence.
+
+Hostile logs were then fed to the recovery path directly:
+
+| Fed to recovery | Result |
+|---|---|
+| Coursework-era log: no sequence prefix, records `login`/`logout`/`list_groups`/`list_files` | Starts and replays the durable commands. Five session/read records are skipped, each named: `skipping 'login' -- not a durable command`. See the caveat below |
+| Garbage sequence prefix, truncated `upload_file`, non-numeric size, 26-digit size, a bare sequence number with no command | Tracker starts; five bad records skipped by name; surviving state correct. Before the fix an unguarded `stoull` in `main` threw on the first of these and the tracker **would not start at all** |
+| Duplicate `create_group` and duplicate `accept_request` | Idempotent — `skipping create_group -- Group already exists`, no duplication |
+| Restart that changes nothing | Log stays at 2 records across two restarts. Structural, not careful: appending lives only in `handle_command`, so replay has no way to grow the log |
+| `upload_file` with a non-numeric size, **live path** | **Old tracker: process dead.** A new connection is refused; the uncaught `stoull` in a detached thread called `std::terminate` (defect D4). New tracker: `Error: file size must be a number`, still serving |
+
+**Caveat found while running the first row, worth more than the row itself.** The coursework-era
+log also has its `accept_request group1 alice bob` skipped, with `No such pending request` — and
+that is recovery behaving correctly. That log contains no `join_group` record, so bob was never
+placed in `pending`, so the acceptance has nothing to accept. The live run had a pending request
+because a `join_group` really happened; the log simply did not record it.
+
+**A command log is only replayable if it records every command that changes durable state.** One
+missing record does not corrupt the replay, it silently truncates it — and it is invisible until
+someone restarts. That is the same failure shape as R1 one level up: not a wrong value, an
+absent one.
+
+### Also found while doing this — defect R6
+
+The last row above exposed a separate bug. The new tracker's reply is
+`"Invalid input.\nUse: upload_file ..."` — **two lines for one command.** The client reads one
+line per reply, so it takes `"Invalid input."` as the answer and the `"Use: ..."` half becomes
+the answer to the *next* command. That is R3's stream desync all over again, from a different
+cause: five reply strings in `tracker.cpp` contain an embedded newline. Pre-existing; not
+introduced here. Registered as **R6**, fork open.
+
 ## Reproducing all of this
 
 ```sh

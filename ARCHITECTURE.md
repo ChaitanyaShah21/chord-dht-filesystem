@@ -127,6 +127,7 @@ decided before the paper is one that cannot be defended in December.
 
 | **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
 | **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
+| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Phase 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
 
 ---
@@ -501,3 +502,61 @@ seeders — it becomes real work the moment F4 lands.
 
 **Evidence:** `BENCHMARKS.md` — pending. Verified functionally three consecutive runs.
 **Defence entry:** `DEFENCE.md` D-007, D-009
+
+---
+
+### D-009 — Admission and effect are separate; recovery can only reach the effect
+
+**Fork:** F8. **Date:** 6 Sep 2026. **Closes:** defect R1.
+
+**The decision.** Every mutating command is split into an `apply_*` function that performs the
+state transition and nothing else, and a set of admission checks that stay on the live path in
+`handle_command`. Recovery has its own entry point, `replay_command`, which calls `apply_*`
+directly and never calls `handle_command`.
+
+**What the split means in practice.** A check belongs on the live path if it asks about the
+*requester* or about *soft state* — "are you who you say you are?", "are you logged in?". A
+check belongs in `apply_*` if it asks about *durable state* — "does this group exist?", "is
+this user a member?" Those are deterministic: they were true when the command was accepted, so
+they are true again when the log is replayed in the same order.
+
+**Why this and not the smaller change.** The obvious repair is a `replaying` flag that makes
+the guards skip themselves. It is twenty minutes of work and it leaves the guards in the
+recovery path, disabled by a boolean. Every guard added later is a fresh opportunity to forget
+the flag, and the failure is silent — which is exactly how R1 survived from November to
+September without anyone noticing. Splitting the functions removes the possibility rather than
+the symptom: recovery cannot skip a guard it has no code path to.
+
+Two supporting changes turn "avoided" into "impossible":
+
+- `handle_command`'s `bool record = true` parameter was deleted and `client_user` lost its
+  default value, so the exact call that caused R1 — `handle_command(cmdline, "", false)` — **no
+  longer compiles.**
+- `replay_command` is an exhaustive, readable list of the six things recovery may do. Anything
+  else is skipped with a message naming it, which also makes the tracker safe against the
+  coursework-era log format that recorded reads and logins.
+
+**Rejected: option A, a replay flag.** ~20 minutes instead of ~2 hours. Rejected because the
+cost is paid later and silently, and because the guard-skipping flag is itself the bug pattern
+that produced R1.
+
+**Rejected: option C, log the effect rather than the request (event sourcing).** The tracker
+would record `GROUP_CREATED g1 alice` instead of the client's `create_group g1 alice`, and
+recovery would apply effects that have no notion of a requester at all. **This is the better
+system and it is worth saying so.** It costs ~3 hours and a new on-disk format, spent on a
+control plane that Phase 2 replaces with a Raft-replicated tracker — and Raft brings the same
+structure back for a stronger reason, because a follower applies log entries with no client
+attached at all.
+
+Option C also has a concrete correctness advantage that B does not: **an effect log cannot
+drift.** `leave_group` picks the new owner with `*members.begin()`, whose result depends on
+hashing rather than on anything recorded, so a replay may choose a different owner than the
+live run did (defect R5). An effect log would have recorded the choice. B leaves that open; it
+is registered rather than hidden.
+
+**What the split forced into the open.** Classifying every line of every effect as durable or
+soft caught `upload_file` writing soft state: it inserted the uploader into `fi.seeders` and
+recorded an address in `user_address_map` alongside the manifest. Replaying that resurrects
+peers that are long dead — the exact thing the `update_seeder` handler already refuses to do.
+A flag would have replayed it and nobody would have looked.
+
