@@ -42,9 +42,14 @@ Phase 0 — timers permitting.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
-Part 3 tracker state, data structures and locking ✅ (all comprehension checks answered and
-graded). **Part 4 — persistence and the replay path — is next, and pairs with the R1 fix.**
-Remaining planned: Part 5 the transfer path, Part 6 the latent defects, Part 7 Chord.
+Part 3 tracker state, data structures and locking ✅ · **Part 4 persistence and the replay
+path ✅** (6 Sep — comprehension checks answered and graded; `std::atomic` re-taught after a
+gap in the Part 3 quiz and re-checked correct: atomic makes each operation indivisible, never a
+sequence of them).
+**Remaining: Part 5 the transfer path · Part 6 the latent defects · Part 7 Chord.**
+Part 7 is the one the project is actually about and nothing before Phase 2 depends on Parts 5–6,
+so if time gets tight, Part 7 goes first and Part 6 folds into the fork discussions it belongs
+to (F9/R6, F7/R2b).
 
 **Working-style changes agreed 2 Sep, carried into every later session:**
 - **No assigned required reading.** Teach the concepts inline; `LEARNING.md` is a lookup index
