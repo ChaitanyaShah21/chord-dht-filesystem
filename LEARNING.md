@@ -1,5 +1,10 @@
 # Required Reading — chord-dht-filesystem
 
+> **Changed 2 Sep 2026.** Nothing here is assigned during a build session any more.
+> Concepts get taught inline instead; this file is a **lookup index** for when a concept
+> is genuinely unclear, and a reading plan for interview preparation. The deadline is
+> 28 Sep and the project has to exist before it can be defended.
+
 Per concept: what to read, what to take from it, roughly how long, and explicitly what to skip.
 Reading a paper end to end is usually the wrong move — reading the three sections that matter is
 the right one.
