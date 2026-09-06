@@ -17,9 +17,28 @@ new. All of it written up in `docs/failures.md`.
 `update_seeder` is a real tracker command, the client reads its reply, and the announcer thread
 owns its own connection instead of sharing the main loop's socket. `scripts/e2e-edge.sh` goes
 from **1/7 to 6/7 passing**; the only remaining failure is R4, the zero-byte file.
-**Next step:** fix **R1** (persistence — replay is rejected by the commands' own auth guard),
-then decide fork **F7** (zero-filled file left by a failed download).
+**Next step:** **Teaching Part 4 + fix R1** together. R1 is persistence: `main` replays the
+command log at startup via `handle_command(cmdline, "", false)` with an **empty `client_user`**,
+so every recorded command is rejected by its own guard — `if(client_user.empty() || owner !=
+client_user) return "Error: you can only perform this command as yourself"`. Historical proof:
+the old `state_8000.log` held `create_group g1 alice` **six times**, once per restart. After R1,
+decide fork **F7** (zero-filled file left by a failed download), then take the **baseline
+throughput number** that closes Phase 0.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it (R6).
+
+**Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
+Part 3 tracker state, data structures and locking ✅ (all comprehension checks answered and
+graded). **Part 4 — persistence and the replay path — is next, and pairs with the R1 fix.**
+Remaining planned: Part 5 the transfer path, Part 6 the latent defects, Part 7 Chord.
+
+**Working-style changes agreed 2 Sep, carried into every later session:**
+- **No assigned required reading.** Teach the concepts inline; `LEARNING.md` is a lookup index
+  and an interview-prep plan, not a to-do list. The deadline is real and the project has to
+  exist before it can be defended.
+- **Commit messages in Chaitanya's own style** — short lowercase subject, no `fix:`/`docs:`
+  prefix, a body only where the *why* is not visible in the diff, and **no `Co-Authored-By`
+  trailer**. The four portfolio-era commits were rewritten to match; the ten coursework commits
+  were never touched.
 
 **Days to 28 Sep 2026 (hard deadline):** 36
 
