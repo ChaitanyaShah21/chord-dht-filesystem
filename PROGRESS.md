@@ -127,8 +127,8 @@ These gate the critical path and cannot be done for him.
 
 | # | Action | Why it blocks | Deadline | Status |
 |---|---|---|---|---|
-| 1 | **Rename the directory** `/home/csharp/os-assignment3` → `/home/csharp/chord-dht-filesystem` and reopen the folder in VSCode | `os-assignment3` on a resume reads as coursework | end of W1 | TODO |
-| 2 | **Create the GitHub repository** `chord-dht-filesystem`, decide public/private, `git remote add origin` | There is **no remote at all** today. Nothing is backed up, and the commit history — which is itself evidence — exists on one laptop | end of W1 | TODO |
+| 1 | **Rename the directory** and reopen the folder in VSCode | `os-assignment3` on a resume reads as coursework | end of W1 | **DONE 6 Sep 2026** — now `/home/csharp/projects/chord-dht-filesystem` |
+| 2 | **Create the GitHub repository** `chord-dht-filesystem`, decide public/private, `git remote add origin` | There was **no remote at all**, and on 6 Sep that cost a lost afternoon (error log E5) | end of W1 | **DONE 6 Sep 2026** — `github.com/ChaitanyaShah21/chord-dht-filesystem`, `master` and `pre-resurrection` pushed |
 | 3 | **Install Docker Desktop** with WSL2 integration | Deployment kit item 1. Images must be **arm64** — this machine is aarch64. Has a download and a reboot in it | before W5 | TODO |
 
 ---

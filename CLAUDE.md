@@ -298,8 +298,9 @@ get cut.
 **Project:** chord-dht-filesystem
 **One-line pitch:** Fault-tolerant peer-to-peer distributed file system — a Chord distributed
 hash table for the data plane, a Raft-replicated tracker for the control plane.
-**Repository:** `/home/csharp/os-assignment3` — **rename to `/home/csharp/chord-dht-filesystem`
-pending**. No git remote configured yet; GitHub repository not yet created.
+**Repository:** `/home/csharp/projects/chord-dht-filesystem` (moved there 6 Sep 2026 from
+`/home/csharp/os-assignment3`). Remote: `https://github.com/ChaitanyaShah21/chord-dht-filesystem`,
+pushed 6 Sep 2026 with the `pre-resurrection` tag.
 **Language / stack:** C++17, POSIX sockets and threads, OpenSSL `libcrypto` for SHA-1.
 Build is a hand-written `Makefile`. No external networking or serialisation libraries — that
 constraint is inherited from the original coursework and is worth keeping, because writing the
