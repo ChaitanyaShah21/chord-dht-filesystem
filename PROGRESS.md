@@ -17,11 +17,12 @@ new. All of it written up in `docs/failures.md`.
 `update_seeder` is a real tracker command, the client reads its reply, and the announcer thread
 owns its own connection instead of sharing the main loop's socket. `scripts/e2e-edge.sh` goes
 from **1/7 to 6/7 passing**; the only remaining failure is R4, the zero-byte file.
-**Next step:** **Teaching Part 4 + fix R1** together. R1 is persistence: `main` replays the
-command log at startup via `handle_command(cmdline, "", false)` with an **empty `client_user`**,
-so every recorded command is rejected by its own guard — `if(client_user.empty() || owner !=
-client_user) return "Error: you can only perform this command as yourself"`. Historical proof:
-the old `state_8000.log` held `create_group g1 alice` **six times**, once per restart. After R1,
+**Also done 6 Sep:** Teaching Part 4 (persistence and the replay path) delivered and its
+comprehension checks answered. **R1 is now reproduced by a script rather than remembered:**
+`scripts/e2e-persistence.sh` builds state, restarts the tracker on the same port and directory,
+and asks for the same four facts back — **1/4 survives**. Committed RED on purpose (D-006
+precedent). Fork **F8** decided: option B, split admission from effect.
+**Next step:** **implement F8/option B and turn `e2e-persistence.sh` green.** After that,
 decide fork **F7** (zero-filled file left by a failed download), then take the **baseline
 throughput number** that closes Phase 0.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it (R6).
@@ -167,7 +168,7 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 
 | ID | Defect | Status |
 |---|---|---|
-| **R1** | **Persistence is dead.** Start tracker on 7100 → `create_group g1` → restart → `list_groups` returns **`No groups`**. Root cause: `tracker.cpp:448` replays the log via `handle_command(cmdline, "", false)` with an **empty `client_user`**, and every recorded command is rejected by its own guard — `if(client_user.empty() \|\| owner != client_user) return "Error: you can only perform this command as yourself"`. `create_group`/`join_group`/`upload_file` additionally require `online_users.count(user)`, and nobody is logged in during replay. **Historical fingerprint:** the old `state_8000.log` contained `create_group g1 alice` **six times** — every restart silently lost it and it was recreated. | **OPEN** — Phase 0, next |
+| **R1** | **Persistence is dead.** Start tracker on 7100 → `create_group g1` → restart → `list_groups` returns **`No groups`**. Root cause: `tracker.cpp:448` replays the log via `handle_command(cmdline, "", false)` with an **empty `client_user`**, and every recorded command is rejected by its own guard — `if(client_user.empty() \|\| owner != client_user) return "Error: you can only perform this command as yourself"`. `create_group`/`join_group`/`upload_file` additionally require `online_users.count(user)`, and nobody is logged in during replay. **Reproduced 6 Sep 2026** by `scripts/e2e-persistence.sh`: the log file is written **correctly and completely** (6 records, every command present and well-formed) and the restarted tracker still answers `No groups` / `Group not found` / `File not found in group`. Only `create_user` survives, because it is the one mutating command with no `client_user` guard. That the write path is provably fine isolates the fault to replay alone. **Correction to the earlier entry:** the `state_8000.log` that held `create_group g1 alice` six times was a local run from the 23 Aug audit and was never committed (logs are gitignored), so it cannot be re-examined; the scripted reproduction replaces it as the evidence. | **OPEN** — fix is F8/option B, in progress |
 | **R2** | **Download fails end-to-end and leaves silent corruption.** Root cause **isolated 1 Sep 2026**: `tracker.cpp:233` read `user_info.substr(user.find('@') + 1)` — searching `user` (already stripped to `"alice"`, no `'@'`) while slicing `user_info`. `find` returned `npos`; `npos + 1` **wrapped to 0**; `substr(0)` returned the whole string. The address map held `alice -> alice@127.0.0.1:6881`, `get_file_info` emitted `alice@alice@127.0.0.1:6881`, and `inet_pton` rejected `"alice@127.0.0.1"`. Every peer connection failed before a socket was opened. | **FIXED** 1 Sep 2026 — `docs/failures.md` R2 |
 | **R2b** | The *silent-corruption half* of R2, still live: a **failed** download leaves a full-size zero-filled file, because `ftruncate` preallocates and nothing cleans up. Size alone is not evidence of completeness. | **OPEN** — fork **F7** |
 | **R3** | **FIXED 2 Sep 2026** (D-007, D-008). Found 1 Sep by the adversarial size sweep, not in the original audit. **Permanent request/response desync after the first successful download.** `client.cpp:822` sends `update_seeder` and never reads the reply; the tracker does not implement `update_seeder`, so it returns `Unknown command` (`tracker.cpp:358`), which the next `recv_line` eats. From then on every reply is one behind — the downloader sizes the destination from one file and verifies against another file's hashes. **Same class as D2 but with no concurrency at all**, which proves a socket mutex was never the answer. | **FIXED** 2 Sep 2026 — `docs/failures.md` R3 |
@@ -344,7 +345,7 @@ make the next occurrence take a minute instead of an hour. It paid that back wit
 | Build | `Makefile` (repo root) — **currently broken, see B1/B2**, and never committed |
 | Test data generator | `scripts/make-testdata.sh` |
 | Test data (gitignored) | `testdata/` — regenerate with `./scripts/make-testdata.sh` |
-| Tests | not yet — first one lands with the B1/B2 fix |
+| Tests | `scripts/e2e-smoke.sh` (happy path, R2 regression) · `scripts/e2e-edge.sh` (size sweep across piece boundaries, R3/R4) · `scripts/e2e-persistence.sh` (restart survival, R1 — **currently red on purpose**) |
 | Benchmark harness | not yet — Phase 0, with the baseline measurement |
 | Figures | `docs/figures/` — not yet |
 | Build output (gitignored) | `tracker`, `client`, `*.o` at repo root |
