@@ -387,6 +387,45 @@ make the next occurrence take a minute instead of an hour. It paid that back wit
 
 ---
 
+### E6 — two passing test suites failed the moment they ran at the same time
+**Date:** 9 Sep 2026 · **Cost:** ~10 min, and a false "the persistence fix regressed" scare
+
+**Symptom:** `e2e-smoke.sh` and `e2e-persistence.sh` were started concurrently to re-verify the
+build after the repository move. **Both failed.** Smoke produced no destination file at all;
+persistence reported `4/4 facts did not survive the restart (defect R1)` — the exact signature
+of the bug D-009 had closed three days earlier. Run one at a time immediately afterwards, on the
+same binaries and the same commit, both passed: smoke `PASS`, persistence `4/4`, edge 6/7.
+
+**How it was found:** by noticing that the persistence tracker's own log said
+`recovered 6 records` while the client transcript below it was **empty**. Recovery had worked
+and the client had never spoken at all — which points at the harness, not at the tracker.
+
+**Root cause: the suites reap by binary path, not by port.** Both call
+
+```sh
+pkill -9 -f "$ROOT/tracker"     # every tracker on this machine
+pkill -9 -f "$ROOT/client"      # every client on this machine
+```
+
+at startup and again from their `EXIT` trap. The ports were deconflicted — smoke uses
+7100/6881/6882, persistence 7101/6883/6884 — so the collision check that was actually run found
+nothing. **Port isolation is not isolation when the cleanup step has a machine-wide side
+effect.** Each suite killed the other's processes mid-run.
+
+**Why it matters more than a harness bug.** The failure is indistinguishable from a product
+regression: a missing file and a state-loss message that names a real, previously-open defect.
+A test harness whose failure mode imitates the bug it is testing for is worse than no harness,
+because it spends the debugging budget in the wrong place. It also means the suites cannot be
+parallelised in continuous integration as written, which is where this would have bitten next.
+
+**Fix (proposed, not yet applied):** match the port as well as the binary —
+`pkill -9 -f "$ROOT/tracker $TRACKER_PORT"` — and derive the peer ports from the same variable,
+so a suite can only ever kill its own processes. Scheduled with the F9 step.
+
+**Interview answer it feeds:** *"Tell me about a test that lied to you."* Two green suites, run
+together, both red, no code changed — and the cause was a cleanup routine written for a machine
+running one suite at a time.
+
 ### E5 — the machine returned files that were the right size and full of nothing
 **Date:** 6 Sep 2026 · **Cost:** one commit, one afternoon's implementation, ~2 h to rebuild
 
