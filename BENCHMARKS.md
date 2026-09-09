@@ -59,6 +59,7 @@ The three or four that go on the resume. Each links to its full entry below.
 
 | Claim | Number | Before | Commit | Entry |
 |---|---|---|---|---|
+| *Single-peer transfer baseline, 100 MB* | **71.2 MB/s** (median of 3) | — this **is** the before | `e381179` | §1 |
 | *Ring reconverges after node failure* | — | — | — | §4 pending |
 | *Sustained transfer throughput across N peers* | — | — | — | §5 pending |
 | *Lookup hops tracks O(log N)* | — | — | — | §2 pending |
@@ -79,27 +80,66 @@ that never get replaced are a documented failure mode of this project.
 
 ## Entries
 
-### §1 · Single-peer transfer baseline — **PENDING, next**
+### §1 · Single-peer transfer baseline — **MEASURED 9 Sep 2026**
 
 **Question this answers:** how fast is the inherited system before anything is optimised? Every
 later claim of improvement is measured against this, and it cannot be recovered once the code
 changes.
 
-**Method:** one tracker, one seeding peer, one downloading peer, all on this host. Wall-clock
-from the moment the `download_file` command is issued to the moment the destination file's
-SHA-1 verifies. Timed externally so no instrumentation changes what is measured.
-**Workload:** `testdata/medium.bin` (1 MB, 2 pieces), `large.dat` (10 MB, 20 pieces),
-`huge.iso` (100 MB, 200 pieces), at the inherited 512 KB piece size.
-**Harness:** `scripts/bench-baseline.sh` — not yet written.
-**Commit:** pending — **committed before the run, fingerprint recorded here**.
+**Commit:** `e381179` — taken on a clean working tree; the harness prints a warning into its own
+output if the tree is dirty, because a number that cannot be tied to a commit cannot be
+reproduced.
+**Harness:** `scripts/bench-baseline.sh`, committed before the run.
+**Host:** aarch64, 8 cores, 7.5 GiB RAM, kernel 6.6.87.1 under WSL2. Timer sanity was verified
+immediately beforehand — `sleep 2` measured 2.008 s and the monotonic and wall clocks agreed, so
+this is not one of the runs distorted by the timer fault recorded in `PROGRESS.md` E5.
 
-| Configuration | Wall clock (s) | Throughput (MB/s) | Notes |
+**Method.** One tracker, one seeding peer, one downloading peer, all on this host, at the
+inherited 512 KB piece size. Timing starts immediately before the `download_file` command is
+written to the driving pipe and stops when the downloading client reports every piece verified.
+The SHA-1 is then checked against the source and a mismatched run is discarded rather than
+reported — the time taken to produce a wrong file is not a throughput. **Every repetition uses a
+completely fresh tracker and pair of peers**, because a downloader announces itself as a seeder
+on completion and would otherwise serve the next repetition from its own copy.
+
+**How completion is detected, and why it is not the obvious way.** The first version of this
+harness waited for the destination file to reach its expected size and reported **165 MB/s for
+1 MB**. That was the time to *preallocate*: the client `ftruncate`s the destination to full size
+before fetching a single byte (defect R2b), so the file is full-size instantly and full of
+zeros. The SHA-1 check did not catch it because the real transfer completed during the
+`sha1sum` call. **Size is never evidence of completeness** — the harness now waits for the
+client's own "every piece verified" signal, and the wrong version is documented in its docstring
+so it is not reinvented.
+
+| Configuration | Runs (s) | Median (s) | Throughput (MB/s) |
 |---|---|---|---|
-| 1 MB, 1 seeder | | | |
-| 10 MB, 1 seeder | | | |
-| 100 MB, 1 seeder | | | |
+| 1 MB, 1 seeder | 0.065 · 0.048 · 0.037 | 0.048 | **20.9** |
+| 10 MB, 1 seeder | 0.178 · 0.268 · 0.216 | 0.216 | **46.2** |
+| 100 MB, 1 seeder | 1.565 · 1.277 · 1.404 | 1.404 | **71.2** |
 
-**Blocked on:** B1, B2 (build) and R2 (the download path does not currently work at all).
+**What the shape says.** Throughput more than triples from 1 MB to 100 MB. That is fixed cost
+being amortised, not the transfer getting faster: each download pays a tracker round trip, a TCP
+connection to the seeder, and a manifest parse before any bytes move, and at 1 MB those dominate
+a transfer that is only two pieces long. The right reading of the 1 MB row is *"this system has
+a per-transfer overhead of roughly 30-40 ms"*, not *"it runs at 21 MB/s"*.
+
+**Honest limits of this number, stated before anyone asks:**
+- **Three repetitions is thin**, and the spread is wide — the 1 MB figure ranges 15.3-27.3 MB/s,
+  a factor of 1.8 between the best and worst run of an identical workload. The median is
+  reported rather than the best; the range is reported rather than hidden.
+- **One seeder means no parallelism.** The worker pool is capped at `min(peers, 4)`, so with a
+  single seeder exactly one worker runs and the pieces are fetched sequentially. This is
+  therefore a *sequential* baseline, which is exactly the right "before" for the Phase 5 claim
+  about parallel chunked transfer.
+- **The source file is in the page cache**, having just been written by the corpus generator, so
+  the seeder's disk read is free. A cold-cache figure would be lower.
+- **Loopback is not a network.** No propagation delay, no packet loss, and both peers contend
+  for the same eight cores and the same memory bandwidth. See the distortions section above.
+
+**What this does not license saying.** "71 MB/s" alone is not a resume line — it is one host,
+one seeder, one file, cached, over loopback. It becomes a resume line when Phase 5 has a
+comparable number under parallel transfer and the sentence is *"X MB/s across N peers, up from
+71 MB/s single-peer, measured the same way at the same piece size."*
 
 ---
 

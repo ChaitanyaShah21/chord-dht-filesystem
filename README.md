@@ -67,8 +67,25 @@ process's memory — with no node knowing the whole map, and no single node's fa
 
 ## Results
 
-*No measured numbers yet.* The transfer path now works, so the baseline is the next measurement
-taken — before any optimisation, because a "before" number cannot be recovered afterwards.
+**Single-peer transfer baseline**, measured 9 Sep 2026 at commit `e381179`, 512 KB pieces, one
+seeder, all processes on one host. Median of three runs, each with fresh processes:
+
+| Transfer | Median | Throughput |
+|---|---|---|
+| 1 MB | 0.048 s | 20.9 MB/s |
+| 10 MB | 0.216 s | 46.2 MB/s |
+| 100 MB | 1.404 s | **71.2 MB/s** |
+
+Throughput more than triples from 1 MB to 100 MB because the per-transfer fixed cost — a tracker
+round trip, a connection to the seeder, a manifest parse — is amortised over more bytes, not
+because the transfer speeds up. With one seeder the worker pool runs a single thread, so this is
+a **sequential** baseline; it exists to be the "before" for the parallel chunked transfer in
+Phase 5, and it cannot be recovered once that code lands.
+
+Method, the wide run-to-run spread, and the reasons this number flatters the system (loopback,
+warm page cache, shared cores) are in [`BENCHMARKS.md`](BENCHMARKS.md) §1 — including the first
+version of the harness, which reported 165 MB/s because it timed `ftruncate` rather than the
+transfer.
 
 Planned curves, and the design question each settles, are listed in
 [`BENCHMARKS.md`](BENCHMARKS.md) § Curves worth having. Method, commit fingerprints and the
