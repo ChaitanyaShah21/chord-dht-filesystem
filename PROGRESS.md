@@ -127,6 +127,21 @@ sharpenings: random data finds distribution bugs but **only construction finds s
 and the rejected full-membership design is not simply "bad" — it is what Dynamo and Cassandra
 actually ship, correct until `churn × N` gets large. Logged in `SCALE_NOTES.md`.)
 
+**7.3 finger tables and O(log N) ✅** (9 Sep — geometric offsets, the two interval tests three
+lines apart with deliberately different endpoint rules, a three-hop worked lookup on a ten-node
+ring, and the halving argument stated as a proof rather than a description. Comprehension: C6
+strong — he identified `finger[1]`/the successor as the one corruptible field that breaks
+correctness, unprompted. C5 reached the right conclusion (linear versus logarithmic) without the
+mechanism, so the mechanism was supplied: even spacing has a **fixed absolute resolution** and
+falls off a cliff at distance `g`, geometric spacing is **self-similar** and has no smallest
+useful scale. Two follow-up questions he raised and had answered: why 160 rows collapse to
+log₂N distinct nodes (any offset below the inter-node gap resolves to the same successor), and
+where `N` enters a fixed 160-bit space (through **when you stop** — the arc `2^m/N` — not where
+you start; the `2^m` cancels). New idea recorded: the finger table is **self-validating**,
+because every entry is checked against `(my_id, k)` before use, so a corrupt finger can only
+waste hops — while the successor, which that check is performed *against*, has nothing to
+validate it.)
+
 **Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
 sessions recorded under the old `os-assignment3` path could not be resumed after the move — the
 directory they point at no longer exists. All four sessions (22 Aug → 6 Sep) are exported as

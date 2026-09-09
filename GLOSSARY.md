@@ -406,6 +406,51 @@ imbalance with and without virtual nodes, so the cost above becomes a plot rathe
 
 ---
 
-### Finger table · Virtual node · Stabilisation · Successor list · Raft · Quorum · Read repair · Anti-entropy
+### Finger table
 
-*All pending — Phases 2–4 and 9–11. Each gets a full entry when it is taught, not before.*
+**Plain:** the six extra phone numbers each person in the circle carries — not six arbitrary
+ones, but the people standing 1, 2, 4, 8, 16 and 32 places ahead. It is a map that is detailed
+where you are standing and blurry on the far side, which is all you need: you never have to know
+who owns the target, only somebody closer to it than you are.
+
+**Technical:** a per-node routing table of `m` entries (one per bit of the identifier space).
+Entry `i` holds `successor((n + 2^(i-1)) mod 2^m)` — the node responsible for the point
+`2^(i-1)` clockwise of this node. Offsets are **geometric**, so `finger[1]` is the immediate
+successor and `finger[m]` is halfway round the ring. A lookup scans from `i = m` downward and
+forwards to the first entry lying strictly inside `(my_id, k)` — the longest jump that does not
+overshoot.
+
+**Why it exists:** it buys the middle of the state-versus-hops trade-off. Knowing only the
+successor is O(1) state and O(N) hops; knowing everyone is O(N) state and O(1) hops but O(N²/L)
+churn traffic (see `SCALE_NOTES.md`). The finger table is O(log N) distinct entries and
+O(log N) hops. Each hop at least **halves** the remaining distance, because for any distance `d`
+there is a finger at offset between `d/2` and `d`.
+
+**Why powers of two specifically:** a geometric table has resolution *proportional to distance*,
+so after a hop the situation is structurally identical at half the scale — the recursion is
+self-similar and there is no smallest useful scale. Evenly spaced offsets have a fixed absolute
+resolution `g`: they close the distance to `g` and then stop helping entirely, leaving a linear
+walk of `O(N/m)` successor steps.
+
+**Why `m` entries is not `m` machines:** any offset smaller than the gap to the next node
+resolves to that same next node. With `N` nodes the gap is `2^m/N`, so the first `m − log₂N`
+fingers all collapse onto the immediate successor. 160 rows, about **log₂N distinct nodes**.
+
+**O(m) versus O(log N):** hops are halvings, and you stop not at distance 1 but as soon as the
+remaining arc holds no other node — an arc of `2^m/N`. Halving from `2^m` to `2^m/N` is `log₂N`
+steps; the `2^m` cancels. `m` bounds the pathological ring, `N` describes the real one.
+
+**Trade-off:** it must be repaired continuously as the ring changes, and that background traffic
+is permanent. But **stale fingers cost hops, never correctness** — every finger is validated
+against `(my_id, k)` before use, so a wrong finger is either skipped or is genuinely closer to
+the target. The finger table is self-validating; the successor pointer, which the validation is
+performed *against*, is not.
+
+**In this project:** Phase 2 (W2). The headline benchmark is hop count versus ring size, plotted
+against log₂N.
+
+---
+
+### Virtual node · Stabilisation · Successor list · Raft · Quorum · Read repair · Anti-entropy
+
+*All pending — Phases 3–4 and 9–11. Each gets a full entry when it is taught, not before.*
