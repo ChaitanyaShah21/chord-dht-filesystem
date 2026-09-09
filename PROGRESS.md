@@ -56,10 +56,22 @@ is that the repository is judged by whether he can walk through it, and a fix he
 is indistinguishable from one somebody else made. This session is the evidence for the rule as
 well as the occasion for it: R9 was found *because* `send_all` was being explained aloud.
 
-**Next step:** the **baseline throughput number** that closes Phase 0 (R13) — first action is
-measuring timer drift, because a number taken on a host where `sleep 2` takes 5 s is not a
-number. Then `git tag phase-0-complete`, then teaching **Part 7 (Chord)** and the five Phase 1
-forks.
+**PHASE 0 IS CLOSED — 9 Sep 2026, tag `phase-0-complete`.** Timers were verified sane first
+(`sleep 2` measured 2.008 s, monotonic and wall clocks in agreement), then the baseline was
+measured on a clean tree at `e381179`: **20.9 / 46.2 / 71.2 MB/s** at 1 / 10 / 100 MB, median of
+three runs each. Recorded in `BENCHMARKS.md` §1 with method, spread and every reason the number
+flatters the system. It is a *sequential* baseline by construction — one seeder means the worker
+pool runs one thread — which is exactly the right "before" for the Phase 5 parallel-transfer
+claim, and it could not have been recovered after that code lands.
+
+**Deferred out of Phase 0 by decision, not by drift:** `docs/postmortem-resurrection.md` moves
+to W6, the documentation week, because every fact it needs is already written in
+`docs/failures.md` and the defect register and assembling it is prose work. Fork **F7** (R2b)
+moves to Phase 5, where the transfer layer is rewritten anyway.
+
+**Next step:** **Phase 1.** Teaching **Part 7 — Chord**, then the five open forks (F1 routing,
+F2 tracker's job, F3 replication, F4 failure detection, F5 chunk size), which R11 holds closed
+until the Chord paper has been read and which gate all of Phase 2.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
@@ -128,7 +140,7 @@ repository so they cannot land in a commit by accident.
 
 | # | Phase | Week | Budget | Spent | Status | Ends with |
 |---|---|---|---|---|---|---|
-| 0 | Resurrection and audit | W1 | 6 h | 1.5 h | IN PROGRESS | Baseline throughput number + `docs/postmortem-resurrection.md` |
+| 0 | Resurrection and audit | W1 | 6 h | ~6 h | **DONE 9 Sep 2026** — tag `phase-0-complete` | Baseline measured (§1, 71.2 MB/s at 100 MB). Postmortem deferred to W6 by decision |
 | 1 | Design forks resolved | W1 | 6 h | | TODO | 5 decisions × 3 documents; diagram in README |
 | 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | TODO | Hop count vs ring size, plotted against log₂N |
 | 3 | Node join / leave + stabilisation thread | W3 | 9 h | | TODO | Time-to-reconverge after a kill, measured |
@@ -190,7 +202,7 @@ One row per week. The point is to notice a slip in week 2 rather than week 6.
 |---|---|---|---|---|---|
 | W1 | 24–30 Aug | Get it building and running. Write down what was broken and why. Read the Chord paper. Sketch the target architecture. Resolve the five forks. | Repo hygiene + document set + teaching Parts 1–2 | 1.5 | |
 | W2 | 31 Aug–6 Sep | Chord routing: finger tables, O(log N) lookup on a fixed ring. Correctness before joins or failures. | | | |
-| W3 | 7–13 Sep | Node join and leave, plus the stabilisation thread that repairs finger tables. | | | |
+| W3 | 7–13 Sep | Node join and leave, plus the stabilisation thread that repairs finger tables. | **Phase 0 closed instead** — R6/F9, R9/F10, README correction, E6, baseline measured. Two weeks behind the original plan; see the note below | ~4.5 | Behind plan, honestly logged |
 | W4 | 14–20 Sep | Consistent hashing with virtual nodes; three-way successor replication. | | | |
 | W5 | 21–27 Sep | Chunked parallel transfer with per-chunk SHA-1 verification. All four benchmarks. Deployment kit 1–2. **Then, in this order:** run benchmarks → write bullets from the real numbers → draw diagrams → write README → cut resume to one page. | | | |
 | W6 | 28 Sep–4 Oct | **Freeze at MVP.** Documentation only. | | | |
