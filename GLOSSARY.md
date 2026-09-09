@@ -143,6 +143,68 @@ real network with large ones.
 
 ---
 
+### Signal, and its default disposition
+
+**Plain:** a tap on the shoulder from the operating system saying *something happened*. Each
+kind of tap has a default reaction the OS applies unless the program says otherwise — and for
+several of them the default reaction is "die immediately".
+
+**Technical:** a signal is an asynchronous notification delivered to a process. Every signal
+has a **disposition**: default (`SIG_DFL`), ignore (`SIG_IGN`), or a handler function. SIGPIPE
+(signal 13) is raised when a process writes to a socket or pipe whose reader has gone, and its
+default disposition is **terminate the process**. A process killed by signal *n* is reported by
+the shell as exit status **128 + n**, so 141 means SIGPIPE and 139 means SIGSEGV.
+
+**Why it matters:** a disposition belongs to the **process**, not the thread that triggered it.
+One connection's write to a departed peer ends every other connection in the program.
+
+**Trade-off:** `signal(SIGPIPE, SIG_IGN)` is process-wide, so any code in the same program that
+genuinely wanted the signal no longer gets it. The per-call alternative, `MSG_NOSIGNAL`, is
+local and explicit but has to be remembered at every send site for ever.
+
+**In this project:** defect R9, fixed by decision D-011. `send` now returns -1 with `errno`
+set to `EPIPE`, which the `if(n <= 0)` check in every send loop already handled correctly — it
+had simply never been reached.
+
+---
+
+### FIN / RST, and `SO_LINGER`
+
+**Plain:** two ways to end a phone call. FIN is "goodbye, I'm hanging up now." RST is pulling
+the cable out of the wall.
+
+**Technical:** a normal `close()` sends **FIN**, a graceful half-close: the peer is told no more
+data is coming, and data already queued is still delivered. Setting the socket option
+`SO_LINGER` with `l_onoff = 1` and `l_linger = 0` makes `close()` send **RST** instead, which
+discards anything queued and tells the peer the connection no longer exists.
+
+**Why it matters:** the difference decides *when* a write to a dead connection fails, which is
+what makes an abrupt-disconnect bug reproducible instead of a race.
+
+**In this project:** `scripts/e2e-hangup.sh` uses it deliberately to make defect R9 fire on
+demand rather than occasionally.
+
+---
+
+### Carriage return (`\r`) and line feed (`\n`)
+
+**Plain:** two instructions inherited from typewriters. Carriage return slams the print head
+back to the left margin; line feed rolls the paper up one line.
+
+**Technical:** `\r` is ASCII 13 (0x0D), `\n` is ASCII 10 (0x0A). Windows ends a line with both
+(`\r\n`), Unix with `\n` alone, classic Mac with `\r` alone. A protocol that treats `\n` as its
+delimiter must decide what to do with a stray `\r`, because clients from different platforms —
+and anything driven through `telnet` — will send it.
+
+**Why it matters:** beyond framing, a `\r` inside a *log line* moves the cursor back to the
+start of the line, so later text overwrites earlier text. That is a real technique for forging
+log entries, which is why sanitising it is not merely tidiness.
+
+**In this project:** `send_all` in `tracker.cpp` treats both as delimiters and replaces either
+one found inside a reply (decision D-010).
+
+---
+
 ### Mutex (mutual exclusion lock)
 
 **Plain:** the key to a single-occupancy room. Whoever holds it may go in; everyone else waits
