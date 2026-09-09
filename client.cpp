@@ -17,6 +17,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <cstring>
+#include <csignal>
 #include "sha1.h"
 #include <atomic>
 #include <condition_variable>
@@ -688,6 +689,15 @@ int main(int argc, char **argv) {
         cerr << "Invalid input.\nUse: ./client <tracker ip> <tracker port> [peer_listen_port]\n";
         return -1;
     }
+
+    // Defect R9: a client that hangs up mid-conversation used to kill this
+    // process. Writing to a socket whose peer has gone raises SIGPIPE, and a
+    // signal's default disposition is to terminate -- process-wide, so a
+    // peer that hangs up mid-download took down the whole client.
+    // Ignoring it makes send() return -1 with errno EPIPE instead, which the
+    // `if(n <= 0) return false` already in send_all has always handled
+    // correctly; it simply never got the chance to run. Decision D-011.
+    signal(SIGPIPE, SIG_IGN);
 
     string ip = argv[1];
     int port = atoi(argv[2]);

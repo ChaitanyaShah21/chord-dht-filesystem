@@ -129,6 +129,7 @@ decided before the paper is one that cannot be defended in December.
 | **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
 | **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Phase 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
 | **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
+| **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
 
 ---
@@ -608,3 +609,47 @@ line per reply and would hide which side emitted the extra one — sends each of
 malformed commands, and after each sends a probe whose reply is unmistakable. 11/11 pass on the
 fix. **Run against the pre-fix binary the same suite fails 9/11**, showing the stream one behind
 and then two behind, which is what makes it a regression test rather than a passing assertion.
+
+---
+
+### D-011 — A peer's disconnect is an error value, not a signal
+
+**Fork:** F10. **Date:** 9 Sep 2026. **Closes:** defect R9.
+
+**The decision.** Both binaries call `signal(SIGPIPE, SIG_IGN)` as their first act in `main`.
+Writing to a socket whose peer has gone then returns `-1` with `errno == EPIPE` instead of
+raising a signal, and the `if(n <= 0) return false` already present in every send loop handles
+it correctly.
+
+**What was actually wrong.** Nothing in the error handling. The check was there and it was
+right — it never got to run, because the default disposition of SIGPIPE terminates the process
+before `send` returns. Reproduced deterministically: a client pipelines 200 commands, reads
+none, and closes with `SO_LINGER` set to zero so the connection is reset rather than
+half-closed. The tracker dies with **exit 141 — 128 + 13, SIGPIPE**, sometimes on the first
+command. **This kills the whole tracker, not the one connection's thread**, because a signal
+disposition is a property of the process. Every other client's session dies with it.
+
+**Why this is worth a decision entry rather than a one-line fix.** The defect is that a *remote
+party's behaviour* was routed into a *local control-flow mechanism* that ends the program.
+Nothing about a peer hanging up is exceptional — on the data path it is the common case, since
+a downloading peer that has what it needs simply goes away. A design that treats the normal
+behaviour of an untrusted party as fatal has the failure model inverted.
+
+**Rejected: option B, `MSG_NOSIGNAL` on every `send`.** Local and explicit at each call site,
+and it does not change process-global behaviour. Rejected because the suppression then has to be
+remembered at every existing and future send — including the peer server's raw `send` calls in
+`client.cpp` — and one miss reinstates the defect. That is the "avoided by remembering" pattern
+rejected in D-009 and again in D-010; three decisions now share that reasoning.
+
+**Rejected: option C, both.** No additional safety over A here, since A already covers every
+send in both binaries. Worth revisiting only if this code ever becomes a library, where the
+process-wide ignore would be imposed on someone else's program.
+
+**Cost accepted.** The ignore is process-wide, so any future code in these binaries that
+genuinely wants SIGPIPE — a shell-pipeline tool, say — no longer gets it. For a network server
+that is the standard trade and it is not close.
+
+**Verified.** `scripts/e2e-hangup.sh` reproduces the hangup and asserts two things, not one: the
+tracker is still running, **and** it still accepts a new connection and answers it. A process
+that survived but stopped serving would pass a liveness check and fail every user. Against a
+build with the fix commented out, the same suite fails both, reporting exit 141 by name.

@@ -29,6 +29,7 @@ the machine described in [`BENCHMARKS.md`](BENCHMARKS.md).
 | Peer-to-peer transfer | **Works**, verified by SHA-1 end to end across a piece-boundary sweep | `scripts/e2e-smoke.sh` PASS · `scripts/e2e-edge.sh` 6/7 |
 | Chunking + SHA-1 manifests | **Works**, including the short final piece | `scripts/e2e-edge.sh` — the `minus1`, `exact_1piece` and `plus1` cases |
 | Zero-byte file | **Broken.** An empty file produces an empty manifest, the tracker rejects the upload, and the client reports success anyway | `scripts/e2e-edge.sh` — case `empty`, a deliberately failing test |
+| Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
 | Chord ring, routing, replication, stabilisation | **Not built yet** | — |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
@@ -205,6 +206,7 @@ chord-dht-filesystem/
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
 │   ├── e2e-framing.sh     # One command, one reply, one line -- on a raw socket
+│   ├── e2e-hangup.sh      # A client that vanishes must not take the tracker with it
 │   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
 ├── docs/
 │   └── failures.md        # Every defect: how it was found, root cause, why the fix works
@@ -230,6 +232,7 @@ make clean && make          # both binaries, no warnings
 ./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
 ./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
 ./scripts/e2e-framing.sh    # framing: malformed input must not desync the connection
+./scripts/e2e-hangup.sh     # liveness: an abrupt client disconnect must not kill the tracker
 ./scripts/e2e-edge.sh       # piece-boundary sweep; 6/7 by design while R4 is open
 ```
 
@@ -245,7 +248,7 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-Four end-to-end suites, no unit tests, and no continuous integration yet — CI lands in Phase 5.
+Five end-to-end suites, no unit tests, and no continuous integration yet — CI lands in Phase 5.
 
 `e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
 that pins a known defect is more useful than a passing test that avoids it, and it turns a

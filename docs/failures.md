@@ -710,6 +710,52 @@ which is why the suite also asserts that nothing is left unread at the end.
 nobody noticed?"* and its follow-up, *"so you fixed the five strings?"* — no: the strings were a
 symptom, the invariant had no owner.
 
+## R9 — any client could kill the tracker by hanging up
+
+**Status:** FIXED 9 Sep 2026 — fork F10, decision D-011.
+
+**Symptom:** the tracker process disappears. Not one connection, not one thread: the whole
+process, taking every other client's session with it. No error is printed, because the process
+is gone before it can print one.
+
+**How it was found:** by reading `send_all` aloud for teaching. The send loop checks
+`if(n <= 0) return false`, which is correct — so the question was what happens *before* that
+check gets a chance to run. `grep` for `SIGPIPE` and `MSG_NOSIGNAL` found neither in either
+binary.
+
+**Root cause:** on Linux, writing to a socket whose peer has closed raises **SIGPIPE**, and the
+default disposition of that signal is to terminate the process. The error return the code
+handles so carefully is never reached. A signal disposition is process-wide, so one client's
+disconnect ends every session.
+
+**Reproduced deterministically** — this is the part that turns it from a theory into a defect:
+
+```
+client: pipeline 200 commands, read none of the replies
+client: setsockopt(SO_LINGER, {on, 0})   -- close() now sends RST, not FIN
+client: close()
+tracker: exits 141   ==   128 + 13   ==   SIGPIPE
+```
+
+`SO_LINGER` with a zero timeout is what makes it reliable: it turns an orderly half-close into
+an abrupt reset, so the tracker's next write hits a connection that is already gone. Not
+reading the replies matters too — it keeps the tracker writing.
+
+**No hostile intent is required.** Ctrl-C on a client at the wrong moment is the same event, and
+on the peer-to-peer data path a peer disappearing once it has what it needs is the normal case.
+
+**Fix:** `signal(SIGPIPE, SIG_IGN)` in `main`, in both binaries. `send` then returns -1 with
+`errno == EPIPE` and the existing `n <= 0` check does the right thing. Rejected alternative:
+`MSG_NOSIGNAL` at each call site, which must be remembered at every send that exists or is ever
+added — one miss reinstates the defect.
+
+**Verified:** `scripts/e2e-hangup.sh`, which asserts the tracker is still running **and** still
+answering a fresh connection. With the fix commented out the same suite fails both checks and
+names the exit status.
+
+**Interview question it answers:** *"Show me a bug where the error handling was already
+correct."* The check was right; it never ran.
+
 ## Reproducing all of this
 
 ```sh
@@ -718,6 +764,7 @@ scripts/e2e-smoke.sh                     # R2: one file, SHA-1 compared end to e
 scripts/e2e-edge.sh                      # R4: piece-boundary sweep. Currently FAILS by design
 scripts/e2e-persistence.sh               # R1: state must survive a restart
 scripts/e2e-framing.sh                   # R6: one command, one reply, one line
+scripts/e2e-hangup.sh                    # R9: a client that vanishes must not kill the tracker
 ```
 
 `scripts/e2e-edge.sh` is expected to fail until R4 is closed. **A failing test that

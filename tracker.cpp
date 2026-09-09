@@ -17,6 +17,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <csignal>
 
 using namespace std;
 
@@ -704,6 +705,15 @@ int main(int argc, char **argv) {
         cerr << "Usage: ./tracker <port>\n";
         return 1;
     }
+    // Defect R9: a client that hangs up mid-conversation used to kill this
+    // process. Writing to a socket whose peer has gone raises SIGPIPE, and a
+    // signal's default disposition is to terminate -- process-wide, so one
+    // client's abrupt disconnect took down every other client's session too.
+    // Ignoring it makes send() return -1 with errno EPIPE instead, which the
+    // `if(n <= 0) return false` already in send_all has always handled
+    // correctly; it simply never got the chance to run. Decision D-011.
+    signal(SIGPIPE, SIG_IGN);
+
     listen_at_port = atoi(argv[1]);
     state_filename = "state_" + to_string(listen_at_port) + ".log";
 

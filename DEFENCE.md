@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 18 |
+| Marked SOLID on the facts | 19 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -481,6 +481,49 @@ lines a reply is. Finding the second one is what told me it was a class rather t
 
 **Confidence:** SOLID. Fix, regression test, and the pre-fix failure are all reproducible —
 `scripts/e2e-framing.sh` passes 11/11 on the fix and fails 9/11 against the old binary.
+
+---
+
+### D-011 · The one-line fix that is not about the one line
+
+**They ask:** "Show me a bug where the error handling was already correct."
+
+**I answer:**
+Every send loop in this project checks `if (n <= 0) return false` — `send` returning a
+non-positive value means the write failed and the caller should give up on that socket. That
+check was right and it never ran. On Linux, writing to a socket whose peer has closed raises
+SIGPIPE, and a signal's **default disposition is to terminate the process**, so the program died
+before `send` ever returned a value to check.
+
+I reproduced it deterministically: a client pipelines two hundred commands, reads none of the
+replies, then closes with `SO_LINGER` set to zero so the close sends RST instead of FIN — an
+abrupt reset rather than an orderly half-close. The tracker exits **141**, which is 128 + 13,
+and 13 is SIGPIPE. The fix is `signal(SIGPIPE, SIG_IGN)` in `main`; `send` then returns -1 with
+`errno == EPIPE` and the existing check does exactly the right thing.
+
+**They push:** "How bad is it really? One client's thread dies."
+
+It is worse than that, and this is the part worth being precise about: **a signal disposition
+belongs to the process, not the thread.** One client hanging up killed the tracker and with it
+every other client's session. It is also not an attack — a client stopped with Ctrl-C at the
+wrong moment does it, and on the peer-to-peer data path a peer going away after it has what it
+needs is the *normal* case, not the exceptional one.
+
+**They push harder:** "Why not `MSG_NOSIGNAL` on the sends instead?"
+
+Because then the suppression has to be remembered at every call site that exists now and every
+one added later, including the raw sends in the peer server — and one miss reinstates the whole
+defect silently. Ignoring the signal once covers every send in both binaries by construction.
+The cost is that it is process-wide, so code that genuinely wanted SIGPIPE would not get it;
+for a network server that is the standard trade. If this ever became a library rather than a
+program I would revisit it, because then the ignore is imposed on somebody else's process.
+
+**What it says about the codebase:** it is the third decision in a row resolved the same way —
+D-009 split admission from effect, D-010 gave framing an owner, D-011 removes a signal from the
+control flow. Each rejected the variant that works only while everyone remembers a rule.
+
+**Confidence:** SOLID. Reproduction, fix and the pre-fix failure are all in
+`scripts/e2e-hangup.sh`, which asserts the tracker is not merely alive but still serving.
 
 ---
 

@@ -45,6 +45,17 @@ invariant, `scripts/e2e-framing.sh` is the regression test, and error-log entry 
 suites that killed each other through a machine-wide `pkill` — is fixed and proven by running
 smoke and persistence concurrently.
 
+**Also done 9 Sep:** fork **F10** resolved and implemented (**D-011**, closes **R9**) — found
+while walking through `send_all` line by line for teaching, which is the second defect this week
+found by reading rather than running. Five suites now, all green except the one deliberate
+failure: smoke PASS · persistence 4/4 · framing 11/11 · hangup 2/2 · edge 6/7 (R4, by design).
+
+**Working-style change agreed 9 Sep:** **teach every piece of code written, not only the code
+belonging to a numbered teaching Part** — including shell and Python in `scripts/`. The reason
+is that the repository is judged by whether he can walk through it, and a fix he cannot explain
+is indistinguishable from one somebody else made. This session is the evidence for the rule as
+well as the occasion for it: R9 was found *because* `send_all` was being explained aloud.
+
 **Next step:** the **baseline throughput number** that closes Phase 0 (R13) — first action is
 measuring timer drift, because a number taken on a host where `sleep 2` takes 5 s is not a
 number. Then `git tag phase-0-complete`, then teaching **Part 7 (Chord)** and the five Phase 1
@@ -236,7 +247,7 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 | **R7** | **Found 6 Sep 2026**, reading the transfer path for Teaching Part 5. **A peer controls how much memory this client allocates.** `download_piece_from_peer` reads the `PIECE <n>` header and immediately does `vector<unsigned char> buffer(piece_size)` (`client.cpp:557`) with `n` taken straight off the wire and never compared against `PIECE_SIZE`. A peer answering `PIECE 99999999999` causes a `length_error`/`bad_alloc` that nothing catches, and the downloading client dies. The size is knowable — it is `min(PIECE_SIZE, filesize - offset)` — so the header should be *checked*, not trusted. | **OPEN** — Phase 5 |
 | **R8** | **Found 6 Sep 2026**, same pass. **No socket in the client has a timeout.** `grep` finds one `setsockopt` in `client.cpp` and it is `SO_REUSEADDR` on the listening socket. A peer that completes the TCP handshake and then sends nothing blocks a download worker in `recv` **for ever**; with four workers, four such peers hang the transfer permanently with no error and no progress. This is the "slow rather than dead" case that fork F4 is about, arriving early on the data plane. | **OPEN** — Phase 5, and it is the reason F4 cannot be answered with "stabilisation alone" on the transfer path |
 
-| **R9** | **Found 9 Sep 2026**, while walking through `send_all` for teaching. **Any client can kill the tracker by disconnecting abruptly.** Neither binary ignores `SIGPIPE` and neither passes `MSG_NOSIGNAL`, so a `send` to a socket whose peer has gone raises SIGPIPE, whose default action terminates the process. Reproduced: a client pipelines 200 commands, sets `SO_LINGER` to 0 so `close()` sends RST rather than FIN, and vanishes — the tracker processes ~26 of them and dies with **exit 141 = 128 + 13 = SIGPIPE**. No hostile intent needed: a client killed with Ctrl-C mid-conversation does it. This is the whole tracker, not one connection's thread, because a signal's default disposition is process-wide. | **OPEN** — fork **F10** |
+| **R9** | **FIXED 9 Sep 2026** (D-011, fork F10). Found while walking through `send_all` for teaching. **Any client could kill the tracker by disconnecting abruptly.** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer raised it and its default disposition terminated the process — the whole process, not the connection's thread, because a signal disposition is process-wide. Reproduced at **exit 141 = 128 + 13**; the `if(n <= 0)` error check was already correct and simply never ran. Fixed with `signal(SIGPIPE, SIG_IGN)` in both `main`s. | **FIXED** — `scripts/e2e-hangup.sh`, which checks the tracker is still *serving*, not merely alive |
 
 ### Claimed but never implemented
 
