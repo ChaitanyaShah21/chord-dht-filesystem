@@ -104,3 +104,30 @@ precisely so they can be checked.**
 | 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers | back off the period adaptively |
 | 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2 |
 | 4 | **Free RAM on this host** | ~ring size TBD | cannot start more nodes; **this is a measurement artefact, not a system property, and must be labelled as such on the plot** | cloud VMs — cut-order item 2 |
+
+---
+
+## Why not full membership? — the rejected O(1)-hop design
+
+Recorded 9 Sep 2026, during teaching step 7.2. This is the "why not just tell everyone about
+everyone, and do one-hop lookups?" question, which is asked about every distributed hash table.
+
+**The design:** every node keeps the complete membership list. A lookup is a local computation
+plus one network hop to the owner. No routing, no finger tables, no stabilisation.
+
+**Why it does not scale — and the number that says so.** Routing state is O(N) per node, which
+is not the problem; 10,000 entries is nothing. The problem is the **event rate**. With average
+node lifetime `L`, a ring of `N` nodes generates membership events at rate `N/L`, and each event
+must reach all `N` nodes — so total membership traffic scales as **N²/L**, and each individual
+node's share of it grows **linearly with N**. There is a ring size past which every node spends
+more bandwidth announcing who exists than serving data. There is also a second cost: `N` mutable
+replicas of one list that disagree during churn is a *replication* problem invented to avoid a
+*routing* problem.
+
+**Where the crossover is:** not at 10 nodes. At small `N` this design is strictly better than
+Chord — one hop, no stabilisation, no routing bugs. Amazon's Dynamo and Cassandra gossip full
+membership and do one-hop lookups for exactly this reason, because they run at hundreds of nodes
+inside one datacentre. **The honest framing is that full membership is correct when `churn × N`
+stays small, and Chord is the design for when it does not.** `REASONED`, not measured — this
+project will not run at a scale where the crossover is observable, and claiming otherwise would
+be inventing a number.

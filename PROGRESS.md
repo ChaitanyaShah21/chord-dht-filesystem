@@ -117,6 +117,16 @@ node with identifier **>=** the key, not `<=`, and the correctness invariant is 
 successor pointer must be right** — every other piece of routing state is an accelerator whose
 staleness costs hops, never correctness.)
 
+**7.2 the ring as a data structure and the O(N) lookup ✅** (9 Sep — the four fields a node
+holds, identifier-versus-address as an R10 confusion hazard, three-line `find_successor`, the
+**wrap-around interval test** and why the naive `start < k <= end` loops forever on exactly one
+arc, the single-node ring checked against the fix rather than assumed, and the three separate
+costs of O(N) hops: latency, **failure exposure** — hops are the number of things that must all
+be alive — and per-node lookup load rising with ring size. Comprehension 2/2 on substance, two
+sharpenings: random data finds distribution bugs but **only construction finds structural ones**,
+and the rejected full-membership design is not simply "bad" — it is what Dynamo and Cassandra
+actually ship, correct until `churn × N` gets large. Logged in `SCALE_NOTES.md`.)
+
 **Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
 sessions recorded under the old `os-assignment3` path could not be resumed after the move — the
 directory they point at no longer exists. All four sessions (22 Aug → 6 Sep) are exported as
