@@ -104,7 +104,18 @@ twenty defects sorted into five classes by cause, and what actually found each. 
 3/3: the caller-versus-message distinction inside class A, the two-source check that closes R7,
 and why B4 cost minutes while D1 could cost an afternoon.)
 
-**Remaining: Part 7 Chord** — the one the project is actually about.
+**Part 7 Chord — in progress**, split into five steps because it is the concept the project is
+named after: 7.1 consistent hashing · 7.2 the ring as a data structure and the O(N) lookup ·
+7.3 finger tables and O(log N) · 7.4 joins and stabilisation · 7.5 failure, successor lists and
+where replication attaches. The five forks are presented as decisions after 7.5.
+
+**7.1 consistent hashing ✅** (9 Sep — the modulo-N reshuffle as the problem, one shared
+identifier space as the fix, the successor rule with its inclusive boundary, and the `(log N)/N`
+load imbalance flagged as a deliberate cost that Phase 4 pays back with virtual nodes.
+Comprehension 2/2 on substance, with two corrections worth keeping: the successor is the first
+node with identifier **>=** the key, not `<=`, and the correctness invariant is that **only the
+successor pointer must be right** — every other piece of routing state is an accelerator whose
+staleness costs hops, never correctness.)
 
 **Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
 sessions recorded under the old `os-assignment3` path could not be resumed after the move — the

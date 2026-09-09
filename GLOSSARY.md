@@ -333,6 +333,79 @@ the routing state has to be repaired continuously as nodes join and fail.
 
 ---
 
-### Consistent hashing · Finger table · Virtual node · Stabilisation · Successor list · Raft · Quorum · Read repair · Anti-entropy
+### Identifier space (the Chord ring)
 
-*All pending — Phases 1–4 and 9–11. Each gets a full entry when it is taught, not before.*
+**Plain:** a circular corridor in a cloakroom with numbered positions 0 to 63, where 63 is
+followed by 0 again. Both the coats and the attendants are given positions on that same corridor.
+
+**Technical:** the integers `0 … 2^m − 1` arranged in a circle, so that `2^m − 1` wraps to `0`.
+Chord sets `m = 160`, the output width of SHA-1 (Secure Hash Algorithm 1), so identifiers are
+just SHA-1 outputs read as numbers. A node's identifier is `SHA-1(IP address and port)`; a key's
+identifier is `SHA-1(the key)`.
+
+**Why it exists:** putting nodes and keys into **one** namespace is what makes them comparable
+at all. Without that, "which node is nearest this key" is not even a question you can ask.
+
+**Trade-off:** a node cannot choose its position — that is deliberate (it stops a node placing
+itself on top of valuable keys) but it also means positions land unevenly, which is the load
+imbalance virtual nodes exist to fix.
+
+**In this project:** not yet built. `m` and the derivation of node identifiers are settled in
+Phase 1 alongside the five forks.
+
+---
+
+### Successor
+
+**Plain:** hand your ticket to the first attendant you meet walking clockwise from your coat's
+position. That attendant has your coat.
+
+**Technical:** `successor(k)` is the first node whose identifier is **greater than or equal to
+`k`**, moving clockwise around the ring and wrapping past zero if necessary. Key `k` is owned by
+`successor(k)`. The comparison is **inclusive** — a key landing exactly on a node's identifier
+belongs to that node — so the arc a node owns is half-open: `(predecessor_id, my_id]`.
+
+**Why it exists:** it is the entire ownership rule of the system, and it is computable by any
+node from local information, with no central map to consult.
+
+**Trade-off:** the `>=` is the single most error-prone character in the protocol. Written as `>`,
+every key that lands exactly on a node identifier is owned by the wrong node — a bug that fires
+for roughly one key in 2^160 and is therefore effectively untestable by sampling.
+
+**In this project:** not yet built.
+
+---
+
+### Consistent hashing
+
+**Plain:** the cloakroom's second scheme. Instead of "ticket number modulo the number of
+attendants" — which reassigns nearly every coat in the building the moment one attendant clocks
+on — each attendant stands at a position on the circular corridor and keeps the coats between
+themselves and the previous attendant. A new attendant takes over one stretch of corridor and
+nobody else is disturbed.
+
+**Technical:** a hashing scheme in which nodes and keys are mapped into a shared identifier
+space and each key is assigned to its successor node, so that adding or removing one node out of
+`N` holding `K` keys relocates on average **K/N** keys. Naive `hash(key) mod N` relocates
+approximately **K** — going from 4 buckets to 5 moves about 80% of all keys.
+
+**Note on the word "consistent":** this is *not* the consistency of the
+consistency/availability trade-off. Here it means only "the mapping changes minimally when the
+node set changes". Conflating the two in an interview is expensive.
+
+**Why it exists:** it makes membership changes cheap. Without it, every join and every failure
+triggers a near-total reshuffle of the data — which in a system where membership changes are
+routine means the system spends all its time moving data and none serving it.
+
+**Trade-off:** `N` randomly-placed points do not divide a circle evenly. The expected largest
+arc is on the order of `(log N)/N` rather than `1/N`, so the busiest node can hold several times
+the average. That imbalance is the price, and **virtual nodes** are how it is paid back.
+
+**In this project:** the placement rule for the target architecture. Phase 4 measures the
+imbalance with and without virtual nodes, so the cost above becomes a plot rather than a claim.
+
+---
+
+### Finger table · Virtual node · Stabilisation · Successor list · Raft · Quorum · Read repair · Anti-entropy
+
+*All pending — Phases 2–4 and 9–11. Each gets a full entry when it is taught, not before.*
