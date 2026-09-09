@@ -3,31 +3,37 @@
 > Fault-tolerant peer-to-peer distributed file system — a Chord distributed hash table for the
 > data plane, a replicated tracker for the control plane.
 
-> [!WARNING]
-> **Under active reconstruction — it does not currently build.** This repository began as an
-> operating-systems course assignment and is being rebuilt into a distributed hash table. The
-> honest status of every component is in the table below. Nothing here is claimed to work that
-> has not been run.
+> [!NOTE]
+> **Under active reconstruction: the legacy peer-to-peer layer works, the Chord layer is not
+> built yet.** This repository began as an operating-systems course assignment and is being
+> rebuilt into a distributed hash table. Every row in the table below was verified by a script
+> at the commit it names — nothing is claimed to work that has not been run.
 >
-> The previous version of this file claimed multi-tracker synchronisation. That feature was
-> never implemented — `connect_to_peer()` was defined and never called. It has been removed
-> rather than left to be discovered.
+> An earlier version of this file claimed multi-tracker synchronisation. That feature was never
+> implemented — `connect_to_peer()` was defined and never called. It was removed rather than
+> left to be discovered.
 
 ---
 
 ## Status
 
-| Component | State |
-|---|---|
-| Build | **Broken.** `Makefile` references a `sha1.cpp` that does not exist, and omits `-lcrypto`. Being fixed now. |
-| Tracker — users, groups, metadata | Works in memory |
-| Tracker — persistence across restart | **Broken.** Command-log replay is rejected by the commands' own authorisation guards; all state is lost on restart |
-| Tracker — multi-tracker sync | **Never existed.** Dead code; superseded by the planned Raft group |
-| Peer-to-peer transfer | **Broken.** Fails end-to-end and leaves a full-size zero-filled file on disk |
-| Chunking + SHA-1 manifests | Works |
-| Chord ring, routing, replication, stabilisation | **Not built yet** |
+Verified at commit `a9c69cc` on 9 Sep 2026, by running the scripts in the Evidence column on
+the machine described in [`BENCHMARKS.md`](BENCHMARKS.md).
 
-Full reproduction steps for every defect: [`PROGRESS.md`](PROGRESS.md) § Audit.
+| Component | State | Evidence |
+|---|---|---|
+| Build | **Works.** Clean build of both binaries, zero warnings | `make clean && make` |
+| Tracker — users, groups, metadata | **Works** in memory | `scripts/e2e-smoke.sh` |
+| Tracker — persistence across restart | **Works.** Replay applies effects directly rather than re-running commands, so recovery cannot be refused by an authorisation guard it never reaches | `scripts/e2e-persistence.sh` — 4/4 |
+| Tracker — multi-tracker sync | **Never existed.** Dead code; superseded by the planned Raft group | — |
+| Peer-to-peer transfer | **Works**, verified by SHA-1 end to end across a piece-boundary sweep | `scripts/e2e-smoke.sh` PASS · `scripts/e2e-edge.sh` 6/7 |
+| Chunking + SHA-1 manifests | **Works**, including the short final piece | `scripts/e2e-edge.sh` — the `minus1`, `exact_1piece` and `plus1` cases |
+| Zero-byte file | **Broken.** An empty file produces an empty manifest, the tracker rejects the upload, and the client reports success anyway | `scripts/e2e-edge.sh` — case `empty`, a deliberately failing test |
+| Chord ring, routing, replication, stabilisation | **Not built yet** | — |
+
+Known open defects are listed under [Limitations](#limitations-and-future-work); full
+reproduction steps for every one: [`docs/failures.md`](docs/failures.md) and
+[`PROGRESS.md`](PROGRESS.md) § Audit.
 
 ---
 
@@ -60,8 +66,8 @@ process's memory — with no node knowing the whole map, and no single node's fa
 
 ## Results
 
-*No measured numbers yet.* The baseline is taken the moment the transfer path works, before any
-optimisation — a "before" number cannot be recovered afterwards.
+*No measured numbers yet.* The transfer path now works, so the baseline is the next measurement
+taken — before any optimisation, because a "before" number cannot be recovered afterwards.
 
 Planned curves, and the design question each settles, are listed in
 [`BENCHMARKS.md`](BENCHMARKS.md) § Curves worth having. Method, commit fingerprints and the
@@ -176,9 +182,14 @@ chord-dht-filesystem/
 ├── tracker.cpp            # Metadata index and peer discovery; thread per client
 ├── client.cpp             # Peer: main loop, peer server, download workers, heartbeat
 ├── sha1.h                 # Header-only wrapper over OpenSSL SHA1(), hex-encoded
-├── Makefile               # BROKEN — see Status
+├── Makefile               # Hand-written; builds both binaries with no warnings
 ├── scripts/
+│   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
+│   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
+│   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
 │   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
+├── docs/
+│   └── failures.md        # Every defect: how it was found, root cause, why the fix works
 ├── ARCHITECTURE.md        # Design + decision log: every fork, every rejected alternative
 ├── BENCHMARKS.md          # Every number, its method, its commit fingerprint
 ├── PROGRESS.md            # State, defect audit, error log, week tracker
@@ -191,16 +202,20 @@ chord-dht-filesystem/
 
 ## Quick start
 
-> Not yet honest to publish — the build is broken. This section becomes a single
-> `docker compose up` bringing up a five-peer ring and the tracker. Until then:
+> This section becomes a single `docker compose up` bringing up a five-peer ring and the
+> tracker once the deployment kit lands in Phase 5. Until then, the build and the end-to-end
+> suites run directly:
 
 ```bash
-# Regenerate the test corpus (deterministic, ~0.7 s, 121 MB)
-./scripts/make-testdata.sh
+make clean && make          # both binaries, no warnings
 
-# Build — CURRENTLY FAILS, see Status
-make
+./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
+./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
+./scripts/e2e-edge.sh       # piece-boundary sweep; 6/7 by design while R4 is open
 ```
+
+Run them one at a time. Each suite reaps stray processes by binary name, so two suites running
+concurrently will kill each other's tracker and produce a failure that looks like a product bug.
 
 **Requirements:** g++ with C++17, OpenSSL development headers (`libssl-dev`), POSIX threads.
 Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
@@ -209,9 +224,12 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-No automated tests yet. The first lands with the build fix; continuous integration follows in
-Phase 5. Recording that plainly rather than omitting the section — "how do you know a change
-didn't break it?" currently has no good answer, and that is tracked as a known gap.
+Three end-to-end suites, no unit tests, and no continuous integration yet — CI lands in Phase 5.
+
+`e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
+that pins a known defect is more useful than a passing test that avoids it, and it turns a
+remembered bug into a regression check. Deleting the case would raise the pass rate and lower
+the information.
 
 ---
 
@@ -226,8 +244,14 @@ Stated limits read as engineering judgement. Unstated ones read as things that w
 - **`GET_PIECE` serves any path a requester asks for** — a directory-traversal hole. Fixed when
   the transfer layer is rewritten; recorded rather than quietly patched, because it is a good
   example of trusting input from a peer you did not choose.
-- **No timeouts on the peer path.** Connection failures are handled; a peer that is alive but
-  stalled is not, and will hang a download worker indefinitely.
+- **No timeouts on the peer path** (defect R8). Connection failures are handled; a peer that is
+  alive but stalled is not, and will hang a download worker indefinitely. Four such peers hang
+  a download permanently, silently, at zero progress.
+- **A peer chooses how much memory this client allocates** (defect R7). The `PIECE <n>` header
+  is used as an allocation size without being checked against the length the manifest implies.
+- **Five tracker replies contain an embedded newline** (defect R6), so one command produces two
+  lines and every later reply on that connection is one behind. The framing contract is not
+  enforced anywhere; it is assumed by every caller.
 - **No clean shutdown.** Every connection handler is a detached thread that nothing joins, so
   processes are killed rather than stopped — possibly mid-write.
 - **All benchmarking is single-host.** Loopback has no propagation delay and all peers share one

@@ -38,7 +38,7 @@ attacked, and a keyword that cannot be defended is worse than an absent one.
 | `scripts/e2e-smoke.sh`, `scripts/e2e-edge.sh` | **A** | ⚠️ | Written 1 Sep 2026. **The reason `e2e-edge.sh` exists is ✅** — a single-file test cannot see R3, because the desync is *caused by* the first success. **Not yet covered:** the `tail -f` driving trick and why `disown` is there. |
 | `scripts/make-testdata.sh` | **A** | ⚠️ | Generated 23 Aug 2026. The `pipefail`/`head`/`SIGPIPE` interaction is understood and written up as `PROGRESS.md` E1. The AES-CTR-for-determinism trick is understood in principle; **not yet able to explain CTR mode itself.** |
 | `CLAUDE.md`, `PROGRESS.md`, `ARCHITECTURE.md`, `DEFENCE.md`, `BENCHMARKS.md`, `GLOSSARY.md`, `LEARNING.md`, `SCALE_NOTES.md`, `AUTHORSHIP.md` | **A** from skill templates, filled from a real audit | n/a | Working documents, not deliverables. The **audit findings inside them were reproduced on this machine**, not assumed. |
-| `README.md` | **X** (coursework-era) | ❌ | **Claims multi-tracker synchronisation that has never existed** (defect C1). Must be replaced before the repository is public — this is currently the single most dangerous file here. |
+| `README.md` | **A**, rewritten from the audit | ⚠️ | The coursework-era file claimed multi-tracker synchronisation that never existed (defect C1); replaced in `c65ca7b`. **Corrected again 9 Sep 2026, in the opposite direction:** it still said the build was broken and the transfer and persistence paths failed, months after B1, B2, R1 and R2 were fixed — false modesty on a public repository is the same credibility failure as false claims, because either way a reader who runs it learns the file cannot be trusted. Every status row now names the script that verifies it. **Not yet covered:** it is a deliverable under R19 and still has no Results plots. |
 
 **Everything in `tracker.cpp` and `client.cpp` is hand-written by Chaitanya during the
 coursework period.** The portfolio work begins at commit `7f724c8`. That distinction is real and
@@ -53,7 +53,7 @@ December.
 
 | File / concept | Why it is a risk | Plan | By when |
 |---|---|---|---|
-| `README.md` claims a feature that does not exist | **A reviewer who runs it and finds the claim false is the worst possible outcome** — it converts "inexperienced" into "not trustworthy" | REMOVE and rewrite | **before the repository is made public** — W1 |
+| ~~`README.md` claims a feature that does not exist~~ | **A reviewer who runs it and finds the claim false is the worst possible outcome** — it converts "inexperienced" into "not trustworthy" | ~~REMOVE and rewrite~~ | **CLOSED.** False claim removed in `c65ca7b`; stale "it is broken" rows corrected 9 Sep 2026, each replaced by a row naming the script that verifies it |
 | OpenSSL SHA-1 internals | "Explain the internals of the libraries you used" is asked directly in project-design rounds | LEARN — block structure, Merkle–Damgård, why collision resistance being broken does not matter here | W1, with the `GLOSSARY.md` entry |
 | Chord, consistent hashing, finger tables | The headline of the project | LEARN — `LEARNING.md` § Chord | W1 read, W2 build |
 | Raft, quorums, read repair | Phase 2 keywords | LEARN — **not before W9.** Cut-order item 1 | W9 |
