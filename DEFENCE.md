@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 12 |
+| Marked SOLID on the facts | 17 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -457,6 +457,21 @@ the "go deeper until you break" questions — they get harder as they go down th
 | 3 | You have a mutex on the socket. Why did the protocol still desync? | Because the mutex guards the wrong granularity. It makes each `send` atomic; the invariant that matters is *send-then-receive* atomic as a pair. A 30-second heartbeat thread shared the main loop's socket, the tracker replied, nobody read that reply, and the main loop's next read consumed the wrong response. | SOLID — this is the best answer in the file |
 | 4 | How did you find it? | The tracker had filters discarding lines that started with its own reply prefixes, and a comment saying "ignore random single-character junk". Nothing in a correct protocol produces random junk. The filters were scar tissue — someone had treated the symptom. I worked back from the filter to the shared socket. | SOLID |
 | 5 | Fix it without a lock. | Give the heartbeat its own connection to the tracker. The shared resource disappears, so there is nothing to serialise. The general form is: prefer removing sharing to guarding it — a lock is what you reach for when the sharing is genuinely necessary, and here it was not. | SOLID |
+
+### Finding defects — *the method, valid now*
+
+Written after Teaching Part 6 (6 Sep 2026). The subject is not the twenty defects in
+`PROGRESS.md` — it is the classification, because *"what would you expect to break first?"* and
+*"how do you find bugs like that?"* get asked in every round, and a list is not an answer to
+either.
+
+| # | Question | Answer | Confidence |
+|---|---|---|---|
+| 1 | What is a latent defect, and why did your tests not catch these? | A defect that exists in the code but has no path to fire under the conditions the tests create. The tests were not wrong, they tested the wrong thing. Five conditions the happy path never produces: a second thread arriving at the same instant; input chosen by someone who wants it to break; a peer that dies *during* an operation rather than before or after; a boundary value — empty, zero-length, first, last, exactly one piece; and ten or a thousand times the scale. Listing the conditions the tests never create is a search procedure, not a warning. | SOLID |
+| 2 | Twenty defects. Group them. | Five classes. **A — one party violated the framing contract**, giving permanent stream desync: R3, R6, D2, and the single-`recv` mistake. **B — a value crossed a trust boundary and was believed**: R7 (the peer chooses an allocation size), D3 (the peer chooses a path reaching `open`), D4 (the client chooses a string reaching `stoull`), R8 (the peer chooses how long you wait, because nothing has a timeout). **C — the stored representation cannot reconstruct the state**: R1, R2b, R5. **D — lifetime and ownership**: D1 and B4. **E — correct but the cost is wrong**: D5, D7, the global `state_mtx`, one thread per client. Plus the honesty class — C1, D6, D8: features documented and never implemented. | SOLID |
+| 3 | Class A has four members. Is that four bugs or one? | One bug, four times — and they are not the same *kind* of mistake, which is the point. R3 was a **caller** violating the contract: it sent a command and never read the reply, so one unconsumed reply sat in the stream for ever. R6 is a **message** violating the framing: five reply strings contain the delimiter itself, so one command produces two lines. Different mistakes, identical outcome, because the protocol never states how many lines a reply is. Fixing the five strings removes today's instances and adds no enforcement — the sixth string written in December reintroduces it. The class closes only when the count is guaranteed by construction: the framing layer strips delimiters on the way out, or the length is explicit on the wire. | SOLID |
+| 4 | R7 lets a peer size an allocation on your machine. Close it. | The expected length is `min(PIECE_SIZE, filesize - idx * PIECE_SIZE)`, and the header must be compared for **equality** against it before a byte is allocated — too small is as wrong as too large. The property that makes the check real is where the two numbers come from: the expected size derives from the manifest, which came from the **tracker**, while the header came from the **peer**. Two different parties, so a lying peer cannot fabricate both. That also names the residual assumption honestly — the tracker is trusted in this design, and if it is not, the manifest needs signing. | SOLID |
+| 5 | D1 and B4 are the same C++ fact. Which is worse? | The fact: `std::vector` guarantees contiguous storage, so growing it reallocates and **moves every element**, invalidating every pointer, reference and iterator into it. B4 is that fact caught by the type system — `push_back` needs the element copyable or movable, `std::atomic`'s copy constructor is deleted, so the program never compiled. D1 is the same fact caught by nothing: `active_downloads.back()` held as a reference, and the second concurrent download reallocates it into a use-after-free. **B4 cost minutes because the compiler is loud; D1 is undefined behaviour that passes every single-download test and corrupts memory later.** The general lesson is that a failure moved from run time to compile time is the cheapest fix available — which is the same argument as splitting admission from effect in D-009, one level down. | SOLID |
 
 ### Chord routing — *not built yet*
 ### Replication — *not built yet*
