@@ -19,9 +19,12 @@ SIZE="${SIZE:-300000}"
 # killing the `tail` that feeds them leaves the client alive holding 6881/6882. The
 # next run then dies with a bind error that looks exactly like a product bug.
 reap () {
-  pkill -9 -f "$ROOT/tracker" 2>/dev/null
-  pkill -9 -f "$ROOT/client"  2>/dev/null
-  pkill -9 -f 'tail -f -n [+]1' 2>/dev/null
+  # Match the port too, not just the binary: a bare "$ROOT/tracker" pattern
+  # kills every tracker on the machine, including one another suite is using.
+  # That is error-log entry E6 -- two green suites, run together, both red.
+  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
+  pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
+  pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null
   local i
   for i in $(seq 40); do
     ss -ltn 2>/dev/null | grep -qE ":(${TRACKER_PORT}|6881|6882)[[:space:]]" || return 0
@@ -52,16 +55,16 @@ sleep 1
 head -c "$SIZE" /dev/urandom > alice/testfile.bin
 EXPECT=$(sha1sum alice/testfile.bin | awk '{print $1}')
 
-: > a.in; : > b.in
-tail -f -n +1 a.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6881 >alice.out 2>alice.err) & ATL=$!; disown
-tail -f -n +1 b.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6882 >bob.out   2>bob.err)   & BTL=$!; disown
+: > a_${TRACKER_PORT}.in; : > b_${TRACKER_PORT}.in
+tail -f -n +1 a_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6881 >alice.out 2>alice.err) & ATL=$!; disown
+tail -f -n +1 b_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6882 >bob.out   2>bob.err)   & BTL=$!; disown
 sleep 2
 
-printf 'create_user alice pw\nlogin alice pw\ncreate_group g1\n'   >> a.in; sleep 2
-printf 'create_user bob pw\nlogin bob pw\njoin_group g1\n'          >> b.in; sleep 2
-printf 'list_requests g1\naccept_request g1 bob\n'                  >> a.in; sleep 2
-printf 'upload_file g1 alice/testfile.bin\n'                        >> a.in; sleep 3
-printf 'download_file g1 alice/testfile.bin bob/got.bin\n'          >> b.in; sleep 8
+printf 'create_user alice pw\nlogin alice pw\ncreate_group g1\n'   >> a_${TRACKER_PORT}.in; sleep 2
+printf 'create_user bob pw\nlogin bob pw\njoin_group g1\n'          >> b_${TRACKER_PORT}.in; sleep 2
+printf 'list_requests g1\naccept_request g1 bob\n'                  >> a_${TRACKER_PORT}.in; sleep 2
+printf 'upload_file g1 alice/testfile.bin\n'                        >> a_${TRACKER_PORT}.in; sleep 3
+printf 'download_file g1 alice/testfile.bin bob/got.bin\n'          >> b_${TRACKER_PORT}.in; sleep 8
 
 GOT=$(sha1sum bob/got.bin 2>/dev/null | awk '{print $1}')
 GOTSZ=$(stat -c%s bob/got.bin 2>/dev/null || echo "-")

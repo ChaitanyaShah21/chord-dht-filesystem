@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 17 |
+| Marked SOLID on the facts | 18 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -440,6 +440,47 @@ live in.
 loud in 90 seconds.
 
 ---
+
+---
+
+### D-010 · The bug that had been sitting there since November
+
+**They ask:** "You found a bug in code you wrote a year ago. Why had nobody noticed?"
+
+**I answer:**
+Five of the tracker's reply strings contained an embedded newline — `"Invalid input.\nUse:
+create_user <user> <pass>"` and four like it. The control protocol is line-delimited, so the
+client reads one reply as bytes-up-to-newline. A reply carrying its own newline arrives as two
+replies, and from that point every answer on that connection is one behind. Permanently. The
+connection stays open, the tracker keeps answering, and every answer is wrong.
+
+Nobody noticed because those five strings are on the malformed-input path. Normal use never
+reaches them, and the coursework tests certainly never did. It is a latent defect in the exact
+sense: the code path existed the whole time and no test created the condition that fires it.
+
+**They push:** "So you fixed the five strings."
+
+I fixed them, but that is not the fix. Fixing the strings removes today's instances and adds no
+rule — the sixth string somebody writes reintroduces it, silently. I put the guarantee in
+`send_all`, the one function that frames a reply: it strips any newline inside the payload,
+logs that it had to, and appends exactly one terminator. Now the invariant holds no matter what
+a handler returns, and a handler bug becomes a logged warning instead of a corrupted session.
+
+**They push harder:** "Why not length-prefix the replies and stop worrying about delimiters?"
+
+That is the better protocol and I picked it for Phase 5 rather than now. My peer-to-peer path
+already does exactly that — `PIECE <n>` followed by n raw bytes — because file data contains
+newlines constantly and a delimiter is impossible there. The control channel does not need it
+yet: every reply is a single line today, and length-prefixing costs a change to every send and
+receive on both sides. The trigger to take it is a command that needs structured output.
+
+**The part I would volunteer:** this is the same defect as R3, from the opposite direction. R3
+was a *caller* that sent a command and never read the reply. R6 is a *message* that contains
+the delimiter. Two different mistakes, one outcome, because nothing on the wire said how many
+lines a reply is. Finding the second one is what told me it was a class rather than a bug.
+
+**Confidence:** SOLID. Fix, regression test, and the pre-fix failure are all reproducible —
+`scripts/e2e-framing.sh` passes 11/11 on the fix and fails 9/11 against the old binary.
 
 ---
 

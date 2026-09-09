@@ -128,6 +128,7 @@ decided before the paper is one that cannot be defended in December.
 | **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
 | **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
 | **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Phase 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
+| **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
 
 ---
@@ -560,3 +561,50 @@ recorded an address in `user_address_map` alongside the manifest. Replaying that
 peers that are long dead — the exact thing the `update_seeder` handler already refuses to do.
 A flag would have replayed it and nobody would have looked.
 
+---
+
+### D-010 — A reply is exactly one line, and the framing layer guarantees it
+
+**Fork:** F9. **Date:** 9 Sep 2026. **Closes:** defect R6.
+
+**The decision.** `send_all` in `tracker.cpp` is the single place that frames a control reply.
+It strips any terminator the caller supplied, replaces any remaining `\n` or `\r` **inside** the
+payload with a space, logs loudly when it has to, and appends exactly one terminator. The
+invariant "one command, one reply, one line" therefore holds regardless of what any handler
+returns. The five reply strings that carried an embedded newline were fixed as well, so the
+backstop stays silent in normal operation and fires only on a real bug.
+
+**Why the invariant needs an owner.** The client reads a reply as bytes-up-to-newline. A reply
+containing its own newline arrives as two replies, and every later reply on that connection is
+one behind — permanently, on a connection that is otherwise healthy and answering. R6 and R3
+are the same failure from opposite directions: R3 was a *caller* that never consumed its reply,
+R6 is a *message* that contains the delimiter. Nothing on the wire says how many lines a reply
+is, so any single violation by either party is unrecoverable.
+
+**Rejected: option A, fix the five strings and stop.** Two minutes. Rejected because it removes
+today's instances and adds no rule — the sixth such string reintroduces the defect, and the
+failure is silent. This is the same shape as F8's rejected replay flag: a defect avoided by
+everyone remembering, rather than made unreachable.
+
+**Rejected: option C, length-prefixed replies** (`LEN <n>\n` then exactly n bytes). This is the
+better protocol and the one the data path already uses for pieces, because it makes the
+delimiter irrelevant rather than forbidden. It costs a change to every send and every receive
+on both sides, in a week that belongs to Chord, and buys nothing until replies start carrying
+arbitrary payloads. **Chosen for Phase 5, where the transfer layer is rewritten anyway** — and
+recorded here so that "why not length-prefix everything?" has an answer with a date on it.
+
+**Deliberately not applied to the client.** `client.cpp`'s `send_all` is the raw-byte sender
+that carries piece contents, which contain newline bytes constantly. Stripping delimiters there
+would corrupt every transfer. Delimiter sanitising is correct on a text control channel and
+catastrophic on a binary data channel — which is the same distinction that made two framing
+schemes necessary in the first place.
+
+**Cost accepted.** A multi-line reply is now impossible by construction. Every current reply is
+single-line, including the list replies, which are space-separated; if a future command needs
+structured output, that is the trigger to take option C rather than to weaken this.
+
+**Verified.** `scripts/e2e-framing.sh` drives a raw socket — not the client, which reads one
+line per reply and would hide which side emitted the extra one — sends each of the five
+malformed commands, and after each sends a probe whose reply is unmistakable. 11/11 pass on the
+fix. **Run against the pre-fix binary the same suite fails 9/11**, showing the stream one behind
+and then two behind, which is what makes it a regression test rather than a passing assertion.

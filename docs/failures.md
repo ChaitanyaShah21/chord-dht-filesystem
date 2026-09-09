@@ -667,15 +667,60 @@ the answer to the *next* command. That is R3's stream desync all over again, fro
 cause: five reply strings in `tracker.cpp` contain an embedded newline. Pre-existing; not
 introduced here. Registered as **R6**, fork open.
 
+## R6 — five replies were two lines, and the connection never recovered
+
+**Status:** FIXED 9 Sep 2026 — fork F9, decision D-010.
+
+**Symptom:** send a malformed command, then a valid one, and the valid one is answered with the
+second half of the previous reply. Every answer after that is one behind, for the life of the
+connection. Nothing crashes; the tracker keeps serving and keeps being wrong.
+
+**Root cause:** the control protocol is newline-delimited and five reply strings contained a
+newline of their own — `"Invalid input.\nUse: create_user <user> <pass>"` and four like it. One
+command, two lines. The client reads one line per reply, so the extra line becomes the answer to
+whatever is asked next.
+
+**Why nobody noticed since November:** all five are on the malformed-input path. Normal use
+never reaches them. It is a latent defect in the precise sense — the code path existed the whole
+time and no test created the condition that fires it.
+
+**Fix:** `send_all` — the single function that frames a control reply — strips any terminator
+the caller supplied, replaces interior `\n`/`\r` with a space, logs loudly if it had to, and
+appends exactly one terminator. The five strings were corrected too, so the backstop is silent
+in normal operation and fires only on a genuine bug. The client's `send_all` was deliberately
+**not** touched: it carries raw piece bytes, which contain newlines constantly.
+
+**Verified:** `scripts/e2e-framing.sh` drives a raw socket, sends each of the five malformed
+commands, and after each sends a probe whose reply is unmistakable — 11/11 pass.
+
+**Proof the test is worth having:** rebuilt against the pre-fix `tracker.cpp`, the same suite
+fails **9/11**, showing the stream one behind and then two behind:
+
+```
+FAIL  create_user  answers in one line  -- got 'Invalid input'
+FAIL  stream still aligned after create_user  -- got 'Use: create_user <user> <pass>'
+FAIL  no unread reply left in the stream  -- leftover 'Use: join_group <groupid> <user>'
+```
+
+One case, `create_group`, *passed* on the broken build — a stream two replies behind happened to
+land on a line containing `Use:`. **A check can pass on a corrupted stream by coincidence**,
+which is why the suite also asserts that nothing is left unread at the end.
+
+**Interview question it answers:** *"You found a bug in code you wrote a year ago — why had
+nobody noticed?"* and its follow-up, *"so you fixed the five strings?"* — no: the strings were a
+symptom, the invariant had no owner.
+
 ## Reproducing all of this
 
 ```sh
 make clean && make                       # B1, B2: builds and links with no warnings
 scripts/e2e-smoke.sh                     # R2: one file, SHA-1 compared end to end
-scripts/e2e-edge.sh                      # R3, R4: piece-boundary sweep. Currently FAILS by design
+scripts/e2e-edge.sh                      # R4: piece-boundary sweep. Currently FAILS by design
+scripts/e2e-persistence.sh               # R1: state must survive a restart
+scripts/e2e-framing.sh                   # R6: one command, one reply, one line
 ```
 
-`scripts/e2e-edge.sh` is expected to fail until R3 and R4 are closed. **A failing test that
+`scripts/e2e-edge.sh` is expected to fail until R4 is closed. **A failing test that
 documents a known open defect is more useful than a passing test that avoids it** — it is what
 turns the entry above into a regression check rather than a memory.
 

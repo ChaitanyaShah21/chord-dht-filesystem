@@ -56,10 +56,45 @@ vector<pair<string,int>> peer_addrs;
 int connect_to_peer(const string &ip,int port);
 string state_filename;
 
+// The control protocol's framing contract: one reply is exactly one line.
+//
+// The client reads a reply as bytes-up-to-newline, so a payload carrying a
+// newline of its own arrives as *two* replies, and every later reply on that
+// connection is one behind -- permanently, on a connection that is otherwise
+// healthy. That is defect R6, and it is defect R3 reached from a different
+// direction: R3 was a caller that never consumed its reply, R6 is a message
+// that contains the delimiter. Same outcome, because nothing on the wire says
+// how many lines a reply is.
+//
+// Fork F9, option B: the invariant is enforced *here*, in the single function
+// that frames a reply, rather than trusted to every author of a message. A
+// handler that returns an embedded newline is then a logged bug instead of a
+// corrupted session, and the sixth such string written months from now cannot
+// desync anything.
+//
+// Note what this function must never become: the client's own send_all carries
+// raw piece bytes, which contain newlines constantly. Delimiter stripping is
+// correct only on a text control channel and would corrupt every transfer if
+// applied to the data path.
 bool send_all(int sock, const string &msg) {
     string out = msg;
-    if(out.empty() || out.back() != '\n')
-        out.push_back('\n');
+
+    // Drop any terminator the caller supplied; exactly one is appended below.
+    // Without this, sanitising would turn a trailing '\n' into a trailing space
+    // and change the bytes seen by well-formed callers.
+    while(!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+
+    size_t offenders = 0;
+    for(char &c : out) {
+        if(c == '\n' || c == '\r') { c = ' '; ++offenders; }
+    }
+    if(offenders > 0)
+        cerr << "[tracker] BUG: reply carried " << offenders
+             << " embedded newline(s); replaced with spaces to preserve framing: "
+             << out << "\n";
+
+    out.push_back('\n');
     size_t total = 0;
     while(total < out.size()) {
         ssize_t n = send(sock, out.c_str()+total, out.size()-total, 0);
@@ -271,7 +306,7 @@ string handle_command(const string &cmdline, const string &client_user) {
     //---------------- user commands ----------------
     if(cmd == "create_user") {
         string user, pass; iss >> user >> pass;
-        if(user.empty() || pass.empty()) return "Invalid input\nUse: create_user <user> <pass>";
+        if(user.empty() || pass.empty()) return "Invalid input. Use: create_user <user> <pass>";
         string err = apply_create_user(user, pass);
         if(!err.empty()) return err;
         append_update_to_file(cmdline);
@@ -280,7 +315,7 @@ string handle_command(const string &cmdline, const string &client_user) {
 
     else if(cmd == "login") {
         string user, pass; iss >> user >> pass;
-        if(user.empty() || pass.empty()) return "Invalid Input\nUse: login <user> <pass>";
+        if(user.empty() || pass.empty()) return "Invalid input. Use: login <user> <pass>";
         if(!users.count(user)) return "User doesn't exist";
         if(users[user] != pass) return "Invalid password";
         if(online_users.count(user)) return "Error - User already logged in";
@@ -303,7 +338,7 @@ string handle_command(const string &cmdline, const string &client_user) {
     else if(cmd == "create_group") {
         string gid, owner; iss >> gid >> owner;
         if(gid.empty() || owner.empty())
-            return "Invalid input.\nUse: create_group <groupid> <owner>";
+            return "Invalid input. Use: create_group <groupid> <owner>";
         // admission -- the requester, then soft state
         if(client_user.empty() || owner != client_user)
             return "Error: you can only perform this command as yourself";
@@ -317,7 +352,7 @@ string handle_command(const string &cmdline, const string &client_user) {
 
     else if(cmd == "join_group") {
         string gid, user; iss >> gid >> user;
-        if(gid.empty() || user.empty()) return "Invalid input.\nUse: join_group <groupid> <user>";
+        if(gid.empty() || user.empty()) return "Invalid input. Use: join_group <groupid> <user>";
         if(client_user.empty() || user != client_user)
             return "Error: you can only perform this command as yourself";
         if(!online_users.count(user)) return "User must be logged in";
@@ -340,7 +375,7 @@ string handle_command(const string &cmdline, const string &client_user) {
         iss >> gid >> user_info >> filename >> size_str;
 
         if (gid.empty() || user_info.empty() || filename.empty() || size_str.empty())
-            return "Invalid input.\nUse: upload_file <groupid> <user> <filename> <size> <piecehashes...>";
+            return "Invalid input. Use: upload_file <groupid> <user> <filename> <size> <piecehashes...>";
 
         // user_info might look like "alice@127.0.0.1:6881"
         string user = user_info;

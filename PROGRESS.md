@@ -36,11 +36,20 @@ byte-identical to `66ea0ff` across a 20-command conversation.
 *long* is safe for harnesses that wait, so the shell suites are trustworthy again but slow;
 anything measuring **time** stays untrustworthy until this clears, which blocks the Phase 0
 baseline benchmark.
-**Next step:** teaching **Part 6** (the latent defects), then **Part 7** (Chord). The forks
-then follow in this order: **F9** (defect R6, multi-line replies), **F7** (zero-filled file left
-by a failed download), and finally the **baseline throughput number** that closes Phase 0 —
-timers permitting.
-**Blocked on:** nothing. F7 and F9 are Chaitanya's call when we reach them (R6).
+**Also done 9 Sep:** teaching **Part 6** (the latent defects) delivered, comprehension checks
+answered 3/3, and the taxonomy written into `DEFENCE.md`. **The README was corrected** — it had
+gone stale in the *opposite* direction to defect C1, telling a public repository that the build
+was broken and the transfer and persistence paths failed, none of which had been true for a
+week. Fork **F9 resolved and implemented (D-010)**: `send_all` owns the one-reply-one-line
+invariant, `scripts/e2e-framing.sh` is the regression test, and error-log entry **E6** — the two
+suites that killed each other through a machine-wide `pkill` — is fixed and proven by running
+smoke and persistence concurrently.
+
+**Next step:** the **baseline throughput number** that closes Phase 0 (R13) — first action is
+measuring timer drift, because a number taken on a host where `sleep 2` takes 5 s is not a
+number. Then `git tag phase-0-complete`, then teaching **Part 7 (Chord)** and the five Phase 1
+forks.
+**Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
 Part 3 tracker state, data structures and locking ✅ · **Part 4 persistence and the replay
@@ -67,9 +76,12 @@ routing problem, but moving the bytes stays this code. So the transfer path is p
 what the throughput benchmark measures, and "how does a file actually get from A to B" is the
 first question anyone asks about a file system.
 
-**Remaining: Part 6 the latent defects · Part 7 Chord.**
-Part 7 is the one the project is actually about. Part 6 is short and folds into the fork
-discussions it belongs to (F9/R6, F7/R2b), so if time gets tight it goes after Part 7.
+**Part 6 the latent defects ✅** (9 Sep — the five conditions a happy path never creates, the
+twenty defects sorted into five classes by cause, and what actually found each. Comprehension
+3/3: the caller-versus-message distinction inside class A, the two-source check that closes R7,
+and why B4 cost minutes while D1 could cost an afternoon.)
+
+**Remaining: Part 7 Chord** — the one the project is actually about.
 
 **Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
 sessions recorded under the old `os-assignment3` path could not be resumed after the move — the
@@ -220,7 +232,7 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 | **R4** | **Found 1 Sep 2026.** A **zero-byte file cannot be uploaded**: the manifest loop `while ((n = read(...)) > 0)` never executes, `piece_hashes` is empty, and the tracker rejects it with `Error: no piece hashes given`. The client never reads that reply, so it reports success. | **OPEN** — Phase 5 |
 
 | **R5** | **Found 6 Sep 2026**, by splitting admission from effect (D-009). **Replay is not deterministic for `leave_group`.** When the owner leaves, the successor is `*g.members.begin()` — whichever element `unordered_set` yields first, which depends on hashing and insertion history and on nothing that is recorded in the log. A replay may therefore choose a different owner than the live run did, so a recovered tracker can disagree with the one that crashed about who owns a group. **This is the concrete cost of logging the request rather than the effect** (option C of fork F8, rejected in D-009). | **OPEN** — fix is either a deterministic rule (lexicographically smallest member) or the move to an effect log |
-| **R6** | **Found 6 Sep 2026**, by the adversarial pass on the D-009 fix. **Five reply strings contain an embedded newline** — `"Invalid input.\nUse: create_user <user> <pass>"` and four like it. The client reads one line per reply, so a single command produces two lines and **everything after it is one behind**. That is R3's desync from a completely different cause, and it survives because the malformed-input path is rarely exercised. Reachable from the live path: `upload_file g1 alice@1.2.3.4:1 f.bin NOTASIZE h` desyncs the connection permanently. Pre-existing, not introduced by D-009. | **OPEN** — fork **F9**, decide before Phase 5 |
+| **R6** | **FIXED 9 Sep 2026** (D-010, fork F9). Found 6 Sep by the adversarial pass on the D-009 fix. **Five reply strings contained an embedded newline**, so one command produced two lines and every later reply on that connection was one behind — R3's desync from the opposite direction: R3 was a caller that never consumed its reply, R6 a message that contained the delimiter. Fixed by giving the invariant an owner: `send_all` strips interior delimiters, logs when it must, and appends exactly one terminator; the five strings were corrected so the backstop stays silent in normal use. The client's raw-byte `send_all` was deliberately left alone — it carries piece data full of newlines. | **FIXED** — `scripts/e2e-framing.sh` 11/11; the same suite fails 9/11 against the pre-fix binary |
 | **R7** | **Found 6 Sep 2026**, reading the transfer path for Teaching Part 5. **A peer controls how much memory this client allocates.** `download_piece_from_peer` reads the `PIECE <n>` header and immediately does `vector<unsigned char> buffer(piece_size)` (`client.cpp:557`) with `n` taken straight off the wire and never compared against `PIECE_SIZE`. A peer answering `PIECE 99999999999` causes a `length_error`/`bad_alloc` that nothing catches, and the downloading client dies. The size is knowable — it is `min(PIECE_SIZE, filesize - offset)` — so the header should be *checked*, not trusted. | **OPEN** — Phase 5 |
 | **R8** | **Found 6 Sep 2026**, same pass. **No socket in the client has a timeout.** `grep` finds one `setsockopt` in `client.cpp` and it is `SO_REUSEADDR` on the listening socket. A peer that completes the TCP handshake and then sends nothing blocks a download worker in `recv` **for ever**; with four workers, four such peers hang the transfer permanently with no error and no progress. This is the "slow rather than dead" case that fork F4 is about, arriving early on the data plane. | **OPEN** — Phase 5, and it is the reason F4 cannot be answered with "stabilisation alone" on the transfer path |
 
@@ -418,9 +430,12 @@ A test harness whose failure mode imitates the bug it is testing for is worse th
 because it spends the debugging budget in the wrong place. It also means the suites cannot be
 parallelised in continuous integration as written, which is where this would have bitten next.
 
-**Fix (proposed, not yet applied):** match the port as well as the binary —
+**Fix (applied 9 Sep 2026):** match the port as well as the binary —
 `pkill -9 -f "$ROOT/tracker $TRACKER_PORT"` — and derive the peer ports from the same variable,
-so a suite can only ever kill its own processes. Scheduled with the F9 step.
+so a suite can only ever kill its own processes. The feeder files were renamed
+`a_${TRACKER_PORT}.in` for the same reason: the `tail -f` reaper matched every suite's feeder
+because they all used identical relative filenames. **Proven by running smoke and persistence
+concurrently: both pass.**
 
 **Interview answer it feeds:** *"Tell me about a test that lied to you."* Two green suites, run
 together, both red, no code changed — and the cause was a cleanup routine written for a machine

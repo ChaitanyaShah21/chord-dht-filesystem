@@ -21,9 +21,10 @@ WORK="${TMPDIR:-/tmp}/p2p-persist-$$"
 TRACKER_PORT="${TRACKER_PORT:-7101}"
 
 reap () {
-  pkill -9 -f "$ROOT/tracker" 2>/dev/null
-  pkill -9 -f "$ROOT/client"  2>/dev/null
-  pkill -9 -f 'tail -f -n [+]1' 2>/dev/null
+  # See E6: match the port, or this kills another suite's tracker too.
+  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
+  pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
+  pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null
   local i
   for i in $(seq 40); do
     ss -ltn 2>/dev/null | grep -qE ":(${TRACKER_PORT}|6883|6884)[[:space:]]" || return 0
@@ -50,16 +51,16 @@ head -c 4096 /dev/urandom > alice/testfile.bin
 "$ROOT/tracker" "$TRACKER_PORT" >t1.out 2>t1.err & disown
 sleep 1
 
-: > a.in; : > b.in
-tail -f -n +1 a.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6883 >a1.out 2>a1.err) & disown
-tail -f -n +1 b.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6884 >b1.out 2>b1.err) & disown
+: > a_${TRACKER_PORT}.in; : > b_${TRACKER_PORT}.in
+tail -f -n +1 a_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6883 >a1.out 2>a1.err) & disown
+tail -f -n +1 b_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6884 >b1.out 2>b1.err) & disown
 sleep 2
 
-printf 'create_user alice pw\nlogin alice pw\ncreate_group g1\n' >> a.in; sleep 2
-printf 'create_user bob pw\nlogin bob pw\njoin_group g1\n'       >> b.in; sleep 2
-printf 'list_requests g1\naccept_request g1 bob\n'               >> a.in; sleep 2
-printf 'upload_file g1 alice/testfile.bin\n'                     >> a.in; sleep 3
-printf 'list_groups\nlist_members g1\n'                          >> a.in; sleep 2
+printf 'create_user alice pw\nlogin alice pw\ncreate_group g1\n' >> a_${TRACKER_PORT}.in; sleep 2
+printf 'create_user bob pw\nlogin bob pw\njoin_group g1\n'       >> b_${TRACKER_PORT}.in; sleep 2
+printf 'list_requests g1\naccept_request g1 bob\n'               >> a_${TRACKER_PORT}.in; sleep 2
+printf 'upload_file g1 alice/testfile.bin\n'                     >> a_${TRACKER_PORT}.in; sleep 3
+printf 'list_groups\nlist_members g1\n'                          >> a_${TRACKER_PORT}.in; sleep 2
 
 echo "--- phase A: state built while the tracker is running ---"
 grep -qE '(^|[[:space:]])g1' a1.out && echo "  live: list_groups sees g1"     || echo "  live: list_groups MISSING g1 -- phase A itself broke"
@@ -75,12 +76,12 @@ echo "--- restarting tracker on the same port, same directory ---"
 sleep 1
 
 # ---------------------------------------------------------------- phase B
-: > c.in
-tail -f -n +1 c.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6883 >a2.out 2>a2.err) & disown
+: > c_${TRACKER_PORT}.in
+tail -f -n +1 c_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6883 >a2.out 2>a2.err) & disown
 sleep 2
-printf 'create_user alice pw\nlogin alice pw\n'                      >> c.in; sleep 2
-printf 'list_groups\nlist_members g1\n'                              >> c.in; sleep 2
-printf 'get_file_info g1 alice/testfile.bin\n'                       >> c.in; sleep 2
+printf 'create_user alice pw\nlogin alice pw\n'                      >> c_${TRACKER_PORT}.in; sleep 2
+printf 'list_groups\nlist_members g1\n'                              >> c_${TRACKER_PORT}.in; sleep 2
+printf 'get_file_info g1 alice/testfile.bin\n'                       >> c_${TRACKER_PORT}.in; sleep 2
 
 fails=0
 check () { # check <description> <pattern> <file>

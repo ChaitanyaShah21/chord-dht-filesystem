@@ -152,6 +152,23 @@ can consume the other's reply. The fix is to remove the sharing, not to guard it
 Cost: one extra connection per client, and one round trip per completed download — per file,
 not per piece.
 
+### One command, one reply, one line — enforced by the framing layer
+
+The control protocol is newline-delimited, so a reply that contains a newline of its own is
+delivered as two replies and every later reply on that connection is one behind. Five reply
+strings did exactly that. The rule is now owned by `send_all`, the single function that frames a
+reply: it strips interior delimiters, logs when it has to, and appends exactly one terminator.
+
+**Rejected:** fixing the five strings and moving on. It removes today's instances and adds no
+rule, so the next such string reintroduces the defect — and the failure is silent, on a
+connection that stays open and keeps answering wrongly. **Also rejected, for now:**
+length-prefixed replies, which make the delimiter irrelevant rather than forbidden. That is the
+better protocol, it is what the piece transfer already uses, and it is scheduled for Phase 5
+when the transfer layer is rewritten; it buys nothing until a reply needs structured output.
+
+Regression test: `scripts/e2e-framing.sh`, which drives a raw socket rather than the client —
+the client reads one line per reply and would hide which side emitted the extra one.
+
 ### The tracker never sees file bytes
 
 It holds manifests and peer addresses only. This keeps its state small enough to replicate
@@ -187,6 +204,7 @@ chord-dht-filesystem/
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
+│   ├── e2e-framing.sh     # One command, one reply, one line -- on a raw socket
 │   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
 ├── docs/
 │   └── failures.md        # Every defect: how it was found, root cause, why the fix works
@@ -211,11 +229,14 @@ make clean && make          # both binaries, no warnings
 
 ./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
 ./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
+./scripts/e2e-framing.sh    # framing: malformed input must not desync the connection
 ./scripts/e2e-edge.sh       # piece-boundary sweep; 6/7 by design while R4 is open
 ```
 
-Run them one at a time. Each suite reaps stray processes by binary name, so two suites running
-concurrently will kill each other's tracker and produce a failure that looks like a product bug.
+Each suite reaps only its own processes, matched by port, so they can be run concurrently.
+That was not true until 9 Sep: the reaper matched the binary path alone and two suites run
+together killed each other's tracker, producing a failure that looked exactly like a product
+regression. See error-log entry E6 in [`PROGRESS.md`](PROGRESS.md).
 
 **Requirements:** g++ with C++17, OpenSSL development headers (`libssl-dev`), POSIX threads.
 Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
@@ -224,7 +245,7 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-Three end-to-end suites, no unit tests, and no continuous integration yet — CI lands in Phase 5.
+Four end-to-end suites, no unit tests, and no continuous integration yet — CI lands in Phase 5.
 
 `e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
 that pins a known defect is more useful than a passing test that avoids it, and it turns a
