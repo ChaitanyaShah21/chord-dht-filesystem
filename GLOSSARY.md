@@ -451,6 +451,46 @@ against log₂N.
 
 ---
 
-### Virtual node · Stabilisation · Successor list · Raft · Quorum · Read repair · Anti-entropy
+### Stabilisation
+
+**Plain:** nobody announces that they have joined the circle. Instead every person, every few
+seconds, turns to the person on their right and asks *"who's on your left?"* If the answer is
+somebody new, a gap has been filled and they update. The circle repairs itself by everyone
+continuously re-asking a question, not by anyone broadcasting an event.
+
+**Technical:** the periodic protocol that repairs Chord's routing state. `stabilize()` asks the
+successor for its predecessor `x`; if `x ∈ (n, successor)` a node has joined the gap, so the
+successor pointer tightens to `x`. It then calls `successor.notify(n)`, and the receiver accepts
+the claim only if `n' ∈ (predecessor, n)` — i.e. only a **closer** predecessor. `fix_fingers()`
+refreshes one finger entry per round; `check_predecessor()` clears a dead predecessor.
+
+**Why it exists:** the alternative is a global membership lock or consensus on ring membership —
+correct at all times, but unable to make progress when any participant is slow or unreachable.
+Stabilisation is **level-triggered**: state is repaired by *re-deriving* it, not by applying
+deltas, so it converges from **any** starting state, including ones no legal sequence of events
+could produce (a half-applied join, a table restored from a stale snapshot, a node partitioned
+for an hour). Same pattern as Kubernetes controllers and BGP route refresh. Every operation is
+idempotent, so the protocol never needs to know whether a message arrived.
+
+**Why it converges rather than oscillating:** both tests accept only a *closer* node, so the
+successor and predecessor pointers move inward only. A strictly tightening sequence on a finite
+ring terminates.
+
+**Trade-off — and this is the honest part.** Chord chooses to be **briefly incorrect and repair
+continuously** over being correct always. During a join there is a real window in which a node
+returns a well-formed **wrong** answer: N38 joins between N32 and N48 and tells nobody, so N32
+still resolves key 35 to N48. Three regimes: successors correct + fingers correct → O(log N);
+successors correct + fingers stale → correct but slower; **successors incorrect → possibly
+wrong**. Repair also moves the successor pointer by only **one node per round**, because each
+step is verified against a live node's own claim — so recovery time is proportional to how wrong
+the pointer was, not constant. A pointer corrupted halfway round a 1,000-node ring takes ~500
+periods to heal.
+
+**In this project:** Phase 3 (W3), and its benchmark is time-to-reconverge after a kill —
+a number that exists precisely because of the one-node-per-round repair rate.
+
+---
+
+### Virtual node · Successor list · Raft · Quorum · Read repair · Anti-entropy
 
 *All pending — Phases 3–4 and 9–11. Each gets a full entry when it is taught, not before.*

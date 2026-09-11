@@ -142,6 +142,28 @@ because every entry is checked against `(my_id, k)` before use, so a corrupt fin
 waste hops — while the successor, which that check is performed *against*, has nothing to
 validate it.)
 
+**7.3 follow-ups, 11 Sep.** Two pieces were re-taught on request because the first pass was too
+compressed: (i) **why O(log N) rather than O(m)** — rebuilt with concrete numbers instead of
+algebra. Halving counts **ratios, not distances**; a 1000x bigger identifier space adds *zero*
+hops because it stretches the start line and the finish line equally, while 1000x more nodes
+adds ten, because the finish line is the inter-node gap `2^m/N`. (ii) **C5 and C6(b)** re-taught
+concretely: even spacing = six maps all at the same zoom, geometric = a map at every zoom, with
+the numbers showing geometric costs +1 hop per doubling of N while even spacing *doubles*; and
+the successor's special status stated as **"you cannot check the ruler with itself"** — fingers
+are answers that get measured against the ring's real geometry, the successor is what the
+measuring is done with.
+
+**7.4 joins and stabilisation ✅** (11 Sep — `join`/`stabilize`/`notify`/`fix_fingers`, the
+level-triggered versus edge-triggered distinction and where else it appears, the honest window in
+which Chord returns confidently wrong answers, and the three regimes. Comprehension 2/2, both
+strong. C7: he named `notify`'s interval test as the conflict resolver unprompted; sharpened with
+the **monotonicity** argument — both pointers move inward only, so a tightening sequence on a
+finite ring terminates — and with the intermediate state he skipped, where N32 briefly points
+past N36 and is itself wrong. C8: he found the uncomfortable answer without being told —
+stabilisation *does* repair a corrupted successor, but **one node per round**, so an eight-minute
+window of silent wrongness on a 1,000-node ring. That derivation is the reason Phase 3's
+time-to-reconverge benchmark exists.)
+
 **Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
 sessions recorded under the old `os-assignment3` path could not be resumed after the move — the
 directory they point at no longer exists. All four sessions (22 Aug → 6 Sep) are exported as
@@ -157,7 +179,7 @@ repository so they cannot land in a commit by accident.
   trailer**. The four portfolio-era commits were rewritten to match; the ten coursework commits
   were never touched.
 
-**Days to 28 Sep 2026 (hard deadline):** 36
+**Days to 28 Sep 2026 (hard deadline):** 17
 
 ---
 
