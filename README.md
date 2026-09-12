@@ -140,6 +140,32 @@ silently drift out of date the way an exported image does.
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+### A refused connection is proof; a timeout is only a suspicion
+
+Failure detection reuses traffic the system already sends. Stabilisation's periodic call to the
+successor is the floor, and on top of it **every** other code path that talks to the successor —
+lookups, `notify`, chunk transfers — reports its failures to the same detector instead of
+discarding them. Detection time is therefore `min(next stabilise, next natural traffic)`:
+near-instant on a busy ring, degrading to plain stabilisation on an idle one, where nobody is
+affected by the delay.
+
+The two failure signals are not merged. `ECONNREFUSED` means the far kernel sent a reset and
+nothing is listening — proof, so the node is evicted at once. A **timeout** is ambiguous between
+dead, slow, and packet loss, so it marks the successor suspect and needs a second failure or
+confirmation from the next stabilisation round.
+
+**Rejected:** active heartbeats. They buy a bounded detection time, and charge permanent
+background traffic, two more tuning constants, and designed-in false positives — a slow node
+evicted while still serving. They would also have misfired *here specifically*: every peer in a
+test ring shares the same 8 cores, so aggressive heartbeats would manufacture node deaths that
+are an artefact of the test rig rather than a property of the system.
+
+**Also rejected:** a phi-accrual detector (Cassandra's adaptive suspicion level). It is the better
+answer on a real network and the wrong one on loopback, which has no jitter for it to adapt to.
+
+**Cost:** detection time is a distribution rather than a constant, so reconvergence is published
+as two numbers — under load and idle — instead of one.
+
 ### Lookups are iterative, and that is a measurement decision
 
 A lookup is driven by the originator: each node answers "I am the owner" or "here is someone

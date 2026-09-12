@@ -122,7 +122,7 @@ decided before the paper is one that cannot be defended in December.
 | **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
 | **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | OPEN — decide end of W1 |
 | **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | OPEN — decide end of W1 |
-| **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | OPEN — decide end of W1 |
+| **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
 | **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | OPEN — number by end of W1, curve in W5 |
 
 | **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
@@ -721,3 +721,93 @@ STUN/TURN and hole punching regardless, and is not a routing decision.
 **Evidence:** none yet — decided at design time (R11), before any Chord code exists. The hop
 count plot in Phase 2 is the first evidence and is the reason for the choice.
 **Defence entry:** `DEFENCE.md` D-012
+
+---
+
+### D-013 — Failure detection is opportunistic, and a refused connection is not a timeout
+
+**Fork:** F4. **Date:** 12 Sep 2026. **Gates:** Phase 3 (W3), the reconvergence benchmark.
+
+**The decision.** Two parts.
+
+**(a) Stabilisation is the detection floor; any failed call to the successor is also evidence.**
+The periodic `stabilize()` already calls `successor.predecessor` every `T` seconds, and a failure
+there means the successor is gone. On top of that, **every** other code path that talks to the
+successor — lookups, `notify`, chunk transfers — reports its failures to the same detector
+instead of discarding them. So:
+
+```
+detection time = min( time to next stabilise , time to next natural traffic )
+```
+
+Detection is therefore **load-adaptive**: near-instant on a busy ring, degrading to plain
+stabilisation on an idle one — where nobody is affected by the delay anyway.
+
+**(b) `ECONNREFUSED` and a timeout are different evidence and are treated differently.**
+A refused connection means the kernel on the far side actively sent a reset: **nothing is
+listening**, which is proof rather than suspicion, and the node is evicted immediately. A
+**timeout is ambiguous** — dead, slow, a lost packet, or a node whose CPU is contended — so it
+marks the successor *suspect* and requires a second independent failure, or confirmation by the
+next `stabilize`, before eviction. One timeout is not evidence.
+
+**Why.** Detection speed only matters when somebody is affected, and somebody being affected
+means traffic is flowing — which is exactly when opportunistic detection is fastest. Paying for
+constant heartbeats buys speed during the periods when nobody would have noticed the delay.
+
+**Rejected: option B, active heartbeats between successors** (ping every `H` seconds, evict after
+`k` misses). It buys detection time `k × H`, decoupled from the stabilisation period. Rejected on
+four costs: permanent background traffic of `N/H` messages per second whether or not anything is
+wrong; **two more tuning constants that both need justifying**, and "3 misses at 1 second" is a
+weak answer in a room; **designed-in false positives** — a slow node is evicted while still alive
+and still serving, and since it is never told, there is a window where two nodes believe they own
+the same range; and, decisively, **this machine would manufacture those false positives**, because
+every peer in a test ring shares the same 8 cores and 3.4 GiB, so at any interesting ring size
+nodes are intermittently slow by construction. Deaths generated that way are a **measurement
+artefact of the test rig**, and they would end up on the plot.
+
+**Rejected: option A, stabilisation alone.** This is the floor of the chosen design, not an
+alternative to it — C is A plus information that A throws away. Rejected as a *complete* answer
+because detection is then as slow as `T` even under heavy load, and `T` cannot be lowered to fix
+that without raising background traffic for every node, forever, to speed up a rare event.
+
+**Rejected: option D, a phi-accrual failure detector** (Cassandra's approach: track the history
+of reply latencies and emit a continuous suspicion level rather than a binary verdict, letting
+the threshold adapt as the network slows). It is the better detector on a real network, and it is
+rejected only because of where this is measured: **loopback has essentially no jitter**, so
+phi-accrual degenerates to a fixed timeout wrapped in statistics. Significant work for no
+improvement in the only environment that produces numbers. **Kept as the answer to "what would
+you do differently on a real network?"** — the honest weakness of a fixed timeout is that it
+assumes a stationary latency distribution, and a wide-area network does not have one.
+
+**Cost accepted.** Two.
+
+1. **Detection time becomes a distribution rather than a constant**, because it depends on
+   workload. Reconvergence under load and reconvergence when idle are two different measured
+   numbers. That is less convenient for a resume line and more honest; both get published, with
+   the explanation of why they differ.
+2. **Every call site touching the successor must report its failures**, which is the
+   "must-remember-at-every-call-site" shape rejected in D-009, D-010 and D-011. **Mitigated the
+   same way D-010 was:** a single wrapper function owns every successor call and does the
+   reporting inside itself, so the discipline lives in one place rather than in every author's
+   memory.
+
+**Two sub-decisions that come with it.**
+
+- **`T`, the stabilisation period, is a measured number, not a guess.** It does double duty: it
+  bounds worst-case detection *and* sets the repair rate at one node per round (see the C8
+  derivation in `PROGRESS.md`), so it appears twice in the reconvergence figure. Phase 3 plots
+  reconvergence against `T` and the value is picked off the curve — the same discipline as F5's
+  chunk size.
+- **An evicted node is never told it was evicted.** If it was only slow, it re-inserts itself on
+  its own next `stabilize`, because `notify` will be accepted by whoever is now its successor.
+  There is no eviction protocol and no un-eviction protocol, and therefore no message that can be
+  lost. This is the level-triggered property of D-013's parent design doing the work: a node
+  rejoins after a false positive exactly the way it joined in the first place.
+
+**What would change my mind:** a deployment where the ring is spread across a real wide-area
+network with genuine latency variance. Then the fixed timeout underlying the "suspect" state is
+the weak component, and phi-accrual earns its complexity.
+
+**Evidence:** none yet — decided at design time (R11). Phase 3's reconvergence-versus-`T` plot,
+taken both idle and under load, is the first evidence.
+**Defence entry:** `DEFENCE.md` D-013

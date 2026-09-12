@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 20 |
+| Marked SOLID on the facts | 21 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -589,6 +589,76 @@ a routing decision.
 **Confidence:** SOLID on the reasoning. `WEAK` on evidence until Phase 2 — the hop-count plot
 that justifies the choice does not exist yet, and the honest statement today is "decided at
 design time for measurability, not yet demonstrated".
+
+---
+
+### D-013 · How do you tell a dead node from a slow one?
+
+**They ask:** "Your successor stops answering. How do you know it died rather than just being
+busy? And what happens if you get it wrong?"
+
+**I answer:**
+I don't treat "it stopped answering" as one signal, because the operating system gives me two and
+they are different evidence.
+
+If I get **`ECONNREFUSED`**, the kernel on the far side actively sent me a reset — nothing is
+listening on that port. That is proof, not suspicion, and I evict immediately. If I get a
+**timeout**, I have learned almost nothing: dead, slow, a lost packet, or a node whose CPU is
+contended all look identical. So a timeout marks the successor *suspect* and I require a second
+independent failure, or confirmation from the next stabilisation round, before evicting. One
+timeout is not evidence.
+
+If I do get it wrong — evict a node that was only slow — nothing special happens, and that is
+deliberate. The evicted node is **never told**. It re-inserts itself on its own next stabilise
+round, because `notify` will be accepted by whoever is now its successor. There is no eviction
+protocol and no un-eviction protocol, so there is no message that can be lost. A node recovers
+from a false positive exactly the way it joined in the first place.
+
+**They push:** "Why not heartbeats? Everyone uses heartbeats."
+
+Because I get the same speed-up for free. Every lookup, every `notify`, every chunk transfer
+already talks to my successor and already knows when it failed — I was throwing that away. Now
+any failed call to the successor, from any code path, feeds the detector, so my detection time is
+`min(next stabilise, next natural traffic)`.
+
+That makes detection **load-adaptive**, and I think that is the right shape: detection speed only
+matters when somebody is affected, and somebody being affected means traffic is flowing — which
+is exactly when this is fastest. On an idle ring it degrades to plain stabilisation, and on an
+idle ring nobody notices. Heartbeats buy speed during precisely the periods when nobody would
+have cared, and charge constant background traffic for it.
+
+**They push harder:** "That is a rationalisation. Heartbeats give you a bounded detection time
+and yours depends on the workload."
+
+Two honest answers. Yes — my detection time is a distribution, not a constant, and I publish two
+numbers instead of one: reconvergence under load and reconvergence when idle. I would rather have
+two honest numbers than one convenient one.
+
+And heartbeats would have been actively wrong **on my hardware**. Every peer in my test ring runs
+on the same 8 cores and 3.4 GiB of RAM, so at any interesting ring size nodes are intermittently
+slow by construction. An aggressive heartbeat detector would generate node deaths that are an
+artefact of my test rig rather than a property of my system — and I would then have plotted them.
+Knowing that my measurement environment can manufacture the very events I am measuring is part of
+why I chose this.
+
+**They ask:** "What is your stabilisation period, and why that number?"
+
+It is picked off a curve, not guessed. The period does double duty — it bounds worst-case
+detection *and* it sets the repair rate, because stabilisation only tightens the successor pointer
+by one node per round. So it appears twice in the reconvergence figure. Phase 3 plots
+reconvergence against the period and I take the value from the knee.
+
+**The part I would volunteer:** the right answer on a real network is a **phi-accrual** detector —
+Cassandra's approach, where instead of a binary alive/dead you track the history of reply
+latencies and emit a continuously rising suspicion level, so the threshold adapts as the network
+genuinely slows. I did not build it because everything here is measured on loopback, which has
+essentially no jitter, so phi-accrual would degenerate into a fixed timeout wrapped in statistics.
+The real weakness of what I built is that a fixed timeout assumes a stationary latency
+distribution, and a wide-area network does not have one.
+
+**Confidence:** SOLID on the reasoning, and the `ECONNREFUSED`-versus-timeout distinction is the
+part I would lead with. `WEAK` on evidence until Phase 3 — the reconvergence numbers, idle and
+under load, do not exist yet.
 
 ---
 

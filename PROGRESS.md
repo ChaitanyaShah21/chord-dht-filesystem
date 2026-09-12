@@ -75,9 +75,17 @@ order**, because that is the order the build needs them: **F1** (routing) gates 
 is on the table now · **F4** (failure detection) gates Phase 3 W3 · **F3** (replication) gates
 Phase 4 W4 · **F5** (chunk size) and **F2** (the tracker's job) gate Phase 5 W5.
 
-**F1 is RESOLVED — 12 Sep, iterative (D-012).** Recorded in all three places per R12:
-`ARCHITECTURE.md` decision log, `DEFENCE.md` D-012, and the README's Key Design Rationales.
-**Next fork on the table: F4, failure detection.** R11's condition
+**F1 is RESOLVED — 12 Sep, iterative (D-012).** Recorded in all three places per R12.
+**F4 is RESOLVED — 12 Sep, opportunistic detection (D-013).** Also in all three.
+
+Two of five forks closed. **Next on the table: F3, replication** — the consistency/availability
+knob, and the one this file has flagged from the start as the decision the project round will
+land on. Then F5 (chunk size) and F2 (the tracker's job), both of which gate Phase 5.
+
+**Two numbers now owe a curve rather than a guess**, and both are Phase 3/5 work: the
+**stabilisation period `T`** (D-013 — it bounds worst-case detection *and* sets the repair rate,
+so it appears twice in the reconvergence figure) and the **chunk size** (F5). Both get picked off
+a plot, not chosen. R11's condition
 — that no fork is decided before Chord is understood — is now satisfied by the teaching rather
 than by assigned reading, per the 2 Sep working-style change.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
@@ -384,7 +392,7 @@ December (R11). They move to `ARCHITECTURE.md` § Open Forks and get resolved in
 | ~~Q1~~ | ~~Routing — iterative or recursive lookup?~~ | Phase 2 | **RESOLVED 12 Sep — iterative. D-012.** |
 | Q2 | The tracker's job — does it know **where chunks are**, or only **what chunks exist**? | Phase 2 | end of W1 |
 | Q3 | Replication — sync-to-all-3, write-one-and-propagate, or **quorum W=2 R=2**? This is the consistency/availability knob and the most consequential decision in the design. | Phase 4 | end of W1 |
-| Q4 | Failure detection — **stabilisation period alone**, or active successor heartbeats? | Phase 3 | end of W1 |
+| ~~Q4~~ | ~~Failure detection — stabilisation alone, or active heartbeats?~~ | Phase 3 | **RESOLVED 12 Sep — opportunistic detection on top of stabilisation, with `ECONNREFUSED` distinguished from a timeout. D-013.** |
 | Q5 | **Chunk size** — pick a number, then measure throughput at three sizes and let the plot justify it | Phase 5 | number by end of W1, curve in W5 |
 
 **Q3 is the one the project round will land on.**
