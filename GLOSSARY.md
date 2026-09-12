@@ -535,6 +535,118 @@ which is why repair *speed* can matter more than replication *factor*.
 
 ---
 
+### Routing identifier versus key
+
+**Plain:** a house has a street address and it has the family living in it. The postman routes on
+the address; you confirm you are at the right house by who answers the door. Two houses in
+different towns can share a house *number* without anyone being confused, because the number was
+only ever used to get you to the right street.
+
+**Technical:** in this project a chunk has a **key** — the full 160-bit `SHA-1` of its contents,
+which is its identity — and a **routing identifier**, the top 64 bits of that digest, which is its
+position on the ring. The key answers *which object*; the identifier answers *which node*.
+
+**Why it exists:** it lets the ring be narrower than the hash without weakening anything. The
+reader verifies against the full key, so truncation cannot cause wrong data to be accepted; it can
+only cause two unrelated chunks to be stored on the same node, which is already the normal case.
+
+**Trade-off:** it is one more distinction to keep straight, and getting it backwards — keying the
+store by the routing identifier — would let two chunks silently overwrite each other. That is why
+it is invariant **I7** rather than a convention.
+
+**In this project:** D-019. `m = 64`, keys stay 40 hexadecimal characters everywhere on the wire.
+
+---
+
+### Modular arithmetic, and why unsigned integers are a ring
+
+**Plain:** a five-digit car odometer reading 99999 rolls to 00000 when you drive one more
+kilometre. It does not grow a sixth digit and it does not report an error — five wheels have
+nowhere to put the carry, so the carry falls off. The odometer computes `(old + 1) mod 100000`
+because that is the only thing it can physically do.
+
+**Technical:** arithmetic modulo 2ⁿ — the number line bent into a circle of 2ⁿ points, where
+adding past the top continues from zero. A CPU register is a fixed-width adder, so the carry out
+of the top bit is discarded and the value left behind *is* the true sum modulo 2ⁿ.
+
+**Why it matters here:** the C++ standard **guarantees** that unsigned integers obey the laws of
+arithmetic modulo 2ⁿ. So a `uint64_t` is not merely a convenient container for a Chord identifier
+— it is literally the ring, and `n + (1ULL << i)` is ring arithmetic with no code written.
+
+**Trade-off, and the trap:** the guarantee is for **unsigned** types only. **Signed overflow is
+undefined behaviour**, which means the optimiser may assume it never happens and delete the
+wrap-around check you wrote to handle it. An identifier in `int64_t` is a live bug, not a style
+preference.
+
+**In this project:** D-019 chose `m = 64` largely for this. At 160 bits the same addition is a
+hand-written carry-propagation loop over a 20-byte array.
+
+---
+
+### Birthday bound
+
+**Plain:** in a room of 23 people there is about a 50% chance two share a birthday, even though
+there are 365 days. The surprise comes from counting **pairs** rather than people — 23 people make
+253 pairs. Collisions arrive far earlier than intuition says.
+
+**Technical:** for `n` items drawn uniformly from `M` possibilities, the probability that at least
+two coincide is approximately `1 − exp(−n² / 2M)`. Collisions become likely around `n ≈ √M`, not
+around `n ≈ M`.
+
+**Why it exists here:** it is how you decide an identifier width **on a number instead of a
+feeling**. It is also the reason SHA-1's 160 bits give only 80 bits of collision resistance.
+
+**Trade-off:** it bounds *accidental* collisions only. An adversary searching deliberately is a
+different calculation, and conflating the two is a common and visible mistake.
+
+**In this project:** D-019. ~100,000 ring identities — a 1000-node ring at Phase 4's ~100 virtual
+nodes each — collide in 2⁶⁴ with probability ≈ 3 × 10⁻¹⁰, and in 2³² with probability ≈ 0.69,
+which is what ruled 32 bits out.
+
+---
+
+### Integer promotion
+
+**Plain:** a workshop where every measurement, however small, gets copied onto a full-size sheet
+before any sum is done. You never add two postage stamps on a postage stamp.
+
+**Technical:** in C and C++, operands narrower than `int` are converted to `int` before arithmetic
+is performed. `uint8_t + uint8_t` is computed in `int`, not in 8 bits.
+
+**Why it matters:** it is what makes a hand-written carry loop possible at all — `n[b] + carry`
+can hold 383 without truncating, so `sum >> 8` still recovers the carry. It also surprises people
+in the other direction, where a comparison they expected to be unsigned is performed as signed.
+
+**Trade-off:** the conversion is invisible in the source, so the type you wrote is not the type
+the arithmetic used.
+
+**In this project:** it appears in the 160-bit `add_pow2` walked through while resolving F12 —
+the version **not** chosen, but the mechanic is the same one that makes `uint8_t` buffer arithmetic
+safe elsewhere.
+
+---
+
+### Resident set size (RSS)
+
+**Plain:** a company rents a large office but only ever has ten desks occupied. The lease is the
+address space; the ten desks are what is actually being used.
+
+**Technical:** the portion of a process's memory that is currently held in physical RAM, as
+opposed to virtual address space that has been reserved but never touched or has been paged out.
+
+**Why it matters here:** the binding constraint on this machine is ~3.4 GiB of free RAM, so
+per-node RSS sets **how many ring members can run at once** — which is the x-axis of the hop-count
+plot. A slimmer node binary is not a tidiness argument, it is a longer x-axis.
+
+**Trade-off:** RSS is a snapshot and shared pages are counted for every process that maps them, so
+summing RSS across many processes over-counts. For a ring of identical binaries the shared text
+segment is counted N times.
+
+**In this project:** D-018. Measured in step 2.5 and the maximum ring size derived from it rather
+than guessed.
+
+---
+
 ### Virtual node · Raft · Quorum · Read repair · Anti-entropy
 
 *All pending — Phases 4 and 9–11. Each gets a full entry when it is taught, not before.*

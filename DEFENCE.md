@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 26 |
-| Marked `WEAK` — scheduled | 7 |
+| Marked SOLID on the facts | 27 |
+| Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -926,6 +926,77 @@ for a testability property I did not plan.
 
 **Confidence:** SOLID on the reasoning. `WEAK` on evidence — per-node RSS and the maximum ring
 size derived from it are measured in Phase 2 and do not exist yet.
+
+---
+### D-019 · Your hash is 160 bits. Why is your ring only 64?
+
+**They ask:** "You're using SHA-1, which gives you 160 bits, and then you throw away 96 of them.
+Doesn't that destroy the collision resistance you picked a cryptographic hash for?"
+
+**I answer:**
+It would, if I truncated the key. I truncate the *address*. Those are two different things and
+keeping them separate is the whole decision.
+
+A chunk's **identity** is the full 160-bit `SHA-1` of its contents. That is what a reader
+re-hashes to verify what came back, and it is what the node stores it under. A chunk's
+**placement** — which node holds it — is decided by where it lands on the ring, and I take the
+top 64 bits for that. Verification never looks at the truncation, so nothing about it is
+weakened.
+
+And a placement collision is harmless by construction. Two chunks landing on the same ring point
+route to the same node, which stores them under their distinct full keys. That already happens
+constantly — a ring has vastly more keys than points, so every node is holding many keys that
+share nothing but an arc.
+
+**They push:** "Fine, chunks. What about two *nodes* getting the same identifier?"
+
+That one is real, and it is the question I would have asked. The damage is not vague ambiguity,
+it is a specific line of code. The standard Chord interval test evaluates the arc `(n, n]` as the
+**entire ring** — correctly, because that is how a single-node ring is expressed. So a node whose
+successor shares its identifier cannot tell "I am alone" from "someone else is standing here",
+takes the first reading, and claims every key in existence. Confidently. No crash, no error.
+
+I contain that in two places. First, the "am I alone?" test compares **addresses, not
+identifiers** — the operating system guarantees `ip:port` uniqueness far more strongly than a
+hash does, and that single change downgrades a collision from "one node swallows the ring" to
+"two nodes disagree about a boundary". Second, detection at join: a joining node asks
+`find_successor(my_id)`, and if what comes back has its identifier but a different address, it
+has collided and knows before it owns anything. Cassandra does exactly this — bootstrapping onto
+an existing token is rejected rather than tolerated.
+
+**They push harder:** "How likely is this anyway? Show me you checked rather than assumed."
+
+Birthday bound. Phase 4 gives each process about 100 virtual nodes, so a 1000-node ring is
+~100,000 identities. In 2⁶⁴ that is a collision probability around 3 × 10⁻¹⁰. I also checked 32
+bits, because it was tempting and smaller: the same 100,000 identities in 2³² collide with
+probability about **0.69** — not a tail risk, the expected outcome. It would have worked perfectly
+until virtual nodes landed in Phase 4 and then broken subtly, which is the worst possible shape
+for a defect, so I ruled it out on the number rather than on instinct.
+
+**They push on the real reason:** "So why not just use all 160 and avoid the conversation?"
+
+Because of what a bug in the 160-bit arithmetic would do to the thing I am measuring. Unsigned
+overflow in C++ is **defined** to wrap modulo 2ⁿ, so at 64 bits the ring is the machine word:
+`n + (1ULL << i)` is ring arithmetic and the CPU's fixed-width adder discards the carry for free.
+At 160 bits, that same finger offset is a hand-written carry-propagation loop over twenty bytes.
+
+The finger table is *self-validating* — every entry is checked against `(my_id, k)` before use, so
+a wrong finger can only cost hops, never correctness. Everywhere else that is a gift. Here it is a
+trap: a carry bug produces wrong fingers, routing still returns the right node, nothing crashes,
+no test fails, and **the hop count quietly inflates**. Hop count is the entire output of that
+phase. I was not willing to put hand-written arithmetic underneath my only measurement where its
+failure mode is silent.
+
+**The part I would volunteer:** it is not a large amount of code — roughly sixty lines with tests
+against five, since comparison is `memcmp` and printing already existed. I chose on the failure
+mode, not the line count, and I would rather say that than pretend it was about effort.
+
+**And the precedent, if they want one:** Cassandra's default partitioner produces 64-bit tokens.
+Clusters of thousands of nodes at 256 virtual nodes each run in a 2⁶⁴ space in production. A
+64-bit ring is not a student's shortcut.
+
+**Confidence:** SOLID on the reasoning and on the arithmetic. `WEAK` on evidence — the hop-count
+plot that justifies caring about this at all is Phase 2 and does not exist yet.
 
 ---
 ## Part 2 — Subsystems

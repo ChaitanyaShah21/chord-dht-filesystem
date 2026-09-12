@@ -131,3 +131,39 @@ inside one datacentre. **The honest framing is that full membership is correct w
 stays small, and Chord is the design for when it does not.** `REASONED`, not measured — this
 project will not run at a scale where the crossover is observable, and claiming otherwise would
 be inventing a number.
+
+---
+
+### 12 Sep 2026 — a 32-bit ring works perfectly until virtual nodes land
+
+**Observed:** nothing measured — this is arithmetic, done while resolving F12 and marked
+accordingly. `REASONED`, not `MEASURED`.
+
+**The mechanism.** A node's position on the ring is `hash(ip:port)` truncated to `m` bits. Two
+nodes landing on the same point is a genuine fault: the interval test evaluates the arc `(n, n]`
+as the **entire ring**, so a node whose successor shares its identifier concludes it owns every
+key in existence — silently, with no crash and no error. Ownership, and with it the `RF = 3`
+replica set, becomes "whichever node you happened to ask".
+
+**At today's scale (a ring of 8–64 real nodes, one identity each):** 32 bits is completely safe.
+The birthday bound gives a collision probability around 2 × 10⁻¹³ at 64 nodes. Every test would
+pass, forever, and the choice would look vindicated.
+
+**At Phase 4 (virtual nodes, ~100 identities per process):** a 1000-node ring is ~100,000 ring
+identities. In 2³² the birthday bound gives **p ≈ 0.69** — a collision is the *expected* outcome,
+not the tail. The subsystem that breaks it is one this project has already scheduled and has not
+built yet, which is exactly why the observation is worth recording now rather than rediscovering
+in W4.
+
+**The general shape, which is the transferable part:** the parameter did not become wrong because
+load grew. It became wrong because a **later feature multiplied the number of identities by 100
+while leaving the space fixed**. Scale questions are usually asked as "what happens at 10x the
+traffic"; this is the other kind — 10x the *entities*, from a design change rather than from
+users.
+
+**Would do — and did:** ruled 32 bits out at design time on the number rather than after a
+symptom (D-019). At 64 bits the same 100,000 identities collide with probability ≈ 3 × 10⁻¹⁰, and
+the next line of defence is structural rather than probabilistic: invariant **I8** makes the "am I
+alone?" test compare addresses rather than identifiers, which downgrades a collision from "one
+node swallows the ring" to "two nodes disagree about a boundary". Detection and recovery is
+fork **F15**, scheduled for Phase 3 with the join path.

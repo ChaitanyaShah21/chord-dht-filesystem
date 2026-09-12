@@ -341,6 +341,37 @@ make the deduplication claim theoretical, since a 4 MB span rarely repeats acros
 **Stated in advance:** on loopback this curve may come out nearly flat, because there is no
 network latency for larger chunks to amortise. If it is flat, that is the published result.
 
+### The ring is 64 bits wide; keys stay 160 bits wide
+
+A chunk's **identity** is the full 160-bit `SHA-1` of its contents — that is what a reader
+re-hashes to verify what came back, and what a node stores it under. A chunk's **placement** is a
+separate question, and the ring uses only the top 64 bits of that digest to answer it. Truncation
+is applied to the address, never to the key, so verification is untouched. Two chunks sharing a
+ring point simply route to the same node, which already holds many keys that share nothing but an
+arc.
+
+The deciding argument is what a bug would do rather than how much code it is. Unsigned overflow in
+C++ is *defined* to wrap modulo 2ⁿ, so at 64 bits the ring is the machine word and `n + (1ULL << i)`
+is ring arithmetic with the carry discarded by the hardware. At 160 bits the same finger offset is
+a hand-written carry loop — and because the finger table is **self-validating**, a carry bug there
+produces wrong fingers, correct answers, no crash, and a **silently inflated hop count**. Hop count
+is the entire output of the routing phase, so hand-written arithmetic underneath it was refused.
+
+Two nodes sharing an identifier is the collision that matters, because the interval test evaluates
+the arc `(n, n]` as the whole ring — so a node whose successor shares its id concludes it owns
+every key. The system therefore answers *"am I alone?"* by comparing **addresses, not
+identifiers**; the operating system guarantees `ip:port` uniqueness far more strongly than a hash
+does.
+
+**Rejected:** the full 160 bits, as the Chord paper specifies — on the silent failure mode above.
+**Rejected:** `unsigned __int128` — a compiler extension with no stream operator, buying headroom
+that is already unreachable. **Rejected on a number:** 32 bits, where Phase 4's virtual nodes give
+~100,000 identities and a **69%** chance of a node collision — it would have worked until virtual
+nodes landed and then broken subtly.
+
+**Checked rather than assumed:** ~100,000 identities in 2⁶⁴ collide with probability ≈ 3 × 10⁻¹⁰.
+Cassandra's default partitioner ships 64-bit tokens in production clusters of thousands of nodes.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

@@ -193,6 +193,8 @@ decided before the paper is one that cannot be defended in December.
 | **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
 | **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
+| **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
+| **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 
 ---
 
@@ -346,6 +348,8 @@ Phase 0 work list.
 | I4 | A peer only ever serves bytes from files it has explicitly shared | nothing — `GET_PIECE` opens any path given | not yet | **✗ D3** |
 | I5 | Malformed input from any peer cannot terminate a process | nothing — bare `stoull` throws in a detached thread | not yet | **✗ D4** |
 | I6 | Every reply read by the client's main loop is the reply to the request it just sent | nothing — the heartbeat shares the socket | not yet | **✗ D2** |
+| I7 | **A routing identifier decides which *node*; it never decides which *object*.** The chunk store is keyed by the full 160-bit hash | D-019 — truncation is applied to placement only | in-process test, step 2.4 | ✓ by construction (no Chord code yet) |
+| I8 | **"Am I alone in the ring?" is answered by comparing *addresses*, never identifiers** — because `(n, n]` evaluates to the whole ring, so `successor.id == my_id` silently means "I own everything" | D-019 — `successor.address == my_address` | in-process test, step 2.4 | ✓ by construction (no Chord code yet) |
 
 ---
 
@@ -1220,3 +1224,89 @@ which part 2 already leaves open.
 **Evidence:** none yet — design time (R11). Per-node RSS, and the maximum ring size derived from
 it, are the first evidence and are measured in Phase 2.
 **Defence entry:** `DEFENCE.md` D-018
+
+---
+
+### D-019 — The ring is 64 bits wide; keys stay 160 bits wide
+
+**Fork:** F12. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2), every identifier-handling line in
+the project.
+
+**The decision.** `m = 64`. A **routing identifier** is the top 8 bytes of a SHA-1 digest, held in
+a `uint64_t`. A **key** remains the full 160-bit digest, 40 hexadecimal characters, exactly as
+D-014 defines it. Finger tables have 64 rows.
+
+**The distinction the whole decision rests on — identity versus placement.**
+
+- A chunk's **identity** is `SHA-1(contents)`, 160 bits. It is what the reader re-hashes to verify
+  what came back, and it is what a node stores it under.
+- A chunk's **placement** is which node holds it, and that is decided by where its identifier
+  lands on the ring.
+
+Nothing requires the ring to have as many points as the key has bits. Truncating for placement
+does not weaken verification, because verification never looks at the truncation. This is why
+64 bits is not a shortened hash — it is a shortened *address*.
+
+**Why.** The arithmetic, and specifically what a bug in it would do.
+
+- **Unsigned integer overflow in C++ is defined to wrap modulo 2ⁿ** (signed overflow is undefined
+  behaviour and must never be used for an identifier). So at `m = 64` the ring **is** the machine
+  word: `n + (1ULL << i)` is ring arithmetic, computed by the CPU's fixed-width adder, which
+  discards the carry out of bit 63 for free. There is no modular-arithmetic code to write, and
+  therefore none to get wrong.
+- At `m = 160` the finger offset `n + 2^i mod 2^160` is a hand-written carry-propagation loop over
+  a 20-byte array — about ten lines, plus the tests that prove it.
+- **The size of that code is not the argument; what a bug in it does is.** 7.3 established that
+  the finger table is *self-validating*: every entry is checked against `(my_id, k)` before use, so
+  a wrong finger can only cost hops, never correctness. That is a gift everywhere else and a trap
+  here. A carry bug produces wrong finger entries, routing still returns the right node, nothing
+  crashes, no test fails — and **the hop count silently inflates.** Hop count is the entire output
+  of Phase 2. The 160-bit path's failure mode is silent corruption of the one number the phase
+  exists to produce, in code that has no natural alarm.
+- **Collision headroom is ample and it was checked, not assumed.** By the birthday bound, 100,000
+  ring identities — a 1000-node ring at Phase 4's ~100 virtual nodes each — collide in 2⁶⁴ with
+  probability ≈ 3 × 10⁻¹⁰.
+- **Precedent.** Cassandra's default partitioner (`Murmur3Partitioner`) produces **64-bit** tokens,
+  and production clusters run thousands of nodes at 256 virtual nodes each — a quarter of a million
+  identities in a 2⁶⁴ space. A 64-bit ring is what the most widely deployed consistent-hashing
+  system in production actually ships.
+
+**Rejected: option A, the full 160 bits.** What the Chord paper specifies, and unimpeachable on
+"did you use the whole hash". Rejected on the failure mode above: it puts hand-written carry
+propagation directly underneath the phase's only measurement, where a bug is invisible. The
+honest accounting of the extra work is smaller than it first appears — comparison is `memcmp`
+(byte order is numeric order, the digest being big-endian), printing already exists in `sha1.h`,
+and digest-to-identifier is *free* at 160 bits and costs three lines at 64 — so the real delta is
+one carry loop, roughly 60–80 lines with tests against roughly 5. That was stated plainly at the
+time so the choice was made on the true number rather than on a scare.
+
+**Rejected: option C, `unsigned __int128`.** Native arithmetic at 128 bits, available on this
+aarch64 toolchain. Rejected because it is a GCC/Clang extension rather than standard C++17, and
+it has **no stream output operator and no literal suffix** — so printing one for a log line or a
+wire message is hand-written conversion, which is the same category of code option B was chosen to
+remove, bought for headroom that is already unreachable at 64.
+
+**Rejected outright, on a number, before it was offered: 32 bits.** Phase 4's virtual nodes put
+~100 identities in each process, so a 1000-node ring is ~100,000 identities. In a 2³² space the
+birthday bound gives roughly a **69 % chance of at least one node-identifier collision** — ambiguous
+arc ownership as the *expected* outcome. It would have worked perfectly until Phase 4 and then
+broken subtly, which is the worst available shape for a defect.
+
+**What a collision does, and the two invariants that contain it.** Two *chunks* sharing a routing
+identifier is harmless — they route to the same node, which stores them under their distinct full
+keys. Two *nodes* sharing one is not. The sharpest mechanism is not ambiguity but a line of code:
+the standard interval test evaluates `(n, n]` as the **entire ring**, because that is how a
+single-node ring is expressed. So a node whose successor shares its identifier concludes it owns
+every key in existence, confidently and silently. Hence **I7** and **I8** below. `I8` alone
+downgrades a collision from "one node swallows the ring" to "two nodes disagree about a boundary",
+and costs nothing, because the operating system already guarantees `ip:port` uniqueness far more
+strongly than a hash does.
+
+**Cost accepted.** "You didn't use the whole hash" is a question that will be asked, and the
+identity-versus-placement answer has to be *given* rather than assumed. Detection and recovery from
+a node-identifier collision is real work, deferred to Phase 3 as **F15** rather than settled here by
+implication.
+
+**Evidence:** none yet — design time (R11). The hop-count plot is the first evidence; a per-node
+RSS measurement in 2.5 sets the maximum ring size the plot can reach.
+**Defence entry:** `DEFENCE.md` D-019
