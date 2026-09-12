@@ -251,6 +251,44 @@ re-planning is how the protected items get cut.
 
 **Never cut:** algorithm practice · the flagship MVP · the benchmarks · **defence week**.
 
+### Stated stretch goal — internet deployment, and possibly a web GUI
+
+Raised 12 Sep 2026. **Below the cut line by his own cut order, and logged here so it competes
+openly rather than quietly.**
+
+**What he wants:** deploy the ring so it is a functional file-sharing system over the real
+internet, optionally with a web app front end, *if there is time before December*.
+
+**Scheduling verdict.** The window is **October–November**, after the online-assessment period —
+**not December**. 16–20 Dec is defence week and 22 Dec is interview-ready; defence week is on the
+never-cut list precisely because it is the phase that feels least like progress and gets dropped
+under pressure. Building a front end that week would compete with it directly.
+
+**Split into two items of very different value:**
+
+1. **Deploy the ring on real VMs and measure it.** High value. It converts several `WEAK`
+   deployment entries in `DEFENCE.md` to `SOLID`, and it produces the one number loopback can
+   never produce — real network latency per lookup hop. This is already cut-order item 2
+   (deployment kit item 5), so it is understood to be optional.
+2. **The web GUI.** Decoration on top of (1), and only if (1) is already done and measured. Two
+   cautions: it is a new thing to defend, and it is the part of the project a backend or
+   distributed-systems interviewer cares least about — R15 warns that the most conspicuous item
+   on the page should be the thing he most wants to be asked about, and a screenshot can quietly
+   hijack that from the ring.
+
+**Architectural note — this does not reopen F1.** A browser cannot speak raw TCP, so it is never
+a ring member: it talks HTTP or WebSocket to a **gateway node**, which is itself a publicly
+addressed ring member and runs the lookup. Iterative routing's requirement is that *the
+originator* can reach every node directly, and the originator is the gateway. The only case that
+would break iterative is ring members behind NAT (home laptops) — and that case breaks the
+**data plane** far harder than the control plane, needing STUN/TURN and hole punching, which is a
+project of its own and not something recursive routing would rescue.
+
+**What deployment would add, if it happens:** a lookup-result cache on the gateway, short TTL.
+A stale entry costs one wasted hop and self-corrects, because a bad routing hint can only cost
+hops and never correctness (see D-012 / the finger table's self-validation property). That
+reclaims most of iterative's latency gap without changing the routing model.
+
 A failed online assessment ends the process before anyone reads the resume. A flagship that
 cannot be defended under an hour of pressure fails the project round — and with no work
 experience there is nothing else to fall back on.
