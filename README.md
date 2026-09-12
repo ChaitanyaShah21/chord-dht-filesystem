@@ -341,6 +341,30 @@ make the deduplication claim theoretical, since a 4 MB span rarely repeats acros
 **Stated in advance:** on loopback this curve may come out nearly flat, because there is no
 network latency for larger chunks to amortise. If it is flat, that is the published result.
 
+### A ring member is its own process; the client stays outside the ring
+
+A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
+*originator* of every lookup — it drives the hops itself and is never a ring member. The routing
+primitives live in their own translation unit as **free functions taking explicit arguments**,
+not as a `ChordNode` type: virtual nodes in Phase 4 mean one process hosting many ring
+identities, and any type asserting "a node has one identifier and one finger table" is a promise
+that phase would break.
+
+The deciding reason is measurable rather than aesthetic. The largest ring that fits on one
+machine is bounded by free memory, and that bound is the x-axis of the hop-count plot — so
+per-node resident set size determines how far the log₂N curve can be shown rather than inferred.
+A node needs none of the client's download worker pool, stdin loop or tracker session.
+
+**Rejected:** growing the client's existing peer-server thread into the ring node. One process per
+participant and no duplicated configuration, but a heavier process per ring member and therefore a
+shorter plot, a harness that must drive N stdin loops and N tracker logins per data point, and
+routing work landing inside a thousand-line file that the working transfer path depends on.
+
+**Cost:** a participant runs two processes, and the client's peer server will overlap with the
+node's chunk store in Phase 5. That duplication is scheduled, not overlooked — and the resolution
+is already open, since `client` can link the routing object file if a participant should turn out
+to be one process after all.
+
 ### Two framing schemes, not one
 
 Client↔tracker messages are newline-delimited; client↔client piece transfers are

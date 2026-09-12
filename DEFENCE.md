@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 25 |
-| Marked `WEAK` — scheduled | 6 |
+| Marked SOLID on the facts | 26 |
+| Marked `WEAK` — scheduled | 7 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -874,6 +874,60 @@ state is a Phase 5 measurement and does not exist yet.
 
 ---
 
+### D-018 · Why is a node a separate program from your client?
+
+**They ask:** "This is meant to be peer-to-peer. Why does a peer have to run *two* programs to
+take part? That looks like you just couldn't be bothered to put it in one."
+
+**I answer:**
+Because the two have genuinely different jobs. A ring member stores chunks and answers one
+routing question; a client drives a lookup loop and reassembles files. Separating them is the
+normal shape for this kind of system — Cassandra ships the `cassandra` daemon and `cqlsh`
+separately, IPFS ships `ipfs daemon` and the `ipfs` command — and the reason is the same in all
+three cases: the thing that must stay up forever and the thing a human types into have different
+lifetimes.
+
+But the reason I actually chose it is narrower and I would rather give that one, because it is
+measurable. **The headline plot for this phase is hop count against ring size, and the largest
+ring I can run is set by free memory on one laptop — about 3.4 GiB.** So per-node resident set
+size directly sets how far the x-axis of that plot goes. My client process carries a download
+worker pool, a stdin loop and a tracker session, none of which a ring member needs. Making the
+node its own binary is what lets the ring get large enough for the log₂N shape to be visible
+rather than inferred from four points.
+
+**They push:** "So it's a benchmark convenience. That's not an architecture argument."
+
+It is a benchmark argument, and I would rather name it than dress it up. The architecture
+argument is the second one: adding routing to the client would have meant editing a
+thousand-line file that the working transfer path and five passing test suites depend on, during
+the phase whose deliverable is a correctness claim about routing. Keeping the blast radius off
+working code is a real reason on its own.
+
+**They push harder:** "And when the client needs to store chunks too? You've now got two chunk
+stores."
+
+I will, in Phase 5, and I wrote that down as a scheduled duplication rather than discovering it
+later. The resolution is already available: the routing primitives are free functions in their
+own translation unit, so `client` can link `chord.o` if it turns out a participant should be one
+process after all. What I deliberately did *not* do is define a `ChordNode` type — because
+Phase 4 introduces virtual nodes, where one process hosts many ring identities, and any type that
+says "a node has an identifier and a finger table" is a promise that phase breaks.
+
+**The part I would volunteer:** I first listed "separate binary" and "split the routing into its
+own file" as two competing options, and they are not — they compile to the same binary and the
+same process model and differ only in file layout. The real fork was one process or two. I would
+rather say that than defend a three-way comparison that was really a two-way one.
+
+**And why the file split was nearly free:** iterative routing (D-012) means the node-side answer
+is pure local computation with no outbound call inside it, so those functions can be tested in
+process with hand-built rings and no fake network. Had I chosen recursive routing, the same split
+would have needed an interface and a mock object. A decision I made for benchmarking reasons paid
+for a testability property I did not plan.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence — per-node RSS and the maximum ring
+size derived from it are measured in Phase 2 and do not exist yet.
+
+---
 ## Part 2 — Subsystems
 
 Three to five questions per subsystem, written when that subsystem is finished (R14). These are

@@ -133,18 +133,59 @@ picked off a plot rather than chosen.
 
 ---
 
-**Next step: Phase 2 — Chord routing.** Finger tables and `find_successor` on a **fixed** ring —
-correctness before joins, before failures, before replication. Ends with the
-hop-count-versus-ring-size plot against log₂N, which is the **first evidence any Phase 1 decision
-has**. Budget 9 h.
+## Phase 2 — Chord routing. **STARTED 12 Sep 2026.**
+
+Finger tables and `find_successor` on a **fixed** ring — correctness before joins, before
+failures, before replication. Ends with the hop-count-versus-ring-size plot against log₂N, which
+is the **first evidence any Phase 1 decision has**. Budget **9 h**.
+
+**The steps, stated up front so they can be redirected (R7):**
+
+| Step | What | Budget | Status |
+|---|---|---|---|
+| **2.0** | Resolve the Phase 2 forks — F11, F12, F13, F14 | 1.5 h | **F11 DONE (D-018)** |
+| 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | TODO |
+| 2.2 | The finger table, built for the fixed ring → O(log N) | 2 h | TODO |
+| 2.3 | The iterative loop at the originator, counting its own hops | 1 h | TODO |
+| 2.4 | Adversarial self-check (R10) + constructed-data suite `e2e-chord.sh` and an in-process test for the interval arithmetic | 1.5 h | TODO |
+| 2.5 | Ring-size sweep, plot against log₂N, `BENCHMARKS.md`, `DEFENCE.md` questions, commit, tag | 1.5 h | TODO |
+
+**9.5 h against a 9 h budget — flagged before starting rather than discovered at the end (R8).**
+
+**F11 resolved 12 Sep — D-018.** A ring member is a standalone **`node` binary**; `client` stays
+the user-facing program and is the lookup *originator*, outside the ring as the target diagram
+already drew it. The routing primitives go in `chord.h`/`chord.cpp` as **free functions taking
+explicit arguments** — no `ChordNode` type, because Phase 4's virtual nodes would break any type
+that asserts a node has one identifier and one finger table.
+
+The deciding argument is measurable: **maximum ring size is bounded by free RAM (~3.4 GiB), and
+maximum ring size is the x-axis of the Phase 2 plot**, so per-node RSS decides how far the log₂N
+curve can be *shown* rather than inferred. Per-node RSS is measured in 2.5 and the ceiling derived
+from it, not guessed.
+
+Two things worth carrying forward from how this fork went:
+- **It was posed wrongly first.** "Separate binary" and "split the routing into its own file" were
+  listed as competing options; they produce the same binary and the same numbers and differ only
+  in file layout. The genuine fork was one process versus two. Chaitanya caught it by asking what
+  the downside actually was. Recorded in D-018 and in the defence entry, because owning the
+  correction is stronger than defending a comparison that was never real.
+- **D-012 paid for D-018.** Iterative routing means the node-side answer is pure local
+  computation, so the split-out functions never touch a socket and need no fake network. Under
+  recursive routing the same split would have needed an interface and a mock object.
+
+**Remaining Phase 2 forks, in dependency order:** **F12** identifier width (full 160-bit SHA-1 or
+a truncation, which sets `m`, every data structure and all the arithmetic) → **F13** how the fixed
+ring is wired for the experiment → **F14** the Chord wire messages on top of the existing line
+framing (D-010).
+
+---
 
 **For whoever reads this first in a fresh session (R16):** Phase 1 is closed and tagged, the
-recall quiz is done, and there is nothing blocking. Start with the Chord node structure and
-`find_successor` on a fixed ring. Every piece of code gets taught as it is written — shell and
-Python in `scripts/` included — per the 9 Sep working-style rule. The one open teaching debt is
-**Q3 above**. R11's condition
-— that no fork is decided before Chord is understood — is now satisfied by the teaching rather
-than by assigned reading, per the 2 Sep working-style change.
+recall quiz is done, and **Phase 2 is in progress at step 2.0** — see the step table above. F11 is
+resolved (D-018); **F12, the identifier width, is the next decision and nothing is coded until it
+is made (R11).** Every piece of code gets taught as it is written — shell and Python in
+`scripts/` included — per the 9 Sep working-style rule. The open teaching debt is **Q3 above**,
+scheduled for re-check before Phase 5.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
@@ -299,7 +340,7 @@ repository so they cannot land in a commit by accident.
 |---|---|---|---|---|---|---|
 | 0 | Resurrection and audit | W1 | 6 h | ~6 h | **DONE 9 Sep 2026** — tag `phase-0-complete` | Baseline measured (§1, 71.2 MB/s at 100 MB). Postmortem deferred to W6 by decision |
 | 1 | Design forks resolved | W1 | 6 h | ~4 h | **DONE 12 Sep 2026** — tag `phase-1-complete` | 6 decisions × 3 documents ✅ · target diagram in `ARCHITECTURE.md` and README ✅ |
-| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | TODO | Hop count vs ring size, plotted against log₂N |
+| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep, step 2.0 (forks); F11 resolved as D-018 | Hop count vs ring size, plotted against log₂N |
 | 3 | Node join / leave + stabilisation thread | W3 | 9 h | | TODO | Time-to-reconverge after a kill, measured |
 | 4 | Virtual nodes + 3-way successor replication | W4 | 9 h | | TODO | Key-distribution evenness, with and without vnodes |
 | 5 | Chunked parallel transfer + deployment kit 1–2 | W5 | 12 h | | TODO | Throughput vs peer count; p50/p99 chunk latency; CI badge |

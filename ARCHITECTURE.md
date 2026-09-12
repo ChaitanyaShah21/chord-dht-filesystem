@@ -192,6 +192,7 @@ decided before the paper is one that cannot be defended in December.
 | **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
 | **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
+| **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
 
 ---
 
@@ -1132,3 +1133,90 @@ mapping between them."*
 **Evidence:** none yet — design time (R11). Tracker state size versus file count is a Phase 5
 measurement and is the direct evidence for the `O(files)` claim.
 **Defence entry:** `DEFENCE.md` D-017
+
+---
+
+### D-018 — A ring member is its own process, and the routing primitives are pure functions
+
+**Fork:** F11. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2) and every file added from here on.
+
+**The decision, in two parts.**
+
+1. **A ring member is a standalone `node` binary.** `client` stays the user-facing command-line
+   program and is the *originator* of lookups — outside the ring, exactly as the target diagram
+   already draws it. A participant who both stores chunks and uses the system runs two processes.
+2. **The routing primitives are free functions in `chord.h` / `chord.cpp`** — the wrap-around
+   interval test, identifier arithmetic, `closest_preceding_finger` — each taking the state it
+   needs as explicit arguments. Node state, the socket server and `main` stay in `node.cpp`.
+   **There is no `ChordNode` class and no library interface.**
+
+**Why part 1.**
+
+- **Maximum ring size is the x-axis of the Phase 2 plot, and it is set by free RAM (~3.4 GiB).**
+  A node binary with no download worker pool, no stdin loop and no tracker session has a far
+  smaller resident set size than `client`. Per-node RSS is *measured* in Phase 2 and the ceiling
+  derived from it rather than guessed, per the environment constraint already recorded.
+- **The experiment needs no tracker and no login.** N nodes on N ports, started and killed by a
+  script. Under option B every data point requires N full clients with stdin attached.
+- **It keeps Phase 2 away from working code.** Adding routing to `client.cpp` means editing 1013
+  lines that five green suites hang off, during the phase whose deliverable is a correctness
+  claim about something else entirely.
+- **Precedent.** Cassandra ships the `cassandra` daemon and `cqlsh`; IPFS ships `ipfs daemon` and
+  the `ipfs` command. A storage-and-routing daemon separate from its client is the normal shape.
+
+**Why part 2, and what was deliberately *not* done.**
+
+- **Pure functions over explicit arguments make no promise about what a node is.** That matters
+  because Phase 4 changes it: virtual nodes mean one process hosting many ring identities, and a
+  header declaring "a node has an identifier and a finger table" is a promise Phase 4 breaks.
+  A class with a published interface would have to be rewritten; free functions just get called
+  with different arguments.
+- **It gives step 2.4 an in-process test for the wrap-around interval test** — the single piece of
+  Phase 2 most likely to be silently wrong, and precisely the class of structural bug that only
+  *constructed* data finds, never sampled or random data.
+- **D-012 is what makes this cheap, and that is the part worth saying aloud.** Under iterative
+  routing the node-side answer is pure local computation — "I own it, or here is someone closer" —
+  so the tested functions never touch a socket and need no fake network. Under recursive routing
+  `find_successor` would call the next node, and testing it in-process would have required an
+  interface and a mock object: a real abstraction bought at real cost. A fork resolved for
+  benchmark reasons paid for this one.
+
+**Rejected: option B — extend `client`, one process per participant.** The existing peer-server
+thread grows into the ring node; no duplicated configuration, and the transfer path is already
+there. Rejected on three costs: a heavier process per ring member and therefore a **shorter
+headline plot**; a test harness that must drive N stdin loops and N tracker logins for every data
+point; and the risk of breaking a working transfer path while building routing.
+
+**Rejected: everything in one `node.cpp`.** Commits to no interface at all, which is a genuine
+advantage, and extracting a seam later is cheap in a single-consumer repository. Rejected only
+because step 2.4 wants the in-process test *anyway*, and the narrowed split — pure functions, no
+type — costs about twenty minutes of `Makefile` work and carries none of the design commitment
+that a class would.
+
+**A correction worth recording, because it is the kind that gets caught in a room.** These two
+were first posed as three peer options: separate binary, extend `client`, and "a Chord library".
+The first and third are **not rival architectures** — they produce the same binary, the same
+process model and the same numbers, and differ only in which file the code sits in. The genuine
+fork was one process versus two; file layout is a sub-choice underneath it. The answer to "why
+don't real systems do the library version?" is that **they do** — Cassandra's routing logic is not
+welded into `main()` — but what they do not do is publish a stable interface before a second
+consumer exists, which is a different thing from splitting a file.
+
+**Cost accepted, stated up front.**
+
+- **A participant runs two processes**, so there is no single "join the network" command. The
+  deployment kit and any `docker compose` file must start both.
+- **`client`'s peer server and the node's chunk store will overlap in Phase 5**, when transfer
+  moves onto the ring, and one of them has to move or die. That is a scheduled duplication, not
+  an oversight — it is named here so it is not rediscovered as a surprise.
+- **A third object file and a hand-written header-dependency rule in the `Makefile`.** That is the
+  exact mechanism behind defects B1 and B2, so the rule is written deliberately and
+  `make clean && make` is verified rather than assumed.
+
+**What would change my mind:** Phase 5 finding that the chunk store and the transfer path cannot
+be sensibly split across two processes — in which case the merge is `client` linking `chord.o`,
+which part 2 already leaves open.
+
+**Evidence:** none yet — design time (R11). Per-node RSS, and the maximum ring size derived from
+it, are the first evidence and are measured in Phase 2.
+**Defence entry:** `DEFENCE.md` D-018
