@@ -103,9 +103,46 @@ period `T`** (D-013 — it bounds worst-case detection *and* sets the repair rat
 twice in the reconvergence figure), the **chunk size** (D-016), and **`W`** (D-015). Each gets
 picked off a plot rather than chosen.
 
-**Next step: Phase 2 — Chord routing.** Finger tables and `find_successor` on a **fixed** ring,
-correctness before joins or failures. Ends with the hop-count-versus-ring-size plot against
-log₂N. Budget 9 h. **R5 recall quiz on Phase 1 comes first.** R11's condition
+**R5 recall quiz on Phase 1 — done 12 Sep, 2 of 3 solid.**
+
+- **Q1, the quorum inequality** — SOLID. Went straight to "there are no versions, so nothing can
+  be stale." Two delivery sharpenings: say the inequality is **inapplicable, not violated**
+  ("violated" concedes their frame), and have the follow-up ready — *what if the replica hands you
+  garbage?* → reads are **self-verifying**, so it is caught locally and you fall through to the
+  next replica. A retry loop, not a quorum.
+- **Q2, dead versus slow** — SOLID, and he reproduced the **opportunistic** half unprompted:
+  detection riding on real work failing rather than on dedicated pings. One phrase to add:
+  **no message carries an eviction or an un-eviction.** The wrongly-evicted node's own `stabilize`
+  + `notify` re-inserts it, accepted because the interval test finds it closer — so a node
+  recovers from a false positive exactly the way it joined.
+- **Q3, why 512 KB** — **`WEAK`. Re-taught the same day; re-check before Phase 5 and again before
+  defence week.** He gave both halves of the answer `ARCHITECTURE.md` explicitly names as weak:
+  *"it is the recommended and standard number and what was in the assignment"*, and then
+  *"the best performing chunk size will be chosen"* — which **contradicts D-016**, because
+  swapping to whatever benchmarks fastest destroys the baseline comparison that is the entire
+  reason for 512 KB.
+  The answer he needs: **512 KB is pinned, not chosen**, because the Phase 0 baseline was measured
+  at 512 KB (`e381179`), so changing it alongside parallel transfer would move two variables and
+  make the improvement unattributable — **one controlled variable per claim**. The number is
+  justified by a *separate* sweep with parallelism held constant. And to "that's just what the old
+  code did": **"yes, and that's the reason, not the excuse"** — inheriting the baseline's parameter
+  is what makes the before/after valid, and the baseline is a sequential measurement that becomes
+  **unrecoverable** once parallel transfer lands.
+  **Diagnosis: a linkage gap, not a knowledge gap.** He made the unrecoverability argument himself
+  in the Phase 0 quiz; it simply did not connect to this question. Closes by rehearsal.
+
+---
+
+**Next step: Phase 2 — Chord routing.** Finger tables and `find_successor` on a **fixed** ring —
+correctness before joins, before failures, before replication. Ends with the
+hop-count-versus-ring-size plot against log₂N, which is the **first evidence any Phase 1 decision
+has**. Budget 9 h.
+
+**For whoever reads this first in a fresh session (R16):** Phase 1 is closed and tagged, the
+recall quiz is done, and there is nothing blocking. Start with the Chord node structure and
+`find_successor` on a fixed ring. Every piece of code gets taught as it is written — shell and
+Python in `scripts/` included — per the 9 Sep working-style rule. The one open teaching debt is
+**Q3 above**. R11's condition
 — that no fork is decided before Chord is understood — is now satisfied by the teaching rather
 than by assigned reading, per the 2 Sep working-style change.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
