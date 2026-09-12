@@ -7,7 +7,7 @@ Read this first in every session (R16), together with `ARCHITECTURE.md` and anyt
 
 ## Where we are right now
 
-**Phase:** 0 — Resurrection and audit
+**Phase:** 1 — Design forks resolved. *(Phase 0 closed 9 Sep 2026, tag `phase-0-complete`.)*
 **Last completed step:** **The system builds and transfers a file end to end for the first
 time.** Fixed B1 + B2 (the Makefile), B5 (`SO_REUSEADDR`, found this session) and the root
 cause of R2 (the address-map typo). `scripts/e2e-smoke.sh` transfers a 300 KB file and the
@@ -69,9 +69,13 @@ to W6, the documentation week, because every fact it needs is already written in
 `docs/failures.md` and the defect register and assembling it is prose work. Fork **F7** (R2b)
 moves to Phase 5, where the transfer layer is rewritten anyway.
 
-**Next step:** **Phase 1.** Teaching **Part 7 — Chord**, then the five open forks (F1 routing,
-F2 tracker's job, F3 replication, F4 failure detection, F5 chunk size), which R11 holds closed
-until the Chord paper has been read and which gate all of Phase 2.
+**Next step (12 Sep):** **Part 7 is complete — all five steps taught, comprehension 10/10.**
+Phase 1 now resolves the five open forks. They are taken in **dependency order, not numeric
+order**, because that is the order the build needs them: **F1** (routing) gates Phase 2 W2 and
+is on the table now · **F4** (failure detection) gates Phase 3 W3 · **F3** (replication) gates
+Phase 4 W4 · **F5** (chunk size) and **F2** (the tracker's job) gate Phase 5 W5. R11's condition
+— that no fork is decided before Chord is understood — is now satisfied by the teaching rather
+than by assigned reading, per the 2 Sep working-style change.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
 
 **Teaching progress (fresh pass, 2 Sep):** Part 1 system shape ✅ · Part 2 the wire ✅ ·
@@ -164,6 +168,22 @@ stabilisation *does* repair a corrupted successor, but **one node per round**, s
 window of silent wrongness on a 1,000-node ring. That derivation is the reason Phase 3's
 time-to-reconverge benchmark exists.)
 
+**7.5 successor lists and where replication attaches ✅** (12 Sep — the orphaned node problem,
+the successor list maintained for free by shifting the successor's own list, the `r = log₂N`
+argument with `r` entering **as an exponent** (`(1/2)^r = 1/N`, so ~1 orphan expected even after
+half the network dies at once), and the coupling between `r` and the stabilisation period, since
+"simultaneously" means "within one period". The payoff: **the successor list is the replica
+set**, so failover needs no data movement and no coordination — the routing repair *is* the
+failover. The volunteered cost: replicas are placed by ring adjacency, which is
+`SHA-1(ip:port)` and deliberately not chooseable, so three replicas may share a rack, a switch
+and a power strip. Comprehension 2/2. C9: correct that only 2 of 3 copies survive; corrected on
+what "fault tolerance" means here — the advertised durability is a **steady-state** property and
+the system spends real time below it, so repair *speed* can matter more than replication factor.
+C10: he got the shape exactly — "the maths is right, it just does not take this scenario into
+account"; sharpened to **correlation destroys the exponent**: if all `r` replicas share a failure
+domain, `P(lose all r)` is not `p^r` but `P(the rack dies)`, a single term, and adding replicas
+stops helping at all.)
+
 **Session transcripts, 6 Sep.** Claude Code keys its transcripts by working directory, so the
 sessions recorded under the old `os-assignment3` path could not be resumed after the move — the
 directory they point at no longer exists. All four sessions (22 Aug → 6 Sep) are exported as
@@ -179,7 +199,7 @@ repository so they cannot land in a commit by accident.
   trailer**. The four portfolio-era commits were rewritten to match; the ten coursework commits
   were never touched.
 
-**Days to 28 Sep 2026 (hard deadline):** 17
+**Days to 28 Sep 2026 (hard deadline):** 16 *(as of 12 Sep 2026)*
 
 ---
 

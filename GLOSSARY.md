@@ -491,6 +491,50 @@ a number that exists precisely because of the one-node-per-round repair rate.
 
 ---
 
-### Virtual node · Successor list · Raft · Quorum · Read repair · Anti-entropy
+### Successor list
 
-*All pending — Phases 3–4 and 9–11. Each gets a full entry when it is taught, not before.*
+**Plain:** don't memorise only the person on your right — memorise the next three. When one walks
+out, you skip to the next name and you are still part of the circle. Memorise only one, and the
+moment they leave you are holding a pointer at an empty space with no way to find anyone.
+
+**Technical:** a per-node list of the next `r` nodes clockwise, replacing the single successor
+pointer. Maintained for free by `stabilize`: a node takes its successor's list, shifts it along
+by one and prepends the successor. On failure it walks the list to the first entry that answers,
+adopts it as successor, and `notify`s it; ordinary stabilisation does the rest.
+
+**Why `r = log₂N`:** the ring only breaks for a node if **all `r`** of its successors fail within
+one stabilisation period. Under independent failure with probability ½ per node, that is
+`(1/2)^r`; at `r = log₂N` this is `1/N`, so across `N` nodes roughly **one** node is orphaned
+even after half the network dies at once. `r` enters **as an exponent**, which is why a handful
+of entries buys so much. Note the coupling: "simultaneously" means "within one stabilisation
+period", so a **slower period makes the same `r` less safe**.
+
+**The payoff — it is also the replica set.** For any node `n`, `n.successor_list` is exactly the
+set of nodes that would inherit `n`'s keys, in the order they would inherit them. So replicating
+each key to its owner's first `k` successors means that when `n` dies, its range passes to its
+successor by the successor rule alone — and that successor **already holds the data**. Failover
+needs no data movement and no coordination: **the routing repair is the failover.** One structure
+built for one reason solves a second problem exactly.
+
+**Trade-off:** replica placement is decided by ring adjacency, and ring position is
+`SHA-1(ip:port)` — deliberately not chooseable. Three ring-adjacent replicas may sit in one rack,
+on one switch, on one power strip, which is precisely the correlated failure replication is meant
+to survive. **Correlation destroys the exponent**: if all `r` replicas share a failure domain,
+`P(lose all r)` is not `p^r` but `P(the domain dies)` — a single term with no exponent, so adding
+replicas stops helping. Real systems fix this with rack-aware placement, which costs the elegance
+above, because the replica set stops being "the successor list" and becomes a separately
+maintained structure.
+
+**Also:** durability figures are **steady-state** properties. Immediately after a failover a
+`k = 3` system holds 2 copies until repair completes, so it tolerates 1 further failure rather
+than 2. The fraction of time spent degraded is `repair time ÷ mean time between failures` —
+which is why repair *speed* can matter more than replication *factor*.
+
+**In this project:** Phase 3 (W3) for the routing half, Phase 4 (W4) for the replication half.
+`r` and `k` are set by forks F4 and F3.
+
+---
+
+### Virtual node · Raft · Quorum · Read repair · Anti-entropy
+
+*All pending — Phases 4 and 9–11. Each gets a full entry when it is taught, not before.*
