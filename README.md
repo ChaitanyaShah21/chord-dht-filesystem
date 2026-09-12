@@ -140,6 +140,32 @@ silently drift out of date the way an exported image does.
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+### Chunks are content-addressed, which deletes the conflict problem
+
+A chunk's key in the ring is `SHA-1` of its own contents. Two replicas therefore cannot disagree:
+the value at a key is by definition the bytes that hash to it. There is no newer version, so the
+data plane carries **no versioning, no vector clocks and no conflict resolution** — not because
+they were solved, but because the key was chosen so they cannot arise. Reads are self-verifying,
+since the client hashes what arrived and compares it to the key it requested, and identical
+chunks across different files deduplicate for free.
+
+This is why the quorum rule `W + R > RF` does not appear in this system. That rule guarantees a
+read set overlaps a write set *so a read sees the latest version*; with immutable values there is
+no latest version, so `W` and `R` decouple — `W` buys durability, `R` buys availability, and they
+are set independently.
+
+**Rejected:** keying chunks by `(file_id, chunk_index)`, which is closer to the original
+protocol. It makes the value at a key mutable, which brings back conflicting replicas,
+versioning, clock skew and read repair — choosing to have a consistency problem.
+
+**Cost:** no in-place update (a changed file produces new keys, and the superseded chunks are
+garbage; there is no collector, which is a stated scope boundary), and no influence over
+placement at all.
+
+The consistency/availability discussion is not lost — it **moves to the metadata**, which is
+genuinely mutable and is the plane replicated by consensus. The system sits in two places on
+purpose: available and conflict-free on the data path, consistent on the control path.
+
 ### A refused connection is proof; a timeout is only a suspicion
 
 Failure detection reuses traffic the system already sends. Stabilisation's periodic call to the

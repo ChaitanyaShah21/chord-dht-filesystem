@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 21 |
+| Marked SOLID on the facts | 22 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -659,6 +659,60 @@ distribution, and a wide-area network does not have one.
 **Confidence:** SOLID on the reasoning, and the `ECONNREFUSED`-versus-timeout distinction is the
 part I would lead with. `WEAK` on evidence until Phase 3 — the reconvergence numbers, idle and
 under load, do not exist yet.
+
+---
+
+### D-014 · Why don't you need vector clocks?
+
+**They ask:** "You have three replicas of every chunk. What happens when they disagree — how do
+you decide which one is right?"
+
+**I answer:**
+They cannot disagree. My key is `SHA-1` of the chunk's own contents, so the value stored at key
+`abc123…` is by definition the bytes that hash to `abc123…`. There is no second candidate. A
+chunk is immutable — change the data and you have a different key, not a new version of the same
+one.
+
+So there is no versioning anywhere in my data plane: no timestamps, no vector clocks, no
+last-write-wins, no conflict resolution. I did not solve that problem, I chose a key that does
+not have it.
+
+**They push:** "Then what is your `W` and your `R`, and does `W + R > N` hold?"
+
+It does not hold, and it does not apply — and that distinction is the answer. `W + R > N` exists
+to guarantee that a read set and a write set overlap **so a read sees the most recent version**.
+I have no versions. The inequality has nothing to constrain.
+
+What that buys me is that `W` and `R` stop being coupled. `W` buys **durability** — how many
+machines hold it before I tell the client the write succeeded. `R` buys **availability** — how
+many replicas I must reach to get an answer. I set them independently, which a mutable store
+cannot do.
+
+`R = 1` is always correct for me, because a read is **self-verifying**: the client hashes what
+arrived and compares it to the key it asked for. A corrupt, truncated or wrong answer is caught
+locally by the reader without consulting a second replica. If it fails the check, I go to the
+next replica — that is a retry loop, not a quorum.
+
+**They push harder:** "That sounds like you dodged the hard part of distributed systems."
+
+I moved it rather than dodged it, and moved it deliberately. The **data** plane is immutable, so
+it has no conflicts. The **metadata** plane — the file manifest, which chunks make up a file, and
+which nodes claim to hold them — is genuinely mutable, and that is where consistency is a real
+problem. That is the plane I replicate with consensus.
+
+So the honest statement of where this system sits is that it is in two places at once, on
+purpose: content-addressed and available on the data path, consensus-backed and consistent on the
+control path. I would rather defend that than one uniform answer applied to two workloads that do
+not want the same thing.
+
+**The part I would volunteer:** it costs me in-place update. A changed file produces new keys and
+the superseded chunks are garbage, and I have no garbage collector — that is a stated scope
+boundary, not an oversight. It also means I cannot influence placement at all: a chunk goes where
+its hash sends it, which is exactly the rack-awareness problem — three ring-adjacent replicas may
+share a rack, and content addressing removes even the option of fixing that by placement.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence — the deduplication rate is a Phase 5
+measurement and does not exist yet.
 
 ---
 

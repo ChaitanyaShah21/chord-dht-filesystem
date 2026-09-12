@@ -811,3 +811,69 @@ the weak component, and phi-accrual earns its complexity.
 **Evidence:** none yet — decided at design time (R11). Phase 3's reconvergence-versus-`T` plot,
 taken both idle and under load, is the first evidence.
 **Defence entry:** `DEFENCE.md` D-013
+
+---
+
+### D-014 — Chunks are content-addressed: the key is the hash of the value
+
+**Fork:** F3a, surfaced while preparing F3 and decided before it. **Date:** 12 Sep 2026.
+**Gates:** F3, F2, F5, and the whole data plane.
+
+**The decision.** A chunk's distributed-hash-table key is **`SHA-1(chunk contents)`**, so a
+chunk's position on the ring is determined by its own bytes. A file's manifest is the ordered
+list of its chunk hashes — which the existing system already computes and already verifies.
+
+**What this buys, and it is structural rather than incremental.**
+
+1. **Two replicas can never disagree.** The value stored at key `abc123…` is by definition the
+   bytes that hash to `abc123…`. There is no newer version of them. **Conflicts do not exist**,
+   so there is no versioning, no timestamps, no vector clocks, no last-write-wins and no conflict
+   resolution anywhere in the data plane.
+2. **Reads are self-verifying.** A client hashes what it received and compares it to the key it
+   asked for. A corrupt, truncated or simply wrong answer is detected **locally by the reader**,
+   with no second replica consulted. This is what makes `R = 1` safe.
+3. **Deduplication is free.** Identical chunks in different files land on the same key and are
+   stored once.
+
+**The consequence that reframes F3.** The quorum inequality `W + R > RF` exists to guarantee that
+a read set overlaps a write set **so that a read sees the latest version**. With immutable
+content-addressed values there is no latest version, so the inequality is not satisfied or
+violated — **it is inapplicable**, and `W` and `R` stop being coupled. `W` buys **durability**;
+`R` buys **availability**; they are set independently. Being able to say why the rule does not
+apply is a stronger position than applying it by reflex.
+
+**Rejected: key = `(file_id, chunk_index)`.** A smaller change — the current protocol already
+requests pieces by index (`GET_PIECE <group> <file> <i>`). Rejected because the value at a key
+then **changes** when the file is overwritten, which reintroduces mutability, and with it
+conflicting replicas, versioning, clock skew, read repair and the full quorum machinery. It would
+mean *choosing to have* a consistency problem, and paying for it in a Phase 4 budget of 9 h that
+already contains virtual nodes.
+
+This is the same structural move as **D-009** (make the bug unreachable rather than avoidable),
+**D-010** (put the invariant in the framing layer rather than in every author's memory) and
+**D-011** (remove the failure mode rather than remember to suppress it). Four decisions in this
+project now share that reasoning, and that consistency is itself worth stating.
+
+**Cost accepted.**
+- **No in-place update.** A changed file produces new keys; the superseded chunks are garbage
+  until something collects them. No garbage collector is planned — stated as a scope boundary
+  rather than hidden.
+- **Placement is not influenceable.** A chunk goes where its hash sends it, by construction.
+- **The lookup path changes** from index-keyed to hash-keyed, so the legacy `GET_PIECE` protocol
+  does not survive Phase 5 unchanged.
+
+**What this does to the CAP conversation — it moves it, and improves it.** The data plane no
+longer has a consistency problem to discuss. The **metadata** does: the manifest and the seeder
+list are mutable, and that is the plane Raft replicates. So the answer to "where does this sit on
+the consistency/availability trade-off" becomes *"deliberately in two different places — the data
+plane is content-addressed and immutable, so it is tuned purely for durability and availability;
+the control plane is mutable, so it gets consensus. Two planes, two answers, chosen rather than
+inherited."*
+
+**Naming note.** Standard quorum notation uses `N` for the replication factor, and this project
+already uses `N` for **ring size**. All documents use **`RF`** for replication factor and never
+`N`, because two similar-looking values meaning different things is the R10 hazard that has
+already bitten this codebase.
+
+**Evidence:** none yet — design time (R11). Phase 5 measures the deduplication rate.
+**Defence entry:** `DEFENCE.md` D-014
