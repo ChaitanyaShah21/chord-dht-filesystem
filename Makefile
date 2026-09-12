@@ -18,6 +18,11 @@ CRYPTO_LDLIBS = -lcrypto
 TRACKER = tracker
 CLIENT  = client
 
+# test-chord is a TEST binary, not a deliverable: it exercises the identifier
+# arithmetic in process, with rings built by hand. It is deliberately not part
+# of `all`, so a normal build never depends on it.
+TEST_CHORD = test-chord
+
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
 # `inline`, so it is compiled into each translation unit that includes it). Listing a
@@ -25,9 +30,17 @@ CLIENT  = client
 TRACKER_SRC = tracker.cpp
 CLIENT_SRC  = client.cpp
 
+# chord.cpp holds the routing primitives as free functions (decision D-018), so
+# they can be linked into a test binary with no sockets involved. It includes
+# sha1.h, so anything linking it needs -lcrypto.
+CHORD_SRC      = chord.cpp
+TEST_CHORD_SRC = test_chord.cpp
+
 # Object files
-TRACKER_OBJ = $(TRACKER_SRC:.cpp=.o)
-CLIENT_OBJ  = $(CLIENT_SRC:.cpp=.o)
+TRACKER_OBJ    = $(TRACKER_SRC:.cpp=.o)
+CLIENT_OBJ     = $(CLIENT_SRC:.cpp=.o)
+CHORD_OBJ      = $(CHORD_SRC:.cpp=.o)
+TEST_CHORD_OBJ = $(TEST_CHORD_SRC:.cpp=.o)
 
 # Default target
 all: $(TRACKER) $(CLIENT)
@@ -42,15 +55,21 @@ $(TRACKER): $(TRACKER_OBJ)
 $(CLIENT): $(CLIENT_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+$(TEST_CHORD): $(TEST_CHORD_OBJ) $(CHORD_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 # Rebuild any object file if sha1.h changes. Without this, editing the header leaves
 # stale .o files behind and the next `make` links yesterday's code.
 $(CLIENT_OBJ): sha1.h
+$(CHORD_OBJ): chord.h sha1.h
+$(TEST_CHORD_OBJ): chord.h
 
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
-	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(TRACKER) $(CLIENT)
+	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) \
+	      $(TRACKER) $(CLIENT) $(TEST_CHORD)
 
 # -----------------------------
 # Convenience rules
@@ -61,4 +80,9 @@ run-tracker:
 run-client:
 	./$(CLIENT) 127.0.0.1 8000 6881
 
-.PHONY: all clean run-tracker run-client
+# Build and run the in-process arithmetic tests. Exits non-zero on failure, so
+# it can be used as a gate.
+check: $(TEST_CHORD)
+	./$(TEST_CHORD)
+
+.PHONY: all clean run-tracker run-client check
