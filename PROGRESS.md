@@ -75,17 +75,37 @@ order**, because that is the order the build needs them: **F1** (routing) gates 
 is on the table now · **F4** (failure detection) gates Phase 3 W3 · **F3** (replication) gates
 Phase 4 W4 · **F5** (chunk size) and **F2** (the tracker's job) gate Phase 5 W5.
 
-**F1 is RESOLVED — 12 Sep, iterative (D-012).** Recorded in all three places per R12.
-**F4 is RESOLVED — 12 Sep, opportunistic detection (D-013).** Also in all three.
+**PHASE 1 IS COMPLETE — 12 Sep 2026. All five forks resolved, six decisions, each recorded in
+`ARCHITECTURE.md`, `DEFENCE.md` and the README per R12, plus the target architecture diagram.**
 
-Two of five forks closed. **Next on the table: F3, replication** — the consistency/availability
-knob, and the one this file has flagged from the start as the decision the project round will
-land on. Then F5 (chunk size) and F2 (the tracker's job), both of which gate Phase 5.
+| Fork | Decision | Entry |
+|---|---|---|
+| **F1** routing | **Iterative** — the originator drives every hop, so hop count is observed rather than self-reported | D-012 |
+| **F4** failure detection | **Opportunistic on top of stabilisation**, and `ECONNREFUSED` is proof while a timeout is only suspicion | D-013 |
+| **F3a** chunk keying | **Content-addressed** — key is `SHA-1(contents)`, which deletes conflicts, versioning and read repair from the data plane entirely | D-014 |
+| **F3** replication | **`RF=3, W=2, R=1`**, with `W` a runtime parameter so the trade-off becomes a swept curve | D-015 |
+| **F5** chunk size | **512 KB**, pinned so the Phase 0 baseline stays comparable, swept over five log-spaced points as a separate experiment | D-016 |
+| **F2** tracker's job | **`filename → manifest hash` only**, ~40 bytes per file; the manifest is itself a chunk in the ring. Git's data model | D-017 |
 
-**Two numbers now owe a curve rather than a guess**, and both are Phase 3/5 work: the
-**stabilisation period `T`** (D-013 — it bounds worst-case detection *and* sets the repair rate,
-so it appears twice in the reconvergence figure) and the **chunk size** (F5). Both get picked off
-a plot, not chosen. R11's condition
+**The decisions turned out to compose rather than sit side by side**, and that is the part worth
+rehearsing: D-014 made D-015 a durability-only question by removing conflicts; D-014 also made
+D-017 possible by making location computable; D-012 made chunk count a *routing* cost, which is
+half of D-016's argument; and D-017 shrank the mutable surface to `O(files) × 40 bytes`, which
+materially improves the odds Raft survives its 1 Nov trip-wire.
+
+**Two `WEAK` entries in `DEFENCE.md` closed by this phase** — the consistency/availability
+question (was blocked on F3) and "draw the whole architecture", which now has a target diagram.
+`WEAK` count drops 8 → 6, and both remaining halves are `WEAK` **on evidence**, not reasoning:
+every decision here was made at design time and none has a number yet.
+
+**Three numbers now owe a curve rather than a guess**, all Phase 3–5 work: the **stabilisation
+period `T`** (D-013 — it bounds worst-case detection *and* sets the repair rate, so it appears
+twice in the reconvergence figure), the **chunk size** (D-016), and **`W`** (D-015). Each gets
+picked off a plot rather than chosen.
+
+**Next step: Phase 2 — Chord routing.** Finger tables and `find_successor` on a **fixed** ring,
+correctness before joins or failures. Ends with the hop-count-versus-ring-size plot against
+log₂N. Budget 9 h. **R5 recall quiz on Phase 1 comes first.** R11's condition
 — that no fork is decided before Chord is understood — is now satisfied by the teaching rather
 than by assigned reading, per the 2 Sep working-style change.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
@@ -241,7 +261,7 @@ repository so they cannot land in a commit by accident.
 | # | Phase | Week | Budget | Spent | Status | Ends with |
 |---|---|---|---|---|---|---|
 | 0 | Resurrection and audit | W1 | 6 h | ~6 h | **DONE 9 Sep 2026** — tag `phase-0-complete` | Baseline measured (§1, 71.2 MB/s at 100 MB). Postmortem deferred to W6 by decision |
-| 1 | Design forks resolved | W1 | 6 h | | TODO | 5 decisions × 3 documents; diagram in README |
+| 1 | Design forks resolved | W1 | 6 h | ~4 h | **DONE 12 Sep 2026** — tag `phase-1-complete` | 6 decisions × 3 documents ✅ · target diagram in `ARCHITECTURE.md` and README ✅ |
 | 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | TODO | Hop count vs ring size, plotted against log₂N |
 | 3 | Node join / leave + stabilisation thread | W3 | 9 h | | TODO | Time-to-reconverge after a kill, measured |
 | 4 | Virtual nodes + 3-way successor replication | W4 | 9 h | | TODO | Key-distribution evenness, with and without vnodes |
@@ -390,7 +410,7 @@ December (R11). They move to `ARCHITECTURE.md` § Open Forks and get resolved in
 | # | Question | Blocks | Decide by |
 |---|---|---|---|
 | ~~Q1~~ | ~~Routing — iterative or recursive lookup?~~ | Phase 2 | **RESOLVED 12 Sep — iterative. D-012.** |
-| Q2 | The tracker's job — does it know **where chunks are**, or only **what chunks exist**? | Phase 2 | end of W1 |
+| ~~Q2~~ | ~~The tracker's job~~ | Phase 2 | **RESOLVED 12 Sep — neither. It holds `filename → manifest hash` only, ~40 bytes per file; the manifest itself is a content-addressed object in the ring. D-017.** |
 | ~~Q3~~ | ~~Replication — sync-to-all-3, write-one, or quorum?~~ | Phase 4 | **RESOLVED 12 Sep — content-addressed chunks (D-014) remove conflicts entirely, so the question became durability-only: `RF=3, W=2, R=1`, with `W` a swept runtime parameter (D-015).** |
 | ~~Q4~~ | ~~Failure detection — stabilisation alone, or active heartbeats?~~ | Phase 3 | **RESOLVED 12 Sep — opportunistic detection on top of stabilisation, with `ECONNREFUSED` distinguished from a timeout. D-013.** |
 | ~~Q5~~ | ~~Chunk size~~ | Phase 5 | **RESOLVED 12 Sep — 512 KB, pinned so the Phase 0 baseline stays comparable, and swept over five log-spaced points as a separate experiment. D-016.** |

@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 24 |
-| Marked `WEAK` — scheduled | 8 |
+| Marked SOLID on the facts | 25 |
+| Marked `WEAK` — scheduled | 6 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -826,6 +826,54 @@ and the curve that justifies it is Phase 5 work".
 
 ---
 
+### D-017 · If the ring knows where everything is, what is the tracker for?
+
+**They ask:** "You built a distributed hash table so there would be no central index. Then you
+kept a tracker. Isn't that the central index you were trying to remove?"
+
+**I answer:**
+It would be, if it held locations. It doesn't, and it can't usefully — a chunk's key is the hash
+of its own contents, so its location is **computable**: it lives at `successor(SHA-1(chunk))`.
+Anyone holding the hash can route to it. A tracker copy of that would be a cache of something the
+ring already answers authoritatively, and it would go stale on every join, every failure and
+every stabilisation round. Two systems that can disagree, where one of them is right by
+construction.
+
+What the ring genuinely cannot tell you is **which chunks make up a file, in what order**. You
+can't discover that by routing, because you don't know the hashes to route to. So something must
+hold it — and my tracker holds the smallest possible version: `filename → manifest hash`, about
+40 bytes per file. The manifest itself is a content-addressed object in the ring, like any chunk.
+
+**They push:** "So why not just put the manifest in the tracker too?"
+
+Because then tracker state grows with total chunk count — a 10 GB file at 512 KB chunks is 20,000
+hashes in one record — and that state is what I have to replicate with consensus. Keeping it at
+40 bytes per file keeps the Raft log small. It also keeps the tracker off the data path
+completely: it is consulted once per file and returns 40 bytes, never a payload.
+
+There is a third benefit I did not design for and noticed afterwards: because the manifest is
+just a chunk, it inherits replication, availability and the hash check for free. I did not have
+to special-case it.
+
+**They push harder:** "This sounds like you reinvented something."
+
+It is Git's data model, and I would rather say so than have it pointed out. Content-addressed
+immutable objects — blobs and trees — with a small mutable namespace on top, the refs. The
+insight I took from it is that **only the namespace needs consensus**. Human names change;
+content does not. The mapping between them is the only mutable thing in my system, and making
+that surface as small as possible is the whole design.
+
+**The part I would volunteer:** it costs an extra round trip, name to hash then hash to manifest.
+And it makes the tracker **required for discovery** — a manifest hash means nothing to a human,
+so there is no browsing the system without the namespace layer. That is a real centralisation and
+I accept it deliberately, because it is the one component I am making highly available with
+consensus rather than pretending is unnecessary.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence — the `O(files)` claim about tracker
+state is a Phase 5 measurement and does not exist yet.
+
+---
+
 ## Part 2 — Subsystems
 
 Three to five questions per subsystem, written when that subsystem is finished (R14). These are
@@ -869,9 +917,9 @@ These recur regardless of what was built. Answer each one *about this project*, 
 
 | Question | Answer | Confidence |
 |---|---|---|
-| Draw the whole architecture on this whiteboard. | Legacy version: yes, it is five boxes. Target Chord version: not until Phase 1 draws it. | `WEAK` — W1 |
+| Draw the whole architecture on this whiteboard. | **Both versions now exist as diagram-as-text** — the legacy system and the target Chord system, in `ARCHITECTURE.md` and the README. The target one is nine numbered steps: two to the tracker, four of iterative lookup, two to fetch the manifest, then repeat concurrently per chunk. | `WEAK` on delivery only — never yet drawn from memory under time pressure |
 | Walk me through what happens on one request, end to end. | `ARCHITECTURE.md` § The diagram, steps 1–5: manifest up, manifest down, direct peer connect, length-prefixed piece, SHA-1 verify, write at offset. | SOLID for the legacy path |
-| Where does this sit on the consistency/availability trade-off, and how would you flip it? | Right now: **neither, and saying so is the honest answer** — one tracker means nothing to be consistent between and nothing to stay available through. CAP only says something once there is more than one replica. The real answer arrives with fork F3. | `WEAK` — blocked on F3, W1 |
+| Where does this sit on the consistency/availability trade-off, and how would you flip it? | **Answered by D-014/D-015/D-017 — deliberately in two places.** The data plane is content-addressed and immutable, so replicas cannot disagree and there is no consistency question; it is tuned purely for durability versus availability with `W`, which is a **runtime parameter** so "how would you flip it" is a measured curve rather than an opinion. The control plane is the mutable `filename → manifest hash` namespace, and that is where consensus goes. | **No longer blocked.** `WEAK` on evidence only — the `W`-sweep is Phase 4 |
 | What breaks first at 10x the load? | `SCALE_NOTES.md`. Current best answer: the tracker's single global `state_mtx`, then the one-thread-per-client model. Also `recv_line`, which issues **one `recv` syscall per byte** — a 60-byte reply costs 60 kernel round trips (D5). | `WEAK` — no measurement yet |
 | How would you scale it? | — | `WEAK` — W2 |
 | What would you monitor after deployment, and why those metrics? | Planned dashboard: lookup hops, throughput, p99 chunk latency, stabilisation events, leader changes. **Asked verbatim at a target company — this must become a screenshot, not a hypothetical.** | `WEAK` — deployment kit item 3, W10 |

@@ -135,10 +135,92 @@ silently drift out of date the way an exported image does.
 
 ---
 
+
+## Target architecture — the system the design decisions describe
+
+Drawn **after** the forks were resolved, per R11: a diagram made earlier would have decided them
+by implication. Kept as diagram-as-text so it diffs in review and cannot drift from the design.
+
+```mermaid
+flowchart TB
+    C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
+
+    subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Phase 2"]
+    end
+
+    subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
+        direction LR
+        N8["<b>N8</b>"] --> N21["<b>N21</b>"] --> N32["<b>N32</b>"] --> N48["<b>N48</b>"] --> N8
+    end
+
+    C -- "1 · name" --> T
+    T -- "2 · manifest hash" --> C
+    C -- "3 · find_successor(hash) — one step, one answer" --> N8
+    N8 -- "4 · 'closer node is N32'" --> C
+    C -- "5 · client asks N32 itself" --> N32
+    N32 -- "6 · 'N48 owns it'" --> C
+    C -- "7 · GET &lt;manifest hash&gt;" --> N48
+    N48 -- "8 · manifest = [h0 h1 … hk]" --> C
+    C -- "9 · repeat 3–8 concurrently for every chunk hash" --> ring
+```
+
+The arrows inside the ring are **successor pointers**. They are the only routing state that has
+to be correct; everything else is an accelerator.
+
+**Reading the path.** Steps 1–2 are the only time the tracker is involved, and it returns 40
+bytes. Steps 3–6 are the iterative lookup: each node answers *one* question and returns
+immediately, and the **client** opens the next connection — which is what makes hop count a
+number the client observes rather than one the ring reports. Steps 7–8 fetch the manifest, which
+is itself just a chunk. Step 9 repeats the whole lookup-and-fetch for every chunk hash, issued
+**concurrently**, because content addressing means consecutive chunks of one file live on
+unrelated nodes and there is no locality to walk.
+
+**What each node holds**, in strict order of how much it matters:
+
+| Structure | Carries | If stale or wrong |
+|---|---|---|
+| **successor pointer** | correctness | wrong answers, returned confidently, undetectable |
+| **successor list** (`r ≈ log₂N`) | survival of failure — **and it is the replica set** | node orphaned only if *all* `r` die within one period |
+| **finger table** (`m` rows, ~`log₂N` distinct) | speed only | more hops, never a wrong answer |
+| **predecessor** | knowing its own arc; joins | joins stall until repaired |
+| **chunk store** | the data, keyed by `SHA-1` of its own contents | a failed hash check at the reader; try the next replica |
+
+**What runs in the background on every node**, forever: `stabilize` every `T` seconds (asks the
+successor for its predecessor, tightens the pointer, `notify`s), `fix_fingers` (refreshes one
+finger per round), and `check_predecessor`. Failure detection rides on these plus **any** failed
+call to the successor from any code path (D-013). Nothing is event-driven; everything is
+re-derived, so the ring converges from any state.
+
+**What this diagram deliberately does not show**, because they do not exist yet: the Raft group
+behind the tracker (Phase 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
+
 ## Key Design Rationales
 
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+### The tracker is a mutable namespace over an immutable store
+
+A chunk's location is computable — it lives at `successor(SHA-1(chunk))` — so the tracker holds
+no placement information at all. What the ring cannot tell you is which chunks make up a file and
+in what order, so the tracker holds exactly that, in its smallest possible form:
+`filename → manifest hash`, about 40 bytes per file. **The manifest itself is a content-addressed
+object in the ring**, fetched by an ordinary lookup, which means it inherits replication,
+availability and the hash check for free.
+
+This is Git's data model: content-addressed immutable objects with a small mutable namespace on
+top. Only the namespace needs consensus — human names change, content does not.
+
+**Rejected:** the tracker holding placement. It creates two systems that can disagree about where
+a chunk lives, where one of them is right by construction and the other is a cache that goes stale
+on every join and failure — and it re-centralises the thing the ring exists to decentralise.
+**Rejected:** the tracker holding full manifests. Its state, and therefore the consensus log,
+would grow with total chunk count rather than file count.
+
+**Cost:** one extra round trip, and the tracker becomes required for discovery, since a manifest
+hash means nothing to a human. That centralisation is accepted deliberately — it is the one
+component made highly available with consensus rather than wished away.
 
 ### 512 KB chunks — pinned for the comparison, swept for the justification
 

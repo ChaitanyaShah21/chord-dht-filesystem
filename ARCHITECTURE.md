@@ -98,6 +98,67 @@ because it is currently real.
 
 ---
 
+---
+
+## The target diagram — the system the five forks describe
+
+Drawn **after** the forks were resolved, per R11: a diagram made earlier would have decided them
+by implication. Kept as diagram-as-text so it diffs in review and cannot drift from the design.
+
+```mermaid
+flowchart TB
+    C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
+
+    subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Phase 2"]
+    end
+
+    subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
+        direction LR
+        N8["<b>N8</b>"] --> N21["<b>N21</b>"] --> N32["<b>N32</b>"] --> N48["<b>N48</b>"] --> N8
+    end
+
+    C -- "1 · name" --> T
+    T -- "2 · manifest hash" --> C
+    C -- "3 · find_successor(hash) — one step, one answer" --> N8
+    N8 -- "4 · 'closer node is N32'" --> C
+    C -- "5 · client asks N32 itself" --> N32
+    N32 -- "6 · 'N48 owns it'" --> C
+    C -- "7 · GET &lt;manifest hash&gt;" --> N48
+    N48 -- "8 · manifest = [h0 h1 … hk]" --> C
+    C -- "9 · repeat 3–8 concurrently for every chunk hash" --> ring
+```
+
+The arrows inside the ring are **successor pointers**. They are the only routing state that has
+to be correct; everything else is an accelerator.
+
+**Reading the path.** Steps 1–2 are the only time the tracker is involved, and it returns 40
+bytes. Steps 3–6 are the iterative lookup: each node answers *one* question and returns
+immediately, and the **client** opens the next connection — which is what makes hop count a
+number the client observes rather than one the ring reports. Steps 7–8 fetch the manifest, which
+is itself just a chunk. Step 9 repeats the whole lookup-and-fetch for every chunk hash, issued
+**concurrently**, because content addressing means consecutive chunks of one file live on
+unrelated nodes and there is no locality to walk.
+
+**What each node holds**, in strict order of how much it matters:
+
+| Structure | Carries | If stale or wrong |
+|---|---|---|
+| **successor pointer** | correctness | wrong answers, returned confidently, undetectable |
+| **successor list** (`r ≈ log₂N`) | survival of failure — **and it is the replica set** | node orphaned only if *all* `r` die within one period |
+| **finger table** (`m` rows, ~`log₂N` distinct) | speed only | more hops, never a wrong answer |
+| **predecessor** | knowing its own arc; joins | joins stall until repaired |
+| **chunk store** | the data, keyed by `SHA-1` of its own contents | a failed hash check at the reader; try the next replica |
+
+**What runs in the background on every node**, forever: `stabilize` every `T` seconds (asks the
+successor for its predecessor, tightens the pointer, `notify`s), `fix_fingers` (refreshes one
+finger per round), and `check_predecessor`. Failure detection rides on these plus **any** failed
+call to the successor from any code path (D-013). Nothing is event-driven; everything is
+re-derived, so the ring converges from any state.
+
+**What this diagram deliberately does not show**, because they do not exist yet: the Raft group
+behind the tracker (Phase 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
+
 ## Components
 
 | Component | Responsibility | Owns | Talks to |
@@ -120,7 +181,7 @@ decided before the paper is one that cannot be defended in December.
 | # | Fork | Why it changes things downstream | Status |
 |---|---|---|---|
 | **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
-| **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | OPEN — decide end of W1 |
+| **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | **RESOLVED** — D-017 |
 | **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | **RESOLVED** — D-014, D-015 |
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
 | **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | **RESOLVED** — D-016 |
@@ -1003,3 +1064,71 @@ well-defined hash. F5 and R4 meet in Phase 5, where the transfer layer is rewrit
 **Evidence:** the Phase 0 baseline at 512 KB already exists (`BENCHMARKS.md` §1). The sweep is
 Phase 5.
 **Defence entry:** `DEFENCE.md` D-016
+
+---
+
+### D-017 — The tracker is a mutable namespace over an immutable store
+
+**Fork:** F2. **Date:** 12 Sep 2026. **Depends on:** D-014. **Gates:** Phase 2, and the Raft work.
+
+**The decision.** The tracker holds exactly one thing: **`filename → manifest hash`**, about
+40 bytes per file. The **manifest itself is a content-addressed object stored in the ring**, like
+any chunk, and fetching it is an ordinary lookup. The tracker holds no placement information at
+all, because D-014 makes a chunk's location computable — it is `successor(SHA-1(chunk))`.
+
+The read path:
+
+```
+tracker:  "myfile.iso"   →  manifest hash        (~40 bytes, one round trip)
+ring:     manifest hash  →  the manifest         (an ordinary chunk lookup)
+ring:     each chunk hash →  the chunk           (concurrent lookups)
+```
+
+**Why.** It makes the **mutable surface of the whole system as small as it can possibly be** — a
+filename and a hash. The mutable surface is precisely what needs consensus, what can be
+inconsistent, and what Phase 2's Raft work has to replicate. Everything beneath it is immutable
+and therefore conflict-free.
+
+**This is Git's data model**, and the parallel is exact and worth stating: content-addressed
+immutable objects (blobs, trees) with a small mutable namespace layered on top (refs and branch
+names). Only the namespace needs consensus.
+
+**What it buys.**
+- **Tracker state is `O(files) × 40 bytes`**, not `O(total chunks)`. The Raft log stays small,
+  which is exactly what the original fork text predicted manifest-only would buy — and given the
+  1 Nov Raft trip-wire, a small log materially improves the odds Raft survives at all.
+- **It removes `SCALE_NOTES.md` bottleneck #2 structurally rather than mitigating it.** That entry
+  reads *"tracker builds a multi-MB string under `state_mtx`; response may exceed what the
+  client's line reader tolerates."* Under D-017 no multi-MB string is ever built, anywhere.
+- **Manifests inherit replication for free.** They are chunks, so they get `RF = 3`, `W = 2`, the
+  hash check and the same availability as any other object. No special-casing.
+- **The tracker leaves the data path.** It is consulted once per file, for 40 bytes.
+
+**Rejected: the tracker holds placement (chunk hash → node).** One lookup instead of `O(log N)`
+hops. Rejected because it creates **two systems that can disagree** about where a chunk lives —
+and the ring is right by construction while the tracker's copy is a cache that goes stale on
+every join, every failure and every stabilisation round. It also re-centralises the exact thing
+Chord exists to decentralise: if the tracker knows every chunk's location, the ring is decoration.
+
+**Rejected: the tracker holds full manifests in its own state.** Simple, closest to the current
+code, one round trip for everything. Rejected because tracker state — and therefore the Raft log
+— would grow with total chunk count (a 10 GB file at 512 KB is 20,000 hashes in one record), it
+preserves bottleneck #2 verbatim, and it keeps the tracker on the critical path serving
+payload-sized responses.
+
+**Cost accepted.**
+- **One extra round trip**: name → hash, then hash → manifest.
+- **The ring serves a non-uniform object.** A manifest for a large file is ~32 KB sitting among
+  512 KB chunks. Harmless, but it means "every value is a chunk" is not quite true and the code
+  should not assume a fixed size.
+- **The tracker becomes required for discovery.** A manifest hash means nothing to a human, so
+  there is no browsing the system without the namespace. The trade is deliberate: that is the
+  component being made highly available with consensus.
+
+**The answer this produces to "what is the tracker for?"** — *"It is a mutable namespace over an
+immutable store. Human names change; content does not. The only thing that needs consensus is the
+mapping between them."*
+
+**Evidence:** none yet — design time (R11). Tracker state size versus file count is a Phase 5
+measurement and is the direct evidence for the `O(files)` claim.
+**Defence entry:** `DEFENCE.md` D-017

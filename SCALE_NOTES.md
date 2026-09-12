@@ -89,7 +89,7 @@ to the 10x question, because it shows the system was thought about rather than j
 | Order | What saturates first | At roughly | Symptom | Fix |
 |---|---|---|---|---|
 | 1 | **Download worker cap** — `min(peers, 4)` | any file, >4 seeders | throughput flat regardless of how many peers are available | decouple worker count from seeder count |
-| 2 | **Manifest in one line** | ~10 GB files, or ~20k pieces | tracker builds a multi-MB string under `state_mtx`; response may exceed what the client's line reader tolerates | paginate the manifest |
+| 2 | **Manifest in one line** | ~10 GB files, or ~20k pieces | tracker builds a multi-MB string under `state_mtx`; response may exceed what the client's line reader tolerates | ~~paginate the manifest~~ — **removed structurally by D-017**: the tracker returns a 40-byte manifest *hash* and the manifest itself is fetched from the ring, so no large string is ever built |
 | 3 | **Per-piece `open`/`close`** on the destination | ~1 GB files | syscall time becomes visible next to transfer time | hold the fd for the download |
 | 4 | **`state_mtx` global lock** | ~100s of concurrent clients | command latency rises uniformly for everyone | per-group locks, with a stated lock order |
 | 5 | **Thread per client** | ~1,000 clients | memory exhaustion from thread stacks before CPU saturates | `epoll` + bounded worker pool |
