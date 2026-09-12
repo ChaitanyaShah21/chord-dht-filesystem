@@ -73,7 +73,11 @@ moves to Phase 5, where the transfer layer is rewritten anyway.
 Phase 1 now resolves the five open forks. They are taken in **dependency order, not numeric
 order**, because that is the order the build needs them: **F1** (routing) gates Phase 2 W2 and
 is on the table now · **F4** (failure detection) gates Phase 3 W3 · **F3** (replication) gates
-Phase 4 W4 · **F5** (chunk size) and **F2** (the tracker's job) gate Phase 5 W5. R11's condition
+Phase 4 W4 · **F5** (chunk size) and **F2** (the tracker's job) gate Phase 5 W5.
+
+**F1 is RESOLVED — 12 Sep, iterative (D-012).** Recorded in all three places per R12:
+`ARCHITECTURE.md` decision log, `DEFENCE.md` D-012, and the README's Key Design Rationales.
+**Next fork on the table: F4, failure detection.** R11's condition
 — that no fork is decided before Chord is understood — is now satisfied by the teaching rather
 than by assigned reading, per the 2 Sep working-style change.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
@@ -208,9 +212,19 @@ repository so they cannot land in a commit by accident.
 | Date | What must be true | Status |
 |---|---|---|
 | 28 Sep 2026 | **HARD.** MVP done and benchmarked, on GitHub, README + architecture diagram + benchmark plots. Resume locks. | ON TRACK |
-| early Oct 2026 | Online-assessment window opens; project freezes for documentation only | ON TRACK |
-| 16–20 Dec 2026 | Defence week — a full hour of someone attacking the architecture | ON TRACK |
-| 22 Dec 2026 | Interview-ready | ON TRACK |
+| early Oct – end Nov 2026 | **Online-assessment season**, multiple companies, ~7 weeks. Project time materially reduced. OAs are never cut | — |
+| **23–29 Nov 2026** | **Defence week.** Moved forward from 16–20 Dec | ON TRACK |
+| **30 Nov 2026** | **Interview-ready.** Moved forward from 22 Dec | ON TRACK |
+| early Dec 2026 onward | **Interviews begin, OAs continue back to back.** Assume zero project time | — |
+
+> **Calendar corrected 12 Sep 2026.** The original plan assumed a months-long gap between the
+> assessment window and interviews. **That gap does not exist** — OAs run through October and
+> November and interviews start in early December, with both running back to back from then on.
+> The old schedule put **defence week three weeks after the first interview**, which is the exact
+> failure it exists to prevent. Defence week and interview-ready both move forward by three
+> weeks. Option A was chosen over a 16–22 Nov slot: it keeps maximum build time, at the cost of
+> only one day of buffer between rehearsal and the first interview.
+> **Also corrected in `CLAUDE.md` and `PROMPT.md`.**
 
 ---
 
@@ -251,6 +265,36 @@ re-planning is how the protected items get cut.
 
 **Never cut:** algorithm practice · the flagship MVP · the benchmarks · **defence week**.
 
+### The Raft trip-wire — decided 12 Sep, fires on a date not on a feeling
+
+The corrected calendar leaves roughly **7 OA-season weeks at materially reduced hours** for a
+Phase 2 budgeted at 29 h. On the face of it that does not fit, and the cut order says Raft goes
+first.
+
+**Raft is NOT cut today.** Cutting in September on a projection is re-planning under pressure in
+the other direction — the plan has not actually slipped yet, and October's real hours are not yet
+known. What is decided today is the **trigger**, so the call fires on a date rather than on how
+the project feels in November.
+
+| | |
+|---|---|
+| **Checkpoint** | **1 Nov 2026** |
+| **Test** | Is the Raft tracker *started and demonstrably progressing* — design decided, log replication being built, commits in the last fortnight? |
+| **If no** | **Raft is cut. No discussion, no re-planning.** Cut-order item 1, decided in advance for exactly this moment. |
+| **If yes** | It continues, and the next thing at risk is cut-order item 2 (cloud VMs). |
+
+**Why 1 Nov:** defence week starts 23 Nov. The work that must sit between Raft and defence week
+is read repair (4 h), fault injection (4 h) and the dashboard (3 h) — about three weeks at
+OA-season pace. Raft therefore has to be finished by early November to be worth starting, and
+1 Nov is the last honest moment to find that out.
+
+**The loss, stated plainly rather than spun:** Raft is the strongest *breadth* item in the
+project — the consensus story, and "Chord for the data plane, Raft for the control plane" was
+going to be a headline contrast. What survives a cut is the depth story, which is the one that
+actually carries a project round.
+
+---
+
 ### Stated stretch goal — internet deployment, and possibly a web GUI
 
 Raised 12 Sep 2026. **Below the cut line by his own cut order, and logged here so it competes
@@ -259,10 +303,14 @@ openly rather than quietly.**
 **What he wants:** deploy the ring so it is a functional file-sharing system over the real
 internet, optionally with a web app front end, *if there is time before December*.
 
-**Scheduling verdict.** The window is **October–November**, after the online-assessment period —
-**not December**. 16–20 Dec is defence week and 22 Dec is interview-ready; defence week is on the
-never-cut list precisely because it is the phase that feels least like progress and gets dropped
-under pressure. Building a front end that week would compete with it directly.
+**Scheduling verdict — revised 12 Sep, same day, after the calendar was corrected.** The
+original answer pointed at an October–November window. **That window does not exist**: October
+and November are OA season, and OAs are never cut. December is worse — interviews and OAs run
+back to back from early December, and defence week is 23–29 Nov.
+
+So the honest position is that **this probably does not happen**, and if it does it is by
+displacing something, below both cut lines. It is recorded here so that if the time ever appears
+the thinking is already done — not because it is scheduled.
 
 **Split into two items of very different value:**
 
@@ -333,7 +381,7 @@ December (R11). They move to `ARCHITECTURE.md` § Open Forks and get resolved in
 
 | # | Question | Blocks | Decide by |
 |---|---|---|---|
-| Q1 | Routing — **iterative or recursive** lookup? | Phase 2 | end of W1 |
+| ~~Q1~~ | ~~Routing — iterative or recursive lookup?~~ | Phase 2 | **RESOLVED 12 Sep — iterative. D-012.** |
 | Q2 | The tracker's job — does it know **where chunks are**, or only **what chunks exist**? | Phase 2 | end of W1 |
 | Q3 | Replication — sync-to-all-3, write-one-and-propagate, or **quorum W=2 R=2**? This is the consistency/availability knob and the most consequential decision in the design. | Phase 4 | end of W1 |
 | Q4 | Failure detection — **stabilisation period alone**, or active successor heartbeats? | Phase 3 | end of W1 |

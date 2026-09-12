@@ -140,6 +140,32 @@ silently drift out of date the way an exported image does.
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+### Lookups are iterative, and that is a measurement decision
+
+A lookup is driven by the originator: each node answers "I am the owner" or "here is someone
+closer" and returns immediately, and the client opens the next connection itself. The Chord
+paper's pseudocode is recursive — a node forwards on your behalf and the answer returns down the
+chain.
+
+The reason is that the routing layer's headline number is **hop count against ring size**. Under
+iterative routing the client counts its own loop iterations, so the instrument sits outside the
+system being measured. Under recursive routing the ring reports its own hop count and the plot
+shows what the system says about itself. The same property gives exact failure attribution — a
+node times out and the client knows which one — which is what the failure-recovery phase is
+built on.
+
+**Rejected:** recursive. Lower latency and NAT-friendly, but it costs nested timeouts across the
+path, removes failure attribution, makes hop counts self-reported, and — in a thread-per-
+connection TCP codebase — holds a blocked thread on every node in the path for the duration of
+every lookup.
+
+**Cost:** two network traversals per hop instead of one, so roughly double the lookup latency.
+Nearly free on loopback, which is where these benchmarks run and which is declared as a
+distortion at the top of [`BENCHMARKS.md`](BENCHMARKS.md). The fix for a real deployment is a
+short-TTL lookup cache at the originator, not a different routing model: a stale hint costs one
+wasted hop and self-corrects, because a routing hint is validated before use and can only ever
+cost hops, never correctness.
+
 ### Two framing schemes, not one
 
 Client↔tracker messages are newline-delimited; client↔client piece transfers are

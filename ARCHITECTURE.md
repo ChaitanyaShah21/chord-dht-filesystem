@@ -119,7 +119,7 @@ decided before the paper is one that cannot be defended in December.
 
 | # | Fork | Why it changes things downstream | Status |
 |---|---|---|---|
-| **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | OPEN — decide end of W1 |
+| **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
 | **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | OPEN — decide end of W1 |
 | **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | OPEN — decide end of W1 |
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | OPEN — decide end of W1 |
@@ -653,3 +653,71 @@ that is the standard trade and it is not close.
 tracker is still running, **and** it still accepts a new connection and answers it. A process
 that survived but stopped serving would pass a liveness check and fail every user. Against a
 build with the fix commented out, the same suite fails both, reporting exit 141 by name.
+
+---
+
+### D-012 — Lookups are iterative: the originator drives every hop
+
+**Fork:** F1. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2), all Chord routing code.
+
+**The decision.** `find_successor` is a **single-step** remote call. A node answers either "I am
+the owner" or "here is a node closer than me", and returns immediately. The **originator** runs
+the loop, opening a connection to each successive node itself. A four-hop lookup is four
+request/response exchanges initiated by the client, not one call that fans out through the ring.
+
+**Why.** Four reasons, in the order they carried weight.
+
+1. **It makes the headline benchmark an observation rather than a self-report.** Phase 2's
+   deliverable is *hop count versus ring size, plotted against log₂N*. Under iterative routing
+   the client counts its own loop iterations — the measurement instrument sits **outside** the
+   thing being measured. Under recursive routing the ring reports its own hop count in a field
+   threaded through the messages, and the plot shows what the system says about itself. "How do
+   you know that number is real?" has a good answer in the first case and a bad one in the
+   second.
+2. **Phase 3 is entirely about killing nodes.** Iterative gives exact failure attribution: a node
+   times out and the originator knows precisely which one, and can retry immediately with the
+   next finger it already holds. Recursive gives a timeout with no attribution — the worst
+   possible property for the phase whose whole job is to measure what happens when nodes die.
+3. **It fits the concurrency model that already exists.** Both binaries are thread-per-connection
+   TCP. Under recursive routing every node on the path holds a **blocked thread** for the whole
+   duration of the lookup; a ring under load would have threads waiting on threads waiting on
+   threads. Under iterative routing every handler returns instantly and holds nothing. Choosing
+   recursive would have meant either accepting that cost or rewriting the concurrency model —
+   a cost invisible in a textbook comparison and very real here.
+4. **Precedent, knowingly diverging from the paper.** The Chord paper's pseudocode is recursive
+   (`return n'.find_successor(id)`). Kademlia — the DHT that actually shipped at scale, in
+   BitTorrent and Ethereum — is **iterative**, for reasons 1 and 2. Diverging from the paper
+   deliberately, and being able to name who else diverged and why, is stronger than following it.
+
+**Rejected: option B, recursive.** Lower latency (roughly `hops × one-way` rather than
+`2 × hops × one-way`), NAT-friendly since only the first hop must be reachable, and intermediate
+nodes can cache what they forward. Rejected on three costs: **nested timeouts** — hop 3 stalling
+blocks hops 2 and 1 and the originator, and deciding whose timeout fires and who retries is
+genuinely hard to get right; **no failure attribution**; and **self-reported hop counts**, which
+are exactly the number this project's first plot is made of.
+
+**Rejected: option C, hybrid** (forward recursively, final node replies direct to the
+originator). Cuts the return path, so it optimises **latency** — the one cost that is invisible
+on loopback, where every number in this project is measured. It still leaves hop counts
+self-reported and failure attribution absent, i.e. it optimises the thing that cannot be observed
+here at the price of the two things that must be. A third message pattern to implement and debug
+for no measurable gain.
+
+**Cost accepted — stated up front rather than discovered.** **Two network traversals per hop
+instead of one**, so lookup latency is roughly double recursive's, plus a connection setup per
+hop unless connections are pooled. On loopback this is nearly free, and **`BENCHMARKS.md`
+already declares at the top that loopback has no real network latency** — meaning the measurement
+environment flatters this choice, and that flattery is declared rather than hidden. On a
+wide-area deployment (~75 ms between regions, 4 hops) it is roughly 600 ms versus 375 ms. If the
+ring is ever deployed on real VMs, the fix is **not** to change the routing model but to add a
+short-TTL lookup cache at the originator: a stale entry costs one wasted hop and self-corrects,
+because a bad routing hint can only cost hops and never correctness.
+
+**What would change my mind:** ring members behind NAT, which makes iterative impossible because
+the originator cannot reach hop 2. Noting that this scenario breaks the **data plane** harder
+than the control plane — unreachable peers cannot accept transfers either — so it would need
+STUN/TURN and hole punching regardless, and is not a routing decision.
+
+**Evidence:** none yet — decided at design time (R11), before any Chord code exists. The hop
+count plot in Phase 2 is the first evidence and is the reason for the choice.
+**Defence entry:** `DEFENCE.md` D-012

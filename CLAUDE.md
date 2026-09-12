@@ -315,9 +315,10 @@ development is evidence; new work goes on top as new commits.
 | Date | What must be true |
 |---|---|
 | **28 Sep 2026** | **HARD.** MVP done and benchmarked, on GitHub, README + architecture diagram + benchmark plots. Resume locks. |
-| early Oct 2026 | Online-assessment window opens; project freezes for documentation only |
-| 16–20 Dec 2026 | Defence week — a full hour of someone attacking the architecture |
-| 22 Dec 2026 | Interview-ready |
+| early Oct – end Nov 2026 | **Online-assessment season.** OAs for multiple companies run across October and November. Project time is materially reduced; OAs are never cut |
+| 23–29 Nov 2026 | **Defence week** — a full hour of someone attacking the architecture. **Moved forward from 16–20 Dec on 12 Sep**, because interviews begin in early December |
+| 30 Nov 2026 | **Interview-ready.** Moved forward from 22 Dec for the same reason |
+| early Dec 2026 onward | **Interviews begin, and OAs continue alongside them back to back.** There is no gap between the assessment window and the interview window — assume zero project time from here |
 
 **Hour budget:** 70 h in Phase 1 (weeks 1–8), 35 h in Phase 2 (weeks 9–17). 105 h total.
 **Daily rhythm:** 1 h 30 m on weekdays, one 2 h 30 m deep block at the weekend — minimum one

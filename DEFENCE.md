@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 19 |
+| Marked SOLID on the facts | 20 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -524,6 +524,71 @@ control flow. Each rejected the variant that works only while everyone remembers
 
 **Confidence:** SOLID. Reproduction, fix and the pre-fix failure are all in
 `scripts/e2e-hangup.sh`, which asserts the tracker is not merely alive but still serving.
+
+---
+
+### D-012 · Why iterative lookups, when the Chord paper is recursive?
+
+**They ask:** "Your lookup is iterative — the client talks to every node on the path itself.
+The Chord paper's `find_successor` is recursive. Why did you change it?"
+
+**I answer:**
+Three reasons, and the first one is about measurement rather than performance.
+
+The headline number for my routing layer is hop count against ring size, plotted against log₂N.
+Under iterative routing my client *is* the loop, so it counts hops by incrementing a local
+variable — the instrument sits outside the thing being measured. Under recursive routing the
+ring reports its own hop count in a field threaded through the messages, and my plot shows what
+the system says about itself. If someone asks me how I know that number is real, I want the
+answer to be "my client counted the round trips it made", not "the nodes incremented a
+counter".
+
+Second, my next phase is entirely about killing nodes and measuring recovery. Iterative gives me
+exact failure attribution — a node times out and I know precisely which one, and I retry
+immediately with the next finger I already hold. Recursive gives me a timeout with no
+attribution: something on a path of four nodes did not answer. That is the worst possible
+property for the phase whose whole job is to explain what happens when nodes die.
+
+Third, my codebase is thread-per-connection TCP. Recursive routing means every node on the path
+holds a blocked thread for the whole lookup — threads waiting on threads. Iterative handlers
+return instantly and hold nothing. Recursive would have meant accepting that or rewriting the
+concurrency model, which is a cost you do not see in a textbook comparison.
+
+**They push:** "You have doubled your lookup latency to make it easier to measure. Isn't that
+the tail wagging the dog?"
+
+It is two network traversals per hop instead of one, so yes — roughly double. Two things about
+that. It is a **stated, accepted cost**, not a discovery; it is written in the decision log with
+the number. And on my measurement environment it is nearly free, because everything runs on
+loopback, which has no real network latency — **which is declared at the top of
+`BENCHMARKS.md`, and it means the environment flatters this exact choice.** I would rather
+volunteer that than be caught by it. On a wide-area ring at 75 ms between regions and four hops
+it is about 600 ms against 375 ms, and that gap is real.
+
+**They push harder:** "So on a real deployment you would switch to recursive."
+
+No — I would add a short-TTL lookup cache at the originator first. A stale cache entry costs one
+wasted hop and then self-corrects, because a bad routing hint can only ever cost hops and never
+correctness: every routing hint is validated against `(my_id, k)` before it is used, so it is
+either rejected or is genuinely a node closer to the target. That reclaims most of the latency
+gap without giving up failure attribution or measurable hop counts. Switching to recursive would
+give up both to buy back something a cache buys more cheaply.
+
+**The part I would volunteer:** I am diverging from the Chord paper here, and I am not the first.
+Kademlia — the DHT that actually shipped at scale, in BitTorrent and Ethereum — is iterative,
+and for the same reasons: it wants to drive its own timeouts and to query several candidates in
+parallel rather than wait on one slow forwarder. Parallel queries are the next thing iterative
+routing makes possible for me and recursive would not.
+
+**What would change my mind:** ring members behind NAT. Iterative requires the originator to
+open a connection to every node on the path, and that is impossible if the nodes are behind home
+routers. But that scenario breaks my data plane harder than my control plane — an unreachable
+peer cannot accept a file transfer either — so it needs hole punching regardless, and it is not
+a routing decision.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence until Phase 2 — the hop-count plot
+that justifies the choice does not exist yet, and the honest statement today is "decided at
+design time for measurability, not yet demonstrated".
 
 ---
 
