@@ -391,7 +391,7 @@ December (R11). They move to `ARCHITECTURE.md` § Open Forks and get resolved in
 |---|---|---|---|
 | ~~Q1~~ | ~~Routing — iterative or recursive lookup?~~ | Phase 2 | **RESOLVED 12 Sep — iterative. D-012.** |
 | Q2 | The tracker's job — does it know **where chunks are**, or only **what chunks exist**? | Phase 2 | end of W1 |
-| Q3 | Replication — sync-to-all-3, write-one-and-propagate, or **quorum W=2 R=2**? This is the consistency/availability knob and the most consequential decision in the design. | Phase 4 | end of W1 |
+| ~~Q3~~ | ~~Replication — sync-to-all-3, write-one, or quorum?~~ | Phase 4 | **RESOLVED 12 Sep — content-addressed chunks (D-014) remove conflicts entirely, so the question became durability-only: `RF=3, W=2, R=1`, with `W` a swept runtime parameter (D-015).** |
 | ~~Q4~~ | ~~Failure detection — stabilisation alone, or active heartbeats?~~ | Phase 3 | **RESOLVED 12 Sep — opportunistic detection on top of stabilisation, with `ECONNREFUSED` distinguished from a timeout. D-013.** |
 | Q5 | **Chunk size** — pick a number, then measure throughput at three sizes and let the plot justify it | Phase 5 | number by end of W1, curve in W5 |
 

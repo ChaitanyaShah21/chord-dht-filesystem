@@ -140,6 +140,30 @@ silently drift out of date the way an exported image does.
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+### `W = 2` — an acknowledged write is a true statement
+
+Every chunk exists on three nodes: its owner and the owner's first two successors, which the
+successor list already names. A write is acknowledged once the owner **and at least one
+successor** hold it; the third copy propagates in the background. Reads consult one replica and
+fall through to the next on a failed hash check.
+
+The owner writes locally and sends to both successors in parallel, so `W = 2` waits for the
+*faster* of the two while `W = 3` waits for both — one slow peer would otherwise set the latency
+of every write.
+
+**Rejected:** `W = 1` with background propagation. Faster and always available, but an
+acknowledged write can be lost if the owner dies before propagating — a system that lies about
+durability. **Rejected:** `W = 3`. It buys protection against a second simultaneous failure by
+making writes fail during every first one.
+
+**`W` is a runtime parameter, not a constant.** Sweeping it from 1 to 3 produces write latency
+and write-success-under-kill as a measured curve, which is what turns "where does this sit on the
+consistency/availability trade-off, and how would you flip it?" from an opinion into a plot.
+
+**Cost:** between acknowledgement and background propagation the advertised replication factor of
+three is briefly untrue, so that window is measured rather than assumed. If both successors are
+unreachable the write fails loudly, which is the correct behaviour given the alternative.
+
 ### Chunks are content-addressed, which deletes the conflict problem
 
 A chunk's key in the ring is `SHA-1` of its own contents. Two replicas therefore cannot disagree:

@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 22 |
+| Marked SOLID on the facts | 23 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -713,6 +713,66 @@ share a rack, and content addressing removes even the option of fixing that by p
 
 **Confidence:** SOLID on the reasoning. `WEAK` on evidence — the deduplication rate is a Phase 5
 measurement and does not exist yet.
+
+---
+
+### D-015 · Where does this sit on the consistency/availability trade-off?
+
+**They ask:** "Three replicas. When do you tell the client the write succeeded?"
+
+**I answer:**
+When two of the three have it — the owner and whichever successor answers first. The third copy
+propagates in the background.
+
+The owner writes locally and sends to both successors in parallel, so `W = 2` waits for the
+**faster** of the two, not a specific one. `W = 3` would wait for both, which means the slowest
+peer sets the latency of every write. On my test rig every peer shares the same 8 cores, so one
+peer being briefly very slow is the normal case and that difference is large.
+
+**They push:** "Why not acknowledge on one and propagate everything in the background? It is
+faster and always available."
+
+Because then an acknowledged write can be lost. The owner accepts, tells the client "saved", and
+dies before it propagates — the chunk is gone and the client believes it succeeded. For a file
+system, a system that lies about durability is the worst defect class there is. `W = 2` is the
+point where an acknowledged write is a **true statement** and a single failure still does not
+stop me.
+
+**They push:** "Then why not `W = 3` and be properly safe?"
+
+Because `W = 3` makes a write fail whenever **any one** successor is down, and during churn — or
+mid-stabilisation, while a successor pointer is still tightening — that is a meaningful fraction
+of the time. It buys protection against a second simultaneous failure by making writes fail
+during every first one. That is a bad trade for this workload.
+
+**They push hardest:** "So where does this system sit on the consistency/availability trade-off,
+and how would you flip it?"
+
+Two answers, because it is deliberately in two places.
+
+On the **data** plane there is no consistency question at all — chunks are content-addressed and
+immutable, so replicas cannot disagree. What is left is durability against availability, and
+that is the `W` knob. I did not pick a point on it and argue for it; I made `W` a runtime
+parameter and measured the curve. Sweeping `W` from 1 to 3 gives me write latency and write
+success rate while a node is being killed, so "how would you flip it" has a concrete answer:
+this parameter, and this is what each setting costs in my own numbers.
+
+On the **control** plane — the manifests, which chunks make up a file — the data is genuinely
+mutable, so that is where consensus goes.
+
+**The part I would volunteer:** `W = 2` means my advertised replication factor of three is
+briefly untrue on **every write**, not just after a failure. There is a window between
+acknowledgement and background propagation where two copies exist, so the system tolerates one
+further failure rather than two. That is the same point as durability figures being steady-state
+properties. I measure that window rather than assuming it away.
+
+And if `W = 2` writes started failing too often, the fix is not to lower `W` — it is **hinted
+handoff**: write the copy to the next node along with a note saying who it really belongs to, and
+forward it when that node comes back. That raises write availability without weakening the
+durability guarantee. I left it out of Phase 4 on time budget, not on merit.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence until the Phase 4 `W`-sweep exists —
+the whole strength of this answer is that the curve is measured, and it is not measured yet.
 
 ---
 

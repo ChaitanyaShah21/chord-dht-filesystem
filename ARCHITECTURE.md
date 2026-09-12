@@ -121,7 +121,7 @@ decided before the paper is one that cannot be defended in December.
 |---|---|---|---|
 | **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
 | **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | OPEN — decide end of W1 |
-| **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | OPEN — decide end of W1 |
+| **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | **RESOLVED** — D-014, D-015 |
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
 | **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | OPEN — number by end of W1, curve in W5 |
 
@@ -877,3 +877,69 @@ already bitten this codebase.
 
 **Evidence:** none yet — design time (R11). Phase 5 measures the deduplication rate.
 **Defence entry:** `DEFENCE.md` D-014
+
+---
+
+### D-015 — `RF = 3`, `W = 2`, `R = 1`, and `W` is a runtime parameter
+
+**Fork:** F3. **Date:** 12 Sep 2026. **Depends on:** D-014 (content addressing).
+**Gates:** Phase 4 (W4).
+
+**The decision.** Three copies of every chunk — the owner plus its first two successors, which
+D-014 and the successor list make the same set. A write is acknowledged when **the owner and at
+least one successor** hold it; the third copy propagates in the background. A read consults
+**one** replica, and on a failed hash check moves to the next. **`W` is a configuration value,
+not a literal**, so it can be swept.
+
+`R = 1` needs no defending: D-014 makes reads self-verifying, so a wrong answer is caught locally
+by the reader. That is a retry loop, not a quorum.
+
+**The mechanical detail that drives the latency arithmetic.** The owner writes its own copy
+locally and sends to both successors **in parallel**. So `W = 2` waits for the **first** of the
+two successors to answer — `min` of two round trips — while `W = 3` waits for both, `max` of two.
+On a test host where every peer contends for the same 8 cores, one peer being briefly very slow
+is the normal case, so the gap between `min` and `max` is large and `W = 2` is materially faster
+than the name suggests.
+
+**Why `W = 2`.** It is the point at which **an acknowledged write is a true statement** and a
+single failure does not stop you.
+
+**Rejected: `W = 1`, write-one-and-propagate.** Fastest writes, highest write availability, least
+code. Rejected because its failure mode is **silent data loss on an acknowledged write**: the
+owner accepts, reports success, and dies before propagating. For a file system, a system that
+lies to the client about durability is the worst class of defect — the same category as D-010,
+where the tracker kept answering confidently and every answer was wrong.
+
+**Rejected: `W = 3`, synchronous to all.** Survives two simultaneous failures and keeps all three
+replicas current. Rejected because **a write then fails whenever any one successor is down** —
+which, during churn or mid-stabilisation while a successor pointer is still tightening, is a
+meaningful fraction of the time — and because write latency becomes the `max` of two round trips,
+so one slow peer dominates every write. It buys protection against a *second* simultaneous
+failure by making writes fail during every *first* one.
+
+**Cost accepted.**
+- **The advertised `RF = 3` is briefly untrue on every write**, not only after a failure: between
+  acknowledgement and background propagation there are two copies, so the system tolerates one
+  further failure rather than two. This is the C9 degraded-window property, and the response is
+  to **measure the window** rather than assume it away.
+- **If both successors are unreachable, `W = 2` is unsatisfiable and the write fails loudly.**
+  That is the availability cost and it is the correct behaviour, since the alternative is `W = 1`
+  lying about it.
+
+**Why `W` is configurable — this is half the decision.** Making `W` a parameter costs a variable
+instead of a literal and converts the fork into a measurement: sweep `W ∈ {1, 2, 3}` and plot
+**write latency** and **write success rate while a node is being killed**. That plot closes the
+`WEAK` entry standing in `DEFENCE.md` since before the portfolio work began — *"where does this
+sit on the consistency/availability trade-off, and how would you flip it?"*, marked
+`WEAK — blocked on F3`. With a configurable `W` the answer stops being an opinion: **here, this
+is the knob, and this is the measured cost of each setting.**
+
+**Named but not built: hinted handoff** (Dynamo's technique — if a successor is down, write the
+copy to the next node along with a note saying who it really belongs to, and forward it when that
+node returns). It raises write availability without lowering `W`. It is the answer to "what would
+you do if `W = 2` writes were failing too often?", and it is deliberately out of a 9 h Phase 4
+that already contains virtual nodes.
+
+**Evidence:** none yet — design time (R11). Phase 4's `W`-sweep is the first evidence, and the
+degraded-window measurement is the second.
+**Defence entry:** `DEFENCE.md` D-015
