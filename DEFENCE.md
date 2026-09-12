@@ -17,7 +17,7 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 23 |
+| Marked SOLID on the facts | 24 |
 | Marked `WEAK` — scheduled | 8 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
@@ -773,6 +773,56 @@ durability guarantee. I left it out of Phase 4 on time budget, not on merit.
 
 **Confidence:** SOLID on the reasoning. `WEAK` on evidence until the Phase 4 `W`-sweep exists —
 the whole strength of this answer is that the curve is measured, and it is not measured yet.
+
+---
+
+### D-016 · Why 512 KB chunks?
+
+**They ask:** "Your chunk size is 512 KB. Why that number?"
+
+**I answer:**
+Two separate answers, because the number I *build* at and the number I can *justify* come from
+different places.
+
+I build at 512 KB because my Phase 0 baseline was measured at 512 KB. My headline transfer claim
+is parallel transfer against that baseline, and if I changed chunk size at the same time as
+adding parallelism I would have moved two variables and the improvement could not be attributed
+to either. So chunk size is pinned for the before/after, and swept separately with parallelism
+held constant. One controlled variable per claim.
+
+The justification for the size itself is a curve, not an opinion. I sweep 64 KB, 256 KB, 512 KB,
+2 MB and 8 MB and publish the throughput. Five points rather than three, because three cannot
+distinguish a curve with a knee from a straight line, and the knee is the whole argument.
+
+**They push:** "What do you expect the curve to show?"
+
+Possibly nothing, and I would report that. Everything runs on loopback, which has no network
+latency for a larger chunk to amortise, and the page cache absorbs much of the I/O difference. If
+the curve is flat, the honest result is "chunk size barely matters on loopback, here is why, and
+here is what would change on a real network". I would rather publish a flat curve than tune until
+something looks interesting.
+
+**They push harder:** "Smaller chunks parallelise better. Why not 64 KB?"
+
+Because in my system chunk count is a **routing** cost, not just an I/O cost. My lookups are
+iterative, so each one costs two network traversals per hop — about nine round trips on a 20-node
+ring. At 64 KB a 100 MB file is 1,600 chunks, so that is roughly 14,400 round trips of pure
+lookup before a single byte of payload moves. At 512 KB it is 200 chunks. Smaller chunks buy
+parallelism with routing traffic, and that trade only shows up once you know the routing model.
+
+There is a second effect. Because my chunks are content-addressed, consecutive chunks of one file
+land on unrelated ring positions — there is no locality at all, so every chunk is an independent
+lookup to an arbitrary node. What saves me is that the manifest gives me every hash up front, so
+I issue the lookups concurrently rather than serially. That requirement exists because of two
+earlier decisions meeting, and I designed for it rather than discovering it.
+
+**The part I would volunteer:** 4 MB would have been defensible on lookup cost alone, and I
+rejected it partly because it would make my own deduplication claim theoretical — a 4 MB span
+almost never repeats across files, so content addressing would stop paying for itself.
+
+**Confidence:** SOLID on the method and on the routing-cost argument. `WEAK` on the number until
+the sweep exists — today the honest statement is "512 KB because it holds my baseline comparable,
+and the curve that justifies it is Phase 5 work".
 
 ---
 

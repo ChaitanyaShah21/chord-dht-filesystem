@@ -140,6 +140,23 @@ silently drift out of date the way an exported image does.
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+### 512 KB chunks — pinned for the comparison, swept for the justification
+
+The build uses 512 KB chunks because the Phase 0 baseline was measured at 512 KB, and the
+headline transfer claim is parallel transfer *against that baseline*. Changing chunk size at the
+same time as adding parallelism would move two variables and make the improvement
+unattributable. Chunk size is therefore held constant for the before/after and swept separately,
+with parallelism fixed, across `{64 KB, 256 KB, 512 KB, 2 MB, 8 MB}` — five points rather than
+three, because three cannot distinguish a curve with a knee from a straight line.
+
+**Rejected:** 64 KB. Chunk count here is a *routing* cost, not only an I/O cost — lookups are
+iterative, so each costs two traversals per hop, and a 100 MB file at 64 KB is 1,600 chunks and
+roughly 14,400 round trips of pure lookup before any payload moves. **Rejected:** 4 MB. It would
+make the deduplication claim theoretical, since a 4 MB span rarely repeats across files.
+
+**Stated in advance:** on loopback this curve may come out nearly flat, because there is no
+network latency for larger chunks to amortise. If it is flat, that is the published result.
+
 ### `W = 2` — an acknowledged write is a true statement
 
 Every chunk exists on three nodes: its owner and the owner's first two successors, which the

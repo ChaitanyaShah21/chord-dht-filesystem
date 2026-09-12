@@ -123,7 +123,7 @@ decided before the paper is one that cannot be defended in December.
 | **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | OPEN — decide end of W1 |
 | **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | **RESOLVED** — D-014, D-015 |
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
-| **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | OPEN — number by end of W1, curve in W5 |
+| **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | **RESOLVED** — D-016 |
 
 | **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
 | **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
@@ -943,3 +943,63 @@ that already contains virtual nodes.
 **Evidence:** none yet — design time (R11). Phase 4's `W`-sweep is the first evidence, and the
 degraded-window measurement is the second.
 **Defence entry:** `DEFENCE.md` D-015
+
+---
+
+### D-016 — 512 KB chunks, held constant for the headline claim and swept separately
+
+**Fork:** F5. **Date:** 12 Sep 2026. **Gates:** Phase 5 (W5).
+
+**The decision.** Chunks are **512 KB** — the size the existing code already uses. Phase 5 sweeps
+`{64 KB, 256 KB, 512 KB, 2 MB, 8 MB}` as a **separate experiment**, with parallelism held
+constant, and the curve is published whatever it shows.
+
+**Why 512 KB, and the reason is experimental rather than technical.** The Phase 0 baseline —
+**71.2 MB/s at 100 MB, commit `e381179`** — was measured at 512 KB. Phase 5's headline claim is
+parallel transfer against that baseline. **If Phase 5 changed chunk size *and* added parallelism,
+the improvement could not be attributed to either.** Two variables moved, and the resulting number
+is indefensible. So chunk size is pinned at 512 KB for the before/after, and swept afterwards with
+parallelism fixed. One controlled variable per claim.
+
+**Five sweep points, not three**, roughly log-spaced, because three points cannot distinguish a
+curve with a knee from a straight line — and the knee is the entire justification for whatever
+number ends up in the README.
+
+**The interaction that makes chunk count more expensive here than in a textbook.** D-012 chose
+iterative routing, so a lookup costs `2 × hops` network traversals rather than `hops`. On a
+20-node ring that is `2 × log₂20 ≈ 9` round trips **per chunk**. At 64 KB, a 100 MB file is 1,600
+chunks and therefore ~14,400 round trips of pure lookup before any payload moves; at 4 MB it is
+~225. Chunk size is not only an I/O parameter here — it is a **routing-load parameter**, and that
+is a direct consequence of D-012.
+
+**And the interaction with D-014.** Content addressing means consecutive chunks of one file hash
+to unrelated ring positions, so there is **no locality to exploit** — every chunk is an
+independent lookup to an arbitrary node. The mitigation is that the manifest supplies every hash
+up front, so all lookups can be issued **concurrently** rather than serially. That is a Phase 5
+implementation requirement created by two earlier decisions meeting, and it is recorded here so it
+is designed rather than discovered.
+
+**Rejected: 64 KB.** Best parallelism, cheapest recovery, finest deduplication granularity.
+Rejected because lookup traffic dominates at this chunk count under iterative routing, manifests
+grow to 32 KB for a 100 MB file, and per-chunk syscall overhead becomes visible against the
+payload.
+
+**Rejected: 4 MB.** Minimal lookups, tiny manifests, excellent sequential disk I/O. Rejected
+because one slow peer then dominates an entire transfer, recovery from a failed chunk is coarse,
+and deduplication almost never hits — a 4 MB span rarely repeats, so D-014's free dedup becomes
+theoretical.
+
+**Stated before the data exists, so it is not a surprise:** on loopback this curve may come out
+**nearly flat**, because there is no network latency for larger chunks to amortise and the page
+cache absorbs much of the I/O difference. **If it is flat, that is the finding** — "chunk size
+barely matters on loopback, here is why, and here is what would change on a real network" is an
+honest result, and reporting a flat curve as flat is worth more than tuning until something looks
+interesting.
+
+**Touches an open defect.** R4, the zero-byte file, is still the one deliberate failure in
+`scripts/e2e-edge.sh`. A 0-byte file is 0 chunks, and under D-014 the empty chunk has a perfectly
+well-defined hash. F5 and R4 meet in Phase 5, where the transfer layer is rewritten anyway.
+
+**Evidence:** the Phase 0 baseline at 512 KB already exists (`BENCHMARKS.md` §1). The sweep is
+Phase 5.
+**Defence entry:** `DEFENCE.md` D-016
