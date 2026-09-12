@@ -200,69 +200,6 @@ behind the tracker (Phase 2, subject to the 1 Nov trip-wire) and virtual nodes (
 The section that turns a repository into an argument. Written from the decision log in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-### The tracker is a mutable namespace over an immutable store
-
-A chunk's location is computable — it lives at `successor(SHA-1(chunk))` — so the tracker holds
-no placement information at all. What the ring cannot tell you is which chunks make up a file and
-in what order, so the tracker holds exactly that, in its smallest possible form:
-`filename → manifest hash`, about 40 bytes per file. **The manifest itself is a content-addressed
-object in the ring**, fetched by an ordinary lookup, which means it inherits replication,
-availability and the hash check for free.
-
-This is Git's data model: content-addressed immutable objects with a small mutable namespace on
-top. Only the namespace needs consensus — human names change, content does not.
-
-**Rejected:** the tracker holding placement. It creates two systems that can disagree about where
-a chunk lives, where one of them is right by construction and the other is a cache that goes stale
-on every join and failure — and it re-centralises the thing the ring exists to decentralise.
-**Rejected:** the tracker holding full manifests. Its state, and therefore the consensus log,
-would grow with total chunk count rather than file count.
-
-**Cost:** one extra round trip, and the tracker becomes required for discovery, since a manifest
-hash means nothing to a human. That centralisation is accepted deliberately — it is the one
-component made highly available with consensus rather than wished away.
-
-### 512 KB chunks — pinned for the comparison, swept for the justification
-
-The build uses 512 KB chunks because the Phase 0 baseline was measured at 512 KB, and the
-headline transfer claim is parallel transfer *against that baseline*. Changing chunk size at the
-same time as adding parallelism would move two variables and make the improvement
-unattributable. Chunk size is therefore held constant for the before/after and swept separately,
-with parallelism fixed, across `{64 KB, 256 KB, 512 KB, 2 MB, 8 MB}` — five points rather than
-three, because three cannot distinguish a curve with a knee from a straight line.
-
-**Rejected:** 64 KB. Chunk count here is a *routing* cost, not only an I/O cost — lookups are
-iterative, so each costs two traversals per hop, and a 100 MB file at 64 KB is 1,600 chunks and
-roughly 14,400 round trips of pure lookup before any payload moves. **Rejected:** 4 MB. It would
-make the deduplication claim theoretical, since a 4 MB span rarely repeats across files.
-
-**Stated in advance:** on loopback this curve may come out nearly flat, because there is no
-network latency for larger chunks to amortise. If it is flat, that is the published result.
-
-### `W = 2` — an acknowledged write is a true statement
-
-Every chunk exists on three nodes: its owner and the owner's first two successors, which the
-successor list already names. A write is acknowledged once the owner **and at least one
-successor** hold it; the third copy propagates in the background. Reads consult one replica and
-fall through to the next on a failed hash check.
-
-The owner writes locally and sends to both successors in parallel, so `W = 2` waits for the
-*faster* of the two while `W = 3` waits for both — one slow peer would otherwise set the latency
-of every write.
-
-**Rejected:** `W = 1` with background propagation. Faster and always available, but an
-acknowledged write can be lost if the owner dies before propagating — a system that lies about
-durability. **Rejected:** `W = 3`. It buys protection against a second simultaneous failure by
-making writes fail during every first one.
-
-**`W` is a runtime parameter, not a constant.** Sweeping it from 1 to 3 produces write latency
-and write-success-under-kill as a measured curve, which is what turns "where does this sit on the
-consistency/availability trade-off, and how would you flip it?" from an opinion into a plot.
-
-**Cost:** between acknowledgement and background propagation the advertised replication factor of
-three is briefly untrue, so that window is measured rather than assumed. If both successors are
-unreachable the write fails loudly, which is the correct behaviour given the alternative.
-
 ### Chunks are content-addressed, which deletes the conflict problem
 
 A chunk's key in the ring is `SHA-1` of its own contents. Two replicas therefore cannot disagree:
@@ -288,6 +225,78 @@ placement at all.
 The consistency/availability discussion is not lost — it **moves to the metadata**, which is
 genuinely mutable and is the plane replicated by consensus. The system sits in two places on
 purpose: available and conflict-free on the data path, consistent on the control path.
+
+### The tracker is a mutable namespace over an immutable store
+
+A chunk's location is computable — it lives at `successor(SHA-1(chunk))` — so the tracker holds
+no placement information at all. What the ring cannot tell you is which chunks make up a file and
+in what order, so the tracker holds exactly that, in its smallest possible form:
+`filename → manifest hash`, about 40 bytes per file. **The manifest itself is a content-addressed
+object in the ring**, fetched by an ordinary lookup, which means it inherits replication,
+availability and the hash check for free.
+
+This is Git's data model: content-addressed immutable objects with a small mutable namespace on
+top. Only the namespace needs consensus — human names change, content does not.
+
+**Rejected:** the tracker holding placement. It creates two systems that can disagree about where
+a chunk lives, where one of them is right by construction and the other is a cache that goes stale
+on every join and failure — and it re-centralises the thing the ring exists to decentralise.
+**Rejected:** the tracker holding full manifests. Its state, and therefore the consensus log,
+would grow with total chunk count rather than file count.
+
+**Cost:** one extra round trip, and the tracker becomes required for discovery, since a manifest
+hash means nothing to a human. That centralisation is accepted deliberately — it is the one
+component made highly available with consensus rather than wished away.
+
+### Lookups are iterative, and that is a measurement decision
+
+A lookup is driven by the originator: each node answers "I am the owner" or "here is someone
+closer" and returns immediately, and the client opens the next connection itself. The Chord
+paper's pseudocode is recursive — a node forwards on your behalf and the answer returns down the
+chain.
+
+The reason is that the routing layer's headline number is **hop count against ring size**. Under
+iterative routing the client counts its own loop iterations, so the instrument sits outside the
+system being measured. Under recursive routing the ring reports its own hop count and the plot
+shows what the system says about itself. The same property gives exact failure attribution — a
+node times out and the client knows which one — which is what the failure-recovery phase is
+built on.
+
+**Rejected:** recursive. Lower latency and NAT-friendly, but it costs nested timeouts across the
+path, removes failure attribution, makes hop counts self-reported, and — in a thread-per-
+connection TCP codebase — holds a blocked thread on every node in the path for the duration of
+every lookup.
+
+**Cost:** two network traversals per hop instead of one, so roughly double the lookup latency.
+Nearly free on loopback, which is where these benchmarks run and which is declared as a
+distortion at the top of [`BENCHMARKS.md`](BENCHMARKS.md). The fix for a real deployment is a
+short-TTL lookup cache at the originator, not a different routing model: a stale hint costs one
+wasted hop and self-corrects, because a routing hint is validated before use and can only ever
+cost hops, never correctness.
+
+### `W = 2` — an acknowledged write is a true statement
+
+Every chunk exists on three nodes: its owner and the owner's first two successors, which the
+successor list already names. A write is acknowledged once the owner **and at least one
+successor** hold it; the third copy propagates in the background. Reads consult one replica and
+fall through to the next on a failed hash check.
+
+The owner writes locally and sends to both successors in parallel, so `W = 2` waits for the
+*faster* of the two while `W = 3` waits for both — one slow peer would otherwise set the latency
+of every write.
+
+**Rejected:** `W = 1` with background propagation. Faster and always available, but an
+acknowledged write can be lost if the owner dies before propagating — a system that lies about
+durability. **Rejected:** `W = 3`. It buys protection against a second simultaneous failure by
+making writes fail during every first one.
+
+**`W` is a runtime parameter, not a constant.** Sweeping it from 1 to 3 produces write latency
+and write-success-under-kill as a measured curve, which is what turns "where does this sit on the
+consistency/availability trade-off, and how would you flip it?" from an opinion into a plot.
+
+**Cost:** between acknowledgement and background propagation the advertised replication factor of
+three is briefly untrue, so that window is measured rather than assumed. If both successors are
+unreachable the write fails loudly, which is the correct behaviour given the alternative.
 
 ### A refused connection is proof; a timeout is only a suspicion
 
@@ -315,31 +324,22 @@ answer on a real network and the wrong one on loopback, which has no jitter for 
 **Cost:** detection time is a distribution rather than a constant, so reconvergence is published
 as two numbers — under load and idle — instead of one.
 
-### Lookups are iterative, and that is a measurement decision
+### 512 KB chunks — pinned for the comparison, swept for the justification
 
-A lookup is driven by the originator: each node answers "I am the owner" or "here is someone
-closer" and returns immediately, and the client opens the next connection itself. The Chord
-paper's pseudocode is recursive — a node forwards on your behalf and the answer returns down the
-chain.
+The build uses 512 KB chunks because the Phase 0 baseline was measured at 512 KB, and the
+headline transfer claim is parallel transfer *against that baseline*. Changing chunk size at the
+same time as adding parallelism would move two variables and make the improvement
+unattributable. Chunk size is therefore held constant for the before/after and swept separately,
+with parallelism fixed, across `{64 KB, 256 KB, 512 KB, 2 MB, 8 MB}` — five points rather than
+three, because three cannot distinguish a curve with a knee from a straight line.
 
-The reason is that the routing layer's headline number is **hop count against ring size**. Under
-iterative routing the client counts its own loop iterations, so the instrument sits outside the
-system being measured. Under recursive routing the ring reports its own hop count and the plot
-shows what the system says about itself. The same property gives exact failure attribution — a
-node times out and the client knows which one — which is what the failure-recovery phase is
-built on.
+**Rejected:** 64 KB. Chunk count here is a *routing* cost, not only an I/O cost — lookups are
+iterative, so each costs two traversals per hop, and a 100 MB file at 64 KB is 1,600 chunks and
+roughly 14,400 round trips of pure lookup before any payload moves. **Rejected:** 4 MB. It would
+make the deduplication claim theoretical, since a 4 MB span rarely repeats across files.
 
-**Rejected:** recursive. Lower latency and NAT-friendly, but it costs nested timeouts across the
-path, removes failure attribution, makes hop counts self-reported, and — in a thread-per-
-connection TCP codebase — holds a blocked thread on every node in the path for the duration of
-every lookup.
-
-**Cost:** two network traversals per hop instead of one, so roughly double the lookup latency.
-Nearly free on loopback, which is where these benchmarks run and which is declared as a
-distortion at the top of [`BENCHMARKS.md`](BENCHMARKS.md). The fix for a real deployment is a
-short-TTL lookup cache at the originator, not a different routing model: a stale hint costs one
-wasted hop and self-corrects, because a routing hint is validated before use and can only ever
-cost hops, never correctness.
+**Stated in advance:** on loopback this curve may come out nearly flat, because there is no
+network latency for larger chunks to amortise. If it is flat, that is the published result.
 
 ### Two framing schemes, not one
 
