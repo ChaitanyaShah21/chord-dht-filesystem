@@ -286,7 +286,7 @@ project of its own and not something recursive routing would rescue.
 
 **What deployment would add, if it happens:** a lookup-result cache on the gateway, short TTL.
 A stale entry costs one wasted hop and self-corrects, because a bad routing hint can only cost
-hops and never correctness (see D-012 / the finger table's self-validation property). That
+hops and never correctness (the finger table's self-validation property, taught in 7.3). That
 reclaims most of iterative's latency gap without changing the routing model.
 
 A failed online assessment ends the process before anyone reads the resume. A flagship that
