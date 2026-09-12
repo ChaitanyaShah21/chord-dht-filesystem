@@ -143,7 +143,7 @@ is the **first evidence any Phase 1 decision has**. Budget **9 h**.
 
 | Step | What | Budget | Status |
 |---|---|---|---|
-| **2.0** | Resolve the Phase 2 forks — F11, F12, F13, F14 | 1.5 h | **F11 DONE (D-018) · F12 DONE (D-019)** — F13, F14 next |
+| **2.0** | Resolve the Phase 2 forks — F11, F12, F13 | 1.5 h | **DONE — D-018, D-019, D-020.** Over budget; F14 folded into 2.1 |
 | 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | TODO |
 | 2.2 | The finger table, built for the fixed ring → O(log N) | 2 h | TODO |
 | 2.3 | The iterative loop at the originator, counting its own hops | 1 h | TODO |
@@ -199,15 +199,38 @@ is detected and recovered from. It belongs with the join path, so it is **decide
 because the store is keyed by the full hash, and the collision that matters is between two *nodes*,
 because ownership becomes contended.
 
-**Remaining Phase 2 forks:** **F13** how the fixed ring is wired for the experiment → **F14** the
-Chord wire messages on top of the existing line framing (D-010).
+**F13 resolved 12 Sep — D-020.** On the fixed ring each node is launched with a membership file,
+computes its successor, predecessor and 64 fingers from it, and **the list is a local variable in
+the bootstrap function** — destroyed by scope, never a node field. Routing therefore reads only the
+five Chord fields.
+
+Three reasons, and the second is a number: it **isolates the variable** (Phase 2 measures routing
+against a correct table; Phase 3 measures whether stabilisation *converges* to one — and this
+figure is the baseline the churn numbers degrade from); total routing state stays O(N log N) rather
+than O(N²), which matters because **RAM bounds ring size and ring size is the x-axis** — at 8192
+nodes, 21 MB of finger tables versus **2.7 GB** of retained membership lists; and it makes the
+O(1)-scan bug *impossible by lifetime* rather than forbidden by discipline (the D-009 principle).
+
+**The "did I reach the true owner?" oracle deliberately lives in the harness, not the node** — the
+checker must not be the thing being checked, the same reason D-012 put the instrument outside the
+system.
+
+**New fork logged rather than decided by implication: F16** — whether the hop-count curve is real
+processes only, or real processes **plus an in-process simulation over the same pure functions**,
+plotted together so they can be shown to agree where they overlap. Hop count is deterministic given
+the tables, so the simulation could reach N = 10⁶. **Decided in step 2.5**, with the benchmark.
+
+**F14 (the Chord wire messages) folded into step 2.1** rather than run as its own fork step —
+D-010 already fixed the framing (one request, one reply, one line), so what is left is mostly
+message names. Stop and ask if any part of it turns out to be consequential (R6).
 
 ---
 
 **For whoever reads this first in a fresh session (R16):** Phase 1 is closed and tagged, the
 recall quiz is done, and **Phase 2 is in progress at step 2.0** — see the step table above. F11 is
-resolved (D-018) and F12 resolved (D-019); **F13 — how the fixed ring is wired — is the next
-decision, and nothing is coded until it is made (R11).** Every piece of code gets taught as it is written — shell and Python in
+**Step 2.0 is closed — F11 → D-018, F12 → D-019, F13 → D-020.** Step **2.1** is next: the
+identifier and interval arithmetic in `chord.h`/`chord.cpp` with an in-process test, then the node
+skeleton and `FIND_SUCCESSOR`. Every piece of code gets taught as it is written — shell and Python in
 `scripts/` included — per the 9 Sep working-style rule. The open teaching debt is **Q3 above**,
 scheduled for re-check before Phase 5.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
@@ -364,7 +387,7 @@ repository so they cannot land in a commit by accident.
 |---|---|---|---|---|---|---|
 | 0 | Resurrection and audit | W1 | 6 h | ~6 h | **DONE 9 Sep 2026** — tag `phase-0-complete` | Baseline measured (§1, 71.2 MB/s at 100 MB). Postmortem deferred to W6 by decision |
 | 1 | Design forks resolved | W1 | 6 h | ~4 h | **DONE 12 Sep 2026** — tag `phase-1-complete` | 6 decisions × 3 documents ✅ · target diagram in `ARCHITECTURE.md` and README ✅ |
-| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep, step 2.0 (forks); F11 → D-018, F12 → D-019 | Hop count vs ring size, plotted against log₂N |
+| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep, step 2.0 closed — D-018, D-019, D-020 | Hop count vs ring size, plotted against log₂N |
 | 3 | Node join / leave + stabilisation thread | W3 | 9 h | | TODO | Time-to-reconverge after a kill, measured |
 | 4 | Virtual nodes + 3-way successor replication | W4 | 9 h | | TODO | Key-distribution evenness, with and without vnodes |
 | 5 | Chunked parallel transfer + deployment kit 1–2 | W5 | 12 h | | TODO | Throughput vs peer count; p50/p99 chunk latency; CI badge |

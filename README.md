@@ -372,6 +372,32 @@ nodes landed and then broken subtly.
 **Checked rather than assumed:** ~100,000 identities in 2⁶⁴ collide with probability ≈ 3 × 10⁻¹⁰.
 Cassandra's default partitioner ships 64-bit tokens in production clusters of thousands of nodes.
 
+### The ring is wired from a membership file that no node keeps
+
+On the fixed ring used for the routing benchmark, each node starts with a file listing every
+member, computes its successor, predecessor and 64 finger entries from it — and the list is a
+**local variable inside the bootstrap function**, destroyed by scope when that function returns.
+It never becomes node state. At the moment any lookup is served, the process does not hold the
+membership, which is what makes the hop count a measurement of routing rather than of a lookup
+table.
+
+This is a deliberate split of two experiments: routing is measured against a **correct** table
+here, and whether stabilisation *converges* to a correct table is measured separately once joins
+exist — one controlled variable each, with this figure as the baseline the churn numbers degrade
+from.
+
+It is also a memory argument, and memory bounds the ring size the curve can reach. At 8192 nodes
+the finger tables routing reads cost ~21 MB; retained membership lists would cost ~2.7 GB.
+
+**Rejected:** building the tables by real lookups at startup — it entangles bootstrap failure with
+routing failure in the phase whose only output is hop count, and degenerates to O(N) successor
+walks before any finger exists. **Rejected:** having the harness compute every node's table, which
+creates two implementations of the finger rule that can silently disagree.
+
+**Kept deliberately outside the node:** the "did I reach the true owner?" oracle lives in the test
+harness, which has the membership list and computes the answer independently. The checker must not
+be the thing being checked.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

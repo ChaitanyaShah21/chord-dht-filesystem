@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 27 |
-| Marked `WEAK` — scheduled | 8 |
+| Marked SOLID on the facts | 28 |
+| Marked `WEAK` — scheduled | 9 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -997,6 +997,65 @@ Clusters of thousands of nodes at 256 virtual nodes each run in a 2⁶⁴ space 
 
 **Confidence:** SOLID on the reasoning and on the arithmetic. `WEAK` on evidence — the hop-count
 plot that justifies caring about this at all is Phase 2 and does not exist yet.
+
+---
+### D-020 · Your nodes are handed the whole membership list. Isn't the hop count theatre?
+
+**They ask:** "You told me Chord exists so no node needs global knowledge. Then you start every
+node with a file listing every other node. What exactly is your hop count measuring?"
+
+**I answer:**
+It is measuring routing, and it can only measure routing, because at the moment a lookup is
+served the process does not hold the membership. The list is a local variable inside the
+bootstrap function — it is read, the finger table is computed from it, and C++ destroys it when
+that function returns, by scope. It never becomes a field of the node. So a node's state during
+every lookup is the five Chord fields: identifier, predecessor, successor, successor list, and 64
+finger entries.
+
+That distinction matters more than it sounds. If the list were kept, `find_successor` could scan
+it and return the true owner in one step — correct, passing every test, and silently collapsing
+the measured hop count to 1. Making it a lifetime rather than a rule means that bug cannot be
+written, rather than being forbidden and remembered.
+
+**They push:** "You could have built the tables the way Chord actually does — by looking them up."
+
+I could, and that is Phase 3, where joins and `fix_fingers` build them for real. I deliberately
+did not do it in Phase 2, because it entangles two different failures. If the hop count came out
+high, I would not know whether routing was wrong or bootstrap was wrong — in the phase whose only
+output is hop count.
+
+Splitting it gives me one variable per experiment. Phase 2 asks "does routing take log₂N hops
+when the table is correct?" Phase 3 asks "does stabilisation converge to a correct table?" And the
+Phase 2 number becomes the **baseline the churn numbers are measured against** — degradation under
+churn is meaningless without a correct-table figure to degrade from.
+
+There is also an arithmetic reason. At startup no node has fingers, so every lookup degenerates to
+an O(N) walk along successor pointers. A 1000-node ring building 64 fingers each is 64,000 lookups
+with the early ones costing up to 1000 hops. The ring would take longer to bootstrap than to
+measure.
+
+**They push harder:** "Fine, but you've still got O(N) state per node at startup. That's the design
+Chord replaces."
+
+For the duration of one function call, yes. Retaining it would be the real problem, and it is a
+number rather than a principle: a membership entry is about 40 bytes, so at 8192 nodes the finger
+tables cost 21 MB and retained membership lists cost **2.7 GB** — nearly all the free memory on the
+machine I measure on. Since maximum ring size is bounded by RAM, and maximum ring size is the
+x-axis of my plot, keeping the list would literally shorten the curve I am trying to draw.
+
+**The part I would volunteer:** a node holding the list could verify its own routing — "the node I
+reached really is the owner". That check is worth having and I moved it into the test harness
+instead, which has the list and computes the true owner independently. The checker should not be
+the thing being checked; it is the same reason I chose iterative routing, so that the measuring
+instrument sits outside the measured system.
+
+**And what it costs:** the bootstrap path is about twenty lines of Phase 2 scaffolding written to
+be deleted in Phase 3. I would rather write throwaway code that isolates a variable than reusable
+code that confounds one.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence until step 2.4, where the harness oracle
+— true owner computed independently, compared against what the ring returned — is the thing that
+actually proves routing is correct rather than merely fast.
 
 ---
 ## Part 2 — Subsystems

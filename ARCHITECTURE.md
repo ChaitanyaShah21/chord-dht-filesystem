@@ -195,6 +195,8 @@ decided before the paper is one that cannot be defended in December.
 | **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
 | **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
+| **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
+| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
 
 ---
 
@@ -1310,3 +1312,64 @@ implication.
 **Evidence:** none yet — design time (R11). The hop-count plot is the first evidence; a per-node
 RSS measurement in 2.5 sets the maximum ring size the plot can reach.
 **Defence entry:** `DEFENCE.md` D-019
+
+---
+
+### D-020 — In Phase 2 the ring is wired from a membership file that no node keeps
+
+**Fork:** F13. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2), the hop-count experiment.
+
+**The decision.** Every node is launched with a file listing every `ip:port` in the ring. At
+startup it hashes them, sorts, locates itself, and computes its predecessor, successor and all 64
+finger entries with the pure functions in `chord.cpp`. **The list is a local variable inside the
+bootstrap function**, so it is destroyed by scope when that function returns — it never becomes a
+field of the node. A node's persistent state is only ever the five Chord fields.
+
+**Why.**
+
+1. **It isolates the variable.** Phase 2 asks *"does routing take log₂N hops when the table is
+   correct?"* Phase 3 asks *"does stabilisation converge to a correct table?"* Two experiments,
+   one variable each — the same principle D-016 used to pin the chunk size. A correct-table hop
+   count is also the **"before"** that Phase 3's churn numbers are measured against; without it,
+   degradation under churn has nothing to degrade *from*.
+2. **Total routing state stays O(N log N) rather than O(N²), and that is the x-axis.** A
+   membership entry is ~40 bytes. At 8192 nodes the finger tables routing actually reads cost
+   21 MB; a retained membership list in every node costs **2.7 GB** — most of this machine's
+   3.4 GiB. D-018 established that maximum ring size is bounded by free RAM and that maximum ring
+   size *is* the x-axis of the plot, so retaining the list visibly shortens the curve. Keeping it
+   would also make the system's steady state the full-membership design that `SCALE_NOTES.md`
+   already records as the rejected alternative to Chord.
+3. **It makes one specific bug impossible rather than forbidden.** A list held as node state can
+   be scanned directly by `find_successor` to return the true owner in O(1) — correct, passing
+   every test, and silently reducing the measured hop count to 1. Lifetime removes the
+   possibility; discipline only forbids it. Same principle as D-009.
+4. **It answers the obvious attack factually.** *"Your nodes know the whole membership, so the hop
+   count is theatre."* → at the moment any lookup is served, the process does not hold the
+   membership. That is checkable; "we have it but we don't use it" is not.
+
+**Rejected: option B, successor only, tables built by real lookups.** No node ever holds global
+membership, and `fix_fingers` is needed in Phase 3 anyway. Rejected on arithmetic: at startup no
+node has fingers, so every lookup degenerates to an O(N) successor walk — a 1000-node ring building
+64 fingers each is 64,000 lookups, the early ones up to 1000 hops apiece, so the ring takes longer
+to bootstrap than to measure. It also **conflates bootstrap failure with routing failure** in the
+phase whose entire output is hop count.
+
+**Rejected: option C, the harness computes every table and hands each node its own.** No amnesia to
+explain. Rejected because it creates **two implementations of the finger rule** — harness and node
+— that can disagree, and a disagreement produces exactly the silent hop inflation D-019 was chosen
+to avoid, plus N config files of 64 lines to keep in step.
+
+**The thing kept out of the node deliberately.** A node holding the list could self-check that the
+node it routed to really is the owner. That oracle is worth having — but it belongs in the
+**harness**, which has the list and can compute the true owner independently. The checker must not
+be the thing being checked, for the same reason D-012 put the measuring instrument outside the
+measured system.
+
+**Cost accepted.** The bootstrap path is Phase 2-only scaffolding, deleted in Phase 3 when joins
+and `fix_fingers` replace it — roughly 20 lines written to be thrown away. And the *"you know the
+whole membership"* question has to be answered rather than avoided; the answer is good, but it has
+to be given.
+
+**Evidence:** none yet — design time (R11). The hop-count plot is the evidence, and the real
+membership test is the harness oracle in step 2.4.
+**Defence entry:** `DEFENCE.md` D-020
