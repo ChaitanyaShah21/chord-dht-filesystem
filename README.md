@@ -398,6 +398,19 @@ creates two implementations of the finger rule that can silently disagree.
 harness, which has the membership list and computes the answer independently. The checker must not
 be the thing being checked.
 
+### Only the successor pointer decides ownership
+
+A node answers a lookup from one test: is the identifier in `(me, successor]`? If so, its successor
+owns it; otherwise it names a closer node. It deliberately does **not** also claim keys in
+`(predecessor, me]`. That shortcut fires only when a client's first contact happens to be the owner,
+about one lookup in N. It would also make the predecessor correctness-critical, so a stale
+predecessor could claim keys it does not own. Keeping ownership on the successor alone preserves
+the property that every other piece of routing state can be stale at the cost of hops, never of
+correctness.
+
+Lookups carry the 64-bit **routing identifier**, not the 160-bit key. Routing only ever asks which
+node, and the finger-repair lookups of later phases target ring positions that no key maps to.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

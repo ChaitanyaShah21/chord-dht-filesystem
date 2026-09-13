@@ -194,6 +194,7 @@ decided before the paper is one that cannot be defended in December.
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
 | **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
 | **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
+| **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
@@ -1373,3 +1374,43 @@ to be given.
 **Evidence:** none yet — design time (R11). The hop-count plot is the evidence, and the real
 membership test is the harness oracle in step 2.4.
 **Defence entry:** `DEFENCE.md` D-020
+
+---
+
+### D-021 — The node's wire protocol: one framing copy, identifiers on the wire, successor-only ownership
+
+**Fork:** F14 (three parts). **Date:** 13 Sep 2026. **Gates:** step 2.1c, every Chord message.
+
+**F14a — framing lives in a new `net.h` / `net.cpp`, used by the node only.** One tested copy
+enforcing D-010 (a reply is exactly one line) and D-011 (a departed peer is an error value, not a
+signal). `client.cpp` and `tracker.cpp` keep their own copies for now, and moving them onto it is a
+separate, deliberate step.
+- *Found while deciding:* the framing layer was **already duplicated**. Client and tracker each
+  have a `send_all`, with different signatures, and D-010's guarantee lives in the tracker's copy.
+- *Rejected — copying into `node.cpp`:* three copies of invariant-enforcing code, where a fix to
+  one does not reach the others.
+- *Rejected — migrating all three now:* touches both working binaries and five green suites during
+  the routing phase, for about an hour the phase does not have.
+- *Cost accepted:* three copies exist until the migration happens. **Logged as a known duplication,
+  not an oversight.**
+
+**F14b — `FIND_SUCCESSOR` carries the 16-hex-character routing identifier, not the 40-character
+key.**
+- Phase 3's `fix_fingers` looks up finger *starts*, which are ring positions with no chunk key
+  behind them. A key-carrying message cannot express that lookup and would force a second message
+  type.
+- This follows I7: routing only ever asks *which node*.
+
+**F14c — a node decides ownership from its successor pointer alone.** The rule is `k ∈ (me,
+successor]` → "my successor owns it", otherwise → "ask this closer node". That is the Chord paper's
+rule.
+- *Rejected — also answering "I own it" when `k ∈ (predecessor, me]`:* it saves a hop only when
+  the originator's *first* contact happens to be the owner, about 1/N of lookups, because
+  closest-preceding routing always stops short of the owner. The price is that the **predecessor
+  becomes correctness-critical**, so a stale predecessor would confidently claim keys it does not
+  own.
+- It would break the 7.1 invariant that only the successor pointer must be right, for a negligible
+  gain.
+
+**Evidence:** none yet — design time (R11).
+**Defence entry:** `DEFENCE.md` D-021

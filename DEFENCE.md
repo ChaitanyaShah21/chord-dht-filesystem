@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 28 |
-| Marked `WEAK` — scheduled | 9 |
+| Marked SOLID on the facts | 29 |
+| Marked `WEAK` — scheduled | 10 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -1056,6 +1056,40 @@ code that confounds one.
 **Confidence:** SOLID on the reasoning. `WEAK` on evidence until step 2.4, where the harness oracle
 — true owner computed independently, compared against what the ring returned — is the thing that
 actually proves routing is correct rather than merely fast.
+
+---
+### D-021 · Your node knows its predecessor. Why not use it to answer faster?
+
+**They ask:** "If a node knows its predecessor, it knows exactly which keys it owns. Why make the
+client take another step?"
+
+**I answer:**
+Because it would make a second pointer correctness-critical, for almost nothing in return. The
+Chord invariant I built on is that **only the successor pointer has to be right**. Everything
+else, including fingers and the predecessor, is allowed to be stale, and staleness only costs
+hops. If a node answers "I own it" from its predecessor, a stale predecessor makes it claim keys it
+does not own, confidently, with no error.
+
+And the gain is tiny. Routing picks the closest node *preceding* the key, so a lookup never lands
+on the owner partway through. The shortcut only fires when the client's *first* contact happens to
+be the owner, which is about one lookup in N.
+
+**They push:** "Why does your lookup carry a 16-character identifier instead of the key?"
+
+Because routing only ever asks which node, never which object. A key is an identity, and the
+identifier derived from it is an address. There is also a practical reason: when nodes repair
+their finger tables they look up ring positions like `n + 2^i`, and no chunk has that position as
+its key. A message carrying keys could not express that lookup at all.
+
+**They push harder:** "You have three copies of your socket framing code. That's sloppy."
+
+It is a known duplication, and I found it while designing this. The client and tracker already had
+separate copies with different signatures. I gave the new node one tested copy rather than a third
+paste, and I chose not to move the two working binaries onto it in the middle of the routing phase.
+That migration is a separate step, and it is written down so it does not get forgotten.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on the duplication until the migration is done or
+explicitly dropped.
 
 ---
 ## Part 2 — Subsystems
