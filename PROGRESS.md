@@ -143,8 +143,8 @@ is the **first evidence any Phase 1 decision has**. Budget **9 h**.
 
 | Step | What | Budget | Status |
 |---|---|---|---|
-| **2.0** | Resolve the Phase 2 forks — F11, F12, F13 | 1.5 h | **DONE — D-018, D-019, D-020.** Over budget; F14 folded into 2.1 |
-| 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | **2.1a DONE** (`a9c7484`: identifier arithmetic, 55 checks, mutation-checked) · **2.1b DONE** (`0095254`: membership parsing, successor/predecessor, finger builder; 100 checks, 6 mutations caught; comprehension 2/2) · **2.1c next:** node binary + `FIND_SUCCESSOR` |
+| **2.0** | Resolve the Phase 2 forks — F11, F12, F13, F14 | 1.5 h | **DONE — D-018, D-019, D-020, D-021.** Over budget. F14 was meant to be folded into 2.1, but it turned out to be three real decisions |
+| 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | **2.1a DONE** (`a9c7484`: identifier arithmetic, 55 checks, mutation-checked) · **2.1b DONE** (`0095254`: membership parsing, successor/predecessor, finger builder; 100 checks, 6 mutations caught; comprehension 2/2) · **2.1c DONE:** the `node` binary, `net.cpp` framing, and `FIND_SUCCESSOR` walking the ring in O(N). `e2e-node.sh` sends 1808 lookups to a real 8-node ring and all match an independent Python oracle; worst case 8 hops (= N, as expected). Unit tests 112 + 15. Ten mutations caught (5 node, 5 framing) |
 | 2.2 | The finger table, built for the fixed ring → O(log N) | 2 h | TODO |
 | 2.3 | The iterative loop at the originator, counting its own hops | 1 h | TODO |
 | 2.4 | Adversarial self-check (R10) + constructed-data suite `e2e-chord.sh` and an in-process test for the interval arithmetic | 1.5 h | TODO |
@@ -228,9 +228,9 @@ message names. Stop and ask if any part of it turns out to be consequential (R6)
 
 **For whoever reads this first in a fresh session (R16):** Phase 1 is closed and tagged, the
 recall quiz is done, and **Phase 2 is in progress at step 2.0** — see the step table above. F11 is
-**Step 2.0 is closed — F11 → D-018, F12 → D-019, F13 → D-020.** Step **2.1** is next: the
-identifier and interval arithmetic in `chord.h`/`chord.cpp` with an in-process test, then the node
-skeleton and `FIND_SUCCESSOR`. Every piece of code gets taught as it is written — shell and Python in
+**Step 2.0 is closed — F11 → D-018, F12 → D-019, F13 → D-020.** **Step 2.1 is done.** A real ring
+routes correctly in O(N). **Step 2.2 is next:** change the `NEXT` reply from the successor to the
+closest preceding finger, which should drop the worst case from N hops to about log₂N. Every piece of code gets taught as it is written — shell and Python in
 `scripts/` included — per the 9 Sep working-style rule. The open teaching debt is **Q3 above**,
 scheduled for re-check before Phase 5.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).

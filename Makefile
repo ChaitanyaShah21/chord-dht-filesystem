@@ -17,11 +17,13 @@ CRYPTO_LDLIBS = -lcrypto
 # Executables
 TRACKER = tracker
 CLIENT  = client
+NODE    = node
 
 # test-chord is a TEST binary, not a deliverable: it exercises the identifier
 # arithmetic in process, with rings built by hand. It is deliberately not part
 # of `all`, so a normal build never depends on it.
 TEST_CHORD = test-chord
+TEST_NET   = test-net
 
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
@@ -36,14 +38,22 @@ CLIENT_SRC  = client.cpp
 CHORD_SRC      = chord.cpp
 TEST_CHORD_SRC = test_chord.cpp
 
+# The ring member (decision D-018) and its line framing (decision D-021).
+NODE_SRC = node.cpp
+NET_SRC  = net.cpp
+TEST_NET_SRC = test_net.cpp
+
 # Object files
 TRACKER_OBJ    = $(TRACKER_SRC:.cpp=.o)
 CLIENT_OBJ     = $(CLIENT_SRC:.cpp=.o)
 CHORD_OBJ      = $(CHORD_SRC:.cpp=.o)
 TEST_CHORD_OBJ = $(TEST_CHORD_SRC:.cpp=.o)
+NODE_OBJ       = $(NODE_SRC:.cpp=.o)
+NET_OBJ        = $(NET_SRC:.cpp=.o)
+TEST_NET_OBJ   = $(TEST_NET_SRC:.cpp=.o)
 
 # Default target
-all: $(TRACKER) $(CLIENT)
+all: $(TRACKER) $(CLIENT) $(NODE)
 
 # -----------------------------
 # Build rules
@@ -55,21 +65,30 @@ $(TRACKER): $(TRACKER_OBJ)
 $(CLIENT): $(CLIENT_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+$(NODE): $(NODE_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 $(TEST_CHORD): $(TEST_CHORD_OBJ) $(CHORD_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
+$(TEST_NET): $(TEST_NET_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Rebuild any object file if sha1.h changes. Without this, editing the header leaves
 # stale .o files behind and the next `make` links yesterday's code.
 $(CLIENT_OBJ): sha1.h
 $(CHORD_OBJ): chord.h sha1.h
 $(TEST_CHORD_OBJ): chord.h
+$(NODE_OBJ): chord.h net.h
+$(NET_OBJ): net.h
+$(TEST_NET_OBJ): net.h
 
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
-	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) \
-	      $(TRACKER) $(CLIENT) $(TEST_CHORD)
+	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
+	      $(TRACKER) $(CLIENT) $(NODE) $(TEST_CHORD) $(TEST_NET)
 
 # -----------------------------
 # Convenience rules
@@ -82,7 +101,8 @@ run-client:
 
 # Build and run the in-process arithmetic tests. Exits non-zero on failure, so
 # it can be used as a gate.
-check: $(TEST_CHORD)
+check: $(TEST_CHORD) $(TEST_NET)
 	./$(TEST_CHORD)
+	./$(TEST_NET)
 
 .PHONY: all clean run-tracker run-client check

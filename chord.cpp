@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cctype>
 #include <cstddef>
+#include <cstdio>
 #include <sstream>
 #include <utility>
 
@@ -87,6 +88,24 @@ bool id_from_key(const std::string &hex_key, Id &out) {
         if (i < 16) value = (value << 4) | nibble;           // top 64 bits only
     }
 
+    out = value;
+    return true;
+}
+
+std::string id_to_hex(Id id) {
+    char buf[17];                                             // 16 digits + '\0'
+    std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(id));
+    return buf;
+}
+
+bool id_from_hex(const std::string &hex16, Id &out) {
+    if (hex16.size() != 16) return false;
+    Id value = 0;
+    for (char c : hex16) {
+        unsigned nibble;
+        if (!hex_nibble(c, nibble)) return false;
+        value = (value << 4) | nibble;
+    }
     out = value;
     return true;
 }

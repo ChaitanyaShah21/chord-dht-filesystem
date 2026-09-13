@@ -167,3 +167,34 @@ the next line of defence is structural rather than probabilistic: invariant **I8
 alone?" test compare addresses rather than identifiers, which downgrades a collision from "one
 node swallows the ring" to "two nodes disagree about a boundary". Detection and recovery is
 fork **F15**, scheduled for Phase 3 with the join path.
+
+---
+
+### 13 Sep 2026 — the node has one thread per connection and no read timeout
+
+**Observed:** nothing measured. This comes from reading `node.cpp` in step 2.1c, so it is
+`REASONED`, not `MEASURED`.
+
+**The mechanism.** Every accepted connection gets a detached thread that blocks in `recv_line`
+until the peer sends a line or closes. There is no bound on the number of threads and no read
+timeout.
+
+**At today's scale (8 nodes, one test driver):** harmless. The suite opens a few connections per
+node and closes them.
+
+**At the scale of the hop-count sweep (thousands of nodes on one machine):** each node's thread
+count stays small, because an iterative originator opens one short-lived connection per hop. The
+real ceiling is processes and memory (D-018), not threads.
+
+**Where it actually breaks:**
+- **A peer that connects and never sends.** It holds a thread forever. Enough of them (a slow-loris
+  pattern, or simply a crashed originator whose connections never got a FIN) exhaust threads or
+  memory on that node. The `MAX_LINE` cap stops a peer from sending *too much*; nothing stops a
+  peer from sending *nothing*.
+- **Detached threads at high connection rates.** Around 8 MB of reserved stack per thread is
+  virtual, not resident, but thread creation costs a system call per connection.
+
+**Would do.** A read timeout (`SO_RCVTIMEO`) is the one-line fix for the idle peer. But choosing its
+value is the same dead-versus-slow question as fork F4 / D-013, so it is **not** being set silently
+here; it belongs with Phase 3's failure detection. A bounded worker pool, or `epoll`, is the fix for
+connection rate, and it is only worth doing if a measurement shows thread creation matters.

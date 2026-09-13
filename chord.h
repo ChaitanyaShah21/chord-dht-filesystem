@@ -33,6 +33,13 @@ constexpr int ID_BITS = 64;
 // says malformed input from a peer must not be able to end a process.
 bool id_from_key(const std::string &hex_key, Id &out);
 
+// A routing identifier on the wire: exactly 16 hexadecimal characters (D-021).
+// id_to_hex always writes lowercase and pads with leading zeros, so identifier 1
+// is "0000000000000001". id_from_hex accepts either case, rejects any other
+// length, and leaves `out` untouched on failure. It never throws (I5).
+std::string id_to_hex(Id id);
+bool id_from_hex(const std::string &hex16, Id &out);
+
 // The routing identifier of a ring member: SHA-1("ip:port"), truncated.
 //
 // Two hazards live in that one string, both checked rather than assumed:

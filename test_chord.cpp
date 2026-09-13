@@ -345,6 +345,31 @@ void test_build_fingers() {
     check(distinct.size() == 10, "1024 evenly spaced nodes: 64 fingers, exactly 10 distinct");
 }
 
+void test_id_hex() {
+    check(id_to_hex(0)   == "0000000000000000", "identifier 0 is padded to 16 zeros");
+    check(id_to_hex(1)   == "0000000000000001", "identifier 1 keeps its leading zeros");
+    check(id_to_hex(MAX) == "ffffffffffffffff", "the largest identifier is 16 f characters");
+    check(id_to_hex(0x0123456789abcdefULL) == "0123456789abcdef", "digits come out lowercase, in order");
+
+    bool round_trip = true;
+    for (Id v : {Id(0), Id(1), Id(0x8000000000000000ULL), MAX, Id(0x00ff00ff00ff00ffULL)}) {
+        Id back = 0;
+        round_trip = round_trip && id_from_hex(id_to_hex(v), back) && back == v;
+    }
+    check(round_trip, "every identifier survives id_to_hex then id_from_hex unchanged");
+
+    Id id = 0;
+    check(id_from_hex("0123456789ABCDEF", id) && id == 0x0123456789abcdefULL, "uppercase is accepted");
+    check(!id_from_hex("123456789abcdef", id),   "15 characters is rejected");
+    check(!id_from_hex("00123456789abcdef", id), "17 characters is rejected");
+    check(!id_from_hex("0x23456789abcdef", id),  "a 0x prefix is rejected, not skipped");
+    check(!id_from_hex("0123456789abcdeg", id),  "a non-hex character is rejected");
+    check(!id_from_hex("", id),                  "the empty string is rejected");
+
+    Id sentinel = 42;
+    check(!id_from_hex("nope", sentinel) && sentinel == 42, "a failed parse leaves the output untouched");
+}
+
 }  // namespace
 
 int main() {
@@ -358,6 +383,7 @@ int main() {
     test_finger_start();
     test_id_from_key();
     test_id_of_address();
+    test_id_hex();
     test_parse_members();
     test_collision_refused();
     test_successor_and_predecessor();
