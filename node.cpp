@@ -9,8 +9,10 @@
 //   PING                        ->  PONG <id>
 //   anything else               ->  ERR <reason>
 //
-// In step 2.1c, NEXT always names the successor, so a lookup walks the ring in
-// O(N) hops. Step 2.2 changes that one choice to the closest preceding finger.
+// NEXT names the closest preceding finger (step 2.2), so a lookup takes about
+// log2 N hops instead of walking the ring. The decision itself is route_step()
+// in chord.cpp, shared with the in-process tests, so what the tests prove is
+// exactly what the node does.
 
 #include "chord.h"
 #include "net.h"
@@ -39,7 +41,7 @@ struct NodeState {
     Peer self;
     Peer predecessor;
     Peer successor;
-    std::vector<Peer> fingers;    // built now so bootstrap is complete; routed on from step 2.2
+    std::vector<Peer> fingers;    // finger[0] is the successor; routed on by route_step()
 };
 
 NodeState node;
@@ -102,10 +104,8 @@ std::string handle(const std::string &line) {
         if (!id_from_hex(words[1], k))
             return "ERR identifier must be 16 hexadecimal characters";
 
-        // D-021c: ownership is decided from the successor pointer alone.
-        if (in_range_oc(k, node.self.id, node.successor.id))
-            return "OWNER " + render(node.successor);
-        return "NEXT " + render(node.successor);            // step 2.2: closest preceding finger
+        const RouteStep step = route_step(node.self, node.successor, node.fingers, k);
+        return (step.owner ? "OWNER " : "NEXT ") + render(step.peer);
     }
 
     return "ERR unknown request";

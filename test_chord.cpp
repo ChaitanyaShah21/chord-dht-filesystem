@@ -11,8 +11,11 @@
 
 #include "chord.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <map>
+#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -370,10 +373,192 @@ void test_id_hex() {
     check(!id_from_hex("nope", sentinel) && sentinel == 42, "a failed parse leaves the output untouched");
 }
 
+// -------------------------------------------------------------------------
+// Routing (step 2.2).
+
+// Oracle for closest_preceding_finger, by clockwise distance rather than by
+// interval test: among the fingers strictly between self and k, the one farthest
+// from self. Deliberately does not call in_range_oo. A span of 0 (k == self.id)
+// means the whole ring, matching the degenerate arc (self, self).
+Peer brute_cpf(const Peer &self, const std::vector<Peer> &fingers, Id k) {
+    const Id span = k - self.id;
+    const Peer *best = nullptr;
+    for (const Peer &f : fingers) {
+        const Id d = f.id - self.id;
+        if (d == 0) continue;                        // self is never "preceding"
+        if (span != 0 && d >= span) continue;       // at k, or past it
+        if (best == nullptr || d > Id(best->id - self.id)) best = &f;
+    }
+    return best ? *best : self;
+}
+
+void test_closest_preceding_finger() {
+    // Node 10 in {10,20,30,40,50}: fingers 0..3 land on 20, finger 4 (start 26)
+    // on 30, finger 5 (start 42) on 50, and fingers 6..63 start past 50 and wrap
+    // round to 10 itself.
+    const std::vector<Peer> r = ring_of({10, 20, 30, 40, 50});
+    const Peer self = r[0];
+    const std::vector<Peer> f = build_fingers(self.id, r);
+
+    check(closest_preceding_finger(self, f, 35).id == 30, "the farthest finger short of k is chosen");
+    check(closest_preceding_finger(self, f, 30).id == 20, "a finger EQUAL to k is never chosen -- open arc");
+    check(closest_preceding_finger(self, f, 15).id == 10, "no finger inside (self, k) returns self");
+    check(closest_preceding_finger(self, f, 5).id  == 50, "a k that wraps past zero picks the farthest finger");
+    check(closest_preceding_finger(self, f, 10).id == 50, "k == self.id: the arc is the whole ring, so jump far");
+
+    const std::vector<std::vector<Id>> rings = {
+        {10, 20, 30, 40, 50},
+        {0, MAX},
+        {MAX - 2, MAX - 1, MAX, 0, 1},
+        {1, 2, 3, Id(1) << 63},
+        {100, Id(1) << 40, Id(1) << 62, (Id(1) << 63) + 5, MAX - 100},
+    };
+    int disagreements = 0;
+    for (const auto &ids : rings) {
+        const std::vector<Peer> ring = ring_of(ids);
+        for (const Peer &node : ring) {
+            const std::vector<Peer> table = build_fingers(node.id, ring);
+            std::vector<Id> keys = {0, MAX};
+            for (const Peer &p : ring) { keys.push_back(p.id); keys.push_back(p.id + 1); keys.push_back(p.id - 1); }
+            for (int i = 0; i < ID_BITS; ++i) keys.push_back(finger_start(node.id, i));
+            for (Id k : keys)
+                if (closest_preceding_finger(node, table, k).id != brute_cpf(node, table, k).id) ++disagreements;
+        }
+    }
+    check(disagreements == 0, "closest_preceding_finger agrees with the distance oracle on every awkward ring");
+}
+
+void test_route_step() {
+    const std::vector<Peer> r = ring_of({10, 20, 30});
+    const Peer n10 = r[0];
+    const std::vector<Peer> f = build_fingers(n10.id, r);
+
+    RouteStep s = route_step(n10, f[0], f, 15);
+    check(s.owner && s.peer.id == 20, "k inside (self, successor]: the successor owns it");
+    s = route_step(n10, f[0], f, 20);
+    check(s.owner && s.peer.id == 20, "k equal to the successor's id: still the successor's -- closed end");
+    s = route_step(n10, f[0], f, 25);
+    check(!s.owner && s.peer.id == 20, "k beyond the successor: NEXT, never OWNER");
+    s = route_step(n10, f[0], f, 10);
+    check(!s.owner && s.peer.id == 30, "k == self.id on a multi-node ring: jump far, not answer");
+
+    const std::vector<Peer> alone = ring_of({7});
+    const std::vector<Peer> fa = build_fingers(7, alone);
+    s = route_step(alone[0], fa[0], fa, 12345);
+    check(s.owner && s.peer.id == 7, "a one-node ring owns every key");
+
+    // A stale table, as Phase 3 will produce: every finger still names self, but
+    // the successor has moved on. Without the fallback this names self as the
+    // next hop and the originator asks the same node forever.
+    const Peer me   = Peer{10, "10.0.0.1", 9000};
+    const Peer succ = Peer{20, "10.0.0.2", 9000};
+    const std::vector<Peer> stale(ID_BITS, me);
+    s = route_step(me, succ, stale, 25);
+    check(!s.owner && s.peer.id == 20 && s.peer.ip == "10.0.0.2",
+          "a stale table that only names self falls back to the successor");
+}
+
+// Route every lookup the way an iterative originator will: ask a node, follow
+// NEXT, stop at OWNER. Each node's table is built exactly as bootstrap builds it.
+struct Sim {
+    long lookups = 0, hops = 0;
+    int worst = 0, wrong = 0, self_next = 0, no_progress = 0, too_long = 0;
+};
+
+Sim simulate(const std::vector<Peer> &ring, const std::vector<Id> &keys, std::size_t max_starts) {
+    std::vector<std::vector<Peer>> tables;
+    std::map<Id, std::size_t> index;
+    for (std::size_t i = 0; i < ring.size(); ++i) {
+        tables.push_back(build_fingers(ring[i].id, ring));
+        index[ring[i].id] = i;
+    }
+    const std::size_t stride = ring.size() > max_starts ? ring.size() / max_starts : 1;
+
+    Sim sim;
+    for (std::size_t start = 0; start < ring.size(); start += stride) {
+        for (Id k : keys) {
+            std::size_t cur = start;
+            Id dist = k - ring[cur].id;                  // clockwise distance to k; 0 = whole ring
+            int hops = 0;
+            while (true) {
+                ++hops;
+                const RouteStep st = route_step(ring[cur], tables[cur][0], tables[cur], k);
+                if (st.owner) {
+                    if (st.peer.id != brute_owner(k, ring).id) ++sim.wrong;
+                    break;
+                }
+                if (st.peer.id == ring[cur].id) { ++sim.self_next; break; }
+                const std::size_t next = index.at(st.peer.id);
+                const Id nd = k - ring[next].id;
+                // Every hop must land strictly closer to k, and never ON k: a node
+                // whose id is k is k's owner, which only an overshoot reaches.
+                if (nd == 0 || (dist != 0 && nd >= dist)) { ++sim.no_progress; break; }
+                if (hops > ID_BITS) { ++sim.too_long; break; }
+                dist = nd;
+                cur = next;
+            }
+            ++sim.lookups;
+            sim.hops += hops;
+            if (hops > sim.worst) sim.worst = hops;
+        }
+    }
+    return sim;
+}
+
+void test_routing_simulation() {
+    std::mt19937_64 rng(20260913);                      // fixed seed: the same ring every run
+
+    std::vector<Id> even, random_ids;
+    for (Id k = 0; k < 1024; ++k) even.push_back(k << 54);
+    for (int i = 0; i < 1024; ++i) random_ids.push_back(rng());
+
+    const std::vector<std::pair<std::string, std::vector<Id>>> rings = {
+        {"five awkward ids", {100, Id(1) << 40, Id(1) << 62, (Id(1) << 63) + 5, MAX - 100}},
+        {"clustered at both ends", {MAX - 2, MAX - 1, MAX, 0, 1}},
+        {"1024 evenly spaced", even},
+        {"1024 random", random_ids},
+    };
+
+    bool all_correct = true;
+    for (const auto &named : rings) {
+        const std::vector<Peer> ring = ring_of(named.second);
+
+        std::vector<Id> keys = {0, MAX};
+        for (std::size_t i = 0; i < ring.size(); i += (ring.size() > 64 ? ring.size() / 64 : 1)) {
+            keys.push_back(ring[i].id);
+            keys.push_back(ring[i].id + 1);
+            keys.push_back(ring[i].id - 1);
+        }
+        for (int i = 0; i < 200; ++i) keys.push_back(rng());
+
+        const Sim sim = simulate(ring, keys, 64);
+        const bool ok = sim.wrong == 0 && sim.self_next == 0 && sim.no_progress == 0 && sim.too_long == 0;
+        all_correct = all_correct && ok;
+        if (!ok)
+            std::printf("  FAIL  %s: wrong=%d self_next=%d no_progress=%d too_long=%d\n", named.first.c_str(),
+                        sim.wrong, sim.self_next, sim.no_progress, sim.too_long);
+
+        const double mean = double(sim.hops) / double(sim.lookups);
+        std::printf("  info  %-24s %6ld lookups, mean %.2f hops, worst %d  (log2 N = %.1f)\n",
+                    named.first.c_str(), sim.lookups, mean, sim.worst, std::log2(double(ring.size())));
+
+        if (named.first == "1024 random") {
+            // The logarithmic claim, as a property of a fixed ring: the Chord paper
+            // predicts a mean near (1/2) log2 N. An O(N) walk on 1024 nodes would
+            // average hundreds of hops.
+            const double lg = std::log2(double(ring.size()));
+            check(mean <= lg, "1024 random nodes: mean hop count is at most log2 N");
+            check(sim.worst <= 3 * lg, "1024 random nodes: worst hop count is at most 3 log2 N");
+        }
+    }
+    check(all_correct, "every simulated lookup reaches the true owner, never names itself, "
+                       "and lands strictly closer to k on every hop");
+}
+
 }  // namespace
 
 int main() {
-    std::printf("test-chord: identifier arithmetic and ring construction\n");
+    std::printf("test-chord: identifier arithmetic, ring construction and routing\n");
 
     test_oc_no_wrap();
     test_oc_wraps();
@@ -388,6 +573,9 @@ int main() {
     test_collision_refused();
     test_successor_and_predecessor();
     test_build_fingers();
+    test_closest_preceding_finger();
+    test_route_step();
+    test_routing_simulation();
 
     std::printf("%s  %d/%d checks passed\n",
                 failures == 0 ? "PASS" : "FAIL", checks - failures, checks);

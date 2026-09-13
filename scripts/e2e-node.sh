@@ -7,6 +7,10 @@
 # top 16 hex digits, nearest node clockwise. The checker is not the thing
 # being checked (decision D-020).
 #
+# Hop counts are checked too, against an independent Python model of the finger
+# rule. A wrong finger choice still reaches the right owner -- it just takes more
+# hops -- so checking owners alone would pass a routing bug (D-019).
+#
 # Also checks: a one-node ring owns every key; malformed requests get ERR and
 # the node survives; an over-long line is dropped; a node that is not in its
 # own membership file refuses to start.
@@ -56,7 +60,7 @@ done
 echo "--- e2e-node ($N-node ring + one-node ring) ---"
 
 python3 - "$BASE_PORT" "$N" "$ALONE_PORT" <<'PY'
-import hashlib, random, socket, sys, time
+import hashlib, math, random, socket, sys, time
 
 base, n, alone = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
 MOD = 1 << 64
@@ -76,6 +80,22 @@ def ident(port):
 def oracle_owner(k, ring_ports):
     # nearest node clockwise from k; distance 0 means k is the node's own id
     return min(ring_ports, key=lambda p: (ident(p) - k) % MOD)
+
+# ---- a model of Chord routing, written from the rule rather than from node.cpp ----
+FINGERS = {p: [oracle_owner((ident(p) + (1 << i)) % MOD, ports) for i in range(64)] for p in ports}
+
+def model_route(k, start):
+    cur, hops = start, 0
+    while True:
+        hops += 1
+        me, succ = ident(cur), FINGERS[cur][0]
+        s = (ident(succ) - me) % MOD
+        d = (k - me) % MOD
+        if s == 0 or 0 < d <= s:                        # k in (me, succ]; s == 0 is the whole ring
+            return succ, hops
+        span = d if d != 0 else MOD                     # k == me: the arc is the whole ring
+        ahead = [f for f in FINGERS[cur] if 0 < (ident(f) - me) % MOD < span]
+        cur = max(ahead, key=lambda f: (ident(f) - me) % MOD) if ahead else succ
 
 # ---- talking to nodes ----
 conns = {}
@@ -131,18 +151,25 @@ keys.update({0, MOD - 1})                             # both ends of the space
 rng = random.Random(20260913)
 keys.update(rng.randrange(MOD) for _ in range(200))
 
-wrong, worst, total = 0, 0, 0
+wrong, hop_mismatch, worst, total, hop_sum = 0, 0, 0, 0, 0
 for k in sorted(keys):
     for start in ports:
         owner, hops = lookup(k, start)
         total += 1
+        hop_sum += hops
         worst = max(worst, hops)
         if owner != oracle_owner(k, ports):
             wrong += 1
             if wrong <= 3:
                 print(f"        key {k:016x} from {start}: got {owner}, oracle {oracle_owner(k, ports)}")
+        model_owner, model_hops = model_route(k, start)
+        if hops != model_hops:
+            hop_mismatch += 1
+            if hop_mismatch <= 3:
+                print(f"        key {k:016x} from {start}: {hops} hops, model says {model_hops}")
 check(wrong == 0, f"{total} lookups ({len(keys)} keys x {n} start nodes) all reach the oracle's owner")
-check(worst <= n, f"no lookup took more than {n} hops (worst: {worst}) -- O(N) walk, no loops")
+check(hop_mismatch == 0, "every lookup's hop count equals the independent model of the finger rule")
+check(worst <= n, f"no lookup looped (worst {worst} hops, mean {hop_sum / total:.2f}; log2 {n} = {math.log2(n):.1f})")
 
 # ---- one-node ring: (n, n] is the whole ring ----
 alone_reply_ok = all(

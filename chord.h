@@ -139,4 +139,41 @@ Peer predecessor_of(Id id, const std::vector<Peer> &sorted);
 // finger[i] = successor_of(finger_start(my_id, i)), for i in [0, ID_BITS).
 std::vector<Peer> build_fingers(Id my_id, const std::vector<Peer> &sorted);
 
+// ---------------------------------------------------------------------------
+// One routing step (step 2.2).
+// ---------------------------------------------------------------------------
+
+// The finger that gets closest to k WITHOUT reaching it: the farthest entry
+// lying strictly inside the arc (self, k). The scan runs from finger[63] down to
+// finger[0], so the first match is the longest jump that does not pass k.
+//
+// The arc is OPEN at k on purpose. A finger equal to k is k's owner, and jumping
+// to it overshoots: that node is not the answer to "who precedes k", and the
+// lookup has to travel round to its predecessor. The owner found is still
+// correct -- only the hop count grows -- which is exactly the silent hop
+// inflation D-019 warned about, so the choice is tested against an oracle
+// finger by finger, not only by checking owners.
+//
+// Degenerate case: k == self.id makes the arc (self, self), which is the whole
+// ring except self (see in_range_oo), so the node jumps far instead of walking.
+//
+// Returns `self` if no finger qualifies.
+Peer closest_preceding_finger(const Peer &self, const std::vector<Peer> &fingers, Id k);
+
+// The whole decision a node makes for FIND_SUCCESSOR k (D-012, D-021c):
+//   owner == true   ->  `peer` owns k             (k is in (self, successor])
+//   owner == false  ->  ask `peer` next           (the closest preceding finger)
+//
+// Never names `self` as the next hop. With a correct table that cannot happen:
+// whenever k is not in (self, successor], the successor itself lies in
+// (self, k), so finger[0] always qualifies. With a stale table (Phase 3) it can,
+// and naming self would send the originator back to the same node forever -- so
+// it falls back to the successor, which always makes progress.
+struct RouteStep {
+    bool owner = false;
+    Peer peer;
+};
+RouteStep route_step(const Peer &self, const Peer &successor,
+                     const std::vector<Peer> &fingers, Id k);
+
 #endif

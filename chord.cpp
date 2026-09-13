@@ -207,3 +207,20 @@ std::vector<Peer> build_fingers(Id my_id, const std::vector<Peer> &sorted) {
         fingers.push_back(successor_of(finger_start(my_id, i), sorted));
     return fingers;
 }
+
+Peer closest_preceding_finger(const Peer &self, const std::vector<Peer> &fingers, Id k) {
+    // rbegin()/rend() walk the vector backwards: finger[63] first, finger[0] last.
+    for (auto it = fingers.rbegin(); it != fingers.rend(); ++it)
+        if (in_range_oo(it->id, self.id, k)) return *it;
+    return self;
+}
+
+RouteStep route_step(const Peer &self, const Peer &successor,
+                     const std::vector<Peer> &fingers, Id k) {
+    if (in_range_oc(k, self.id, successor.id)) return {true, successor};
+
+    Peer next = closest_preceding_finger(self, fingers, k);
+    if (next.ip == self.ip && next.port == self.port)   // by address, never identifier (I8)
+        next = successor;
+    return {false, next};
+}

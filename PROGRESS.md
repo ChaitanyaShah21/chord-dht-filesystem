@@ -145,7 +145,7 @@ is the **first evidence any Phase 1 decision has**. Budget **9 h**.
 |---|---|---|---|
 | **2.0** | Resolve the Phase 2 forks — F11, F12, F13, F14 | 1.5 h | **DONE — D-018, D-019, D-020, D-021.** Over budget. F14 was meant to be folded into 2.1, but it turned out to be three real decisions |
 | 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | **2.1a DONE** (`a9c7484`: identifier arithmetic, 55 checks, mutation-checked) · **2.1b DONE** (`0095254`: membership parsing, successor/predecessor, finger builder; 100 checks, 6 mutations caught; comprehension 2/2) · **2.1c DONE:** the `node` binary, `net.cpp` framing, and `FIND_SUCCESSOR` walking the ring in O(N). `e2e-node.sh` sends 1808 lookups to a real 8-node ring and all match an independent Python oracle; worst case 8 hops (= N, as expected). Unit tests 112 + 15. Ten mutations caught (5 node, 5 framing) |
-| 2.2 | The finger table, built for the fixed ring → O(log N) | 2 h | TODO |
+| 2.2 | The finger table, built for the fixed ring → O(log N) | 2 h | **DONE 13 Sep.** `route_step()` in `chord.cpp` is the node's whole routing decision, shared by the node and the tests. Real 8-node ring: 1808 lookups, all owners right, **every hop count equal to an independent Python model** (worst 5, mean 2.37). Real 32-node ring: 9536 lookups, same (worst 7, mean 3.40). In-process, 1024 random nodes: mean 5.90, worst 11. Unit tests 127 + 15. Five mutations, each caught by at least one layer. *These are test outputs, not benchmarks — no method or commit fingerprint, and F16 is still open* |
 | 2.3 | The iterative loop at the originator, counting its own hops | 1 h | TODO |
 | 2.4 | Adversarial self-check (R10) + constructed-data suite `e2e-chord.sh` and an in-process test for the interval arithmetic | 1.5 h | TODO |
 | 2.5 | Ring-size sweep, plot against log₂N, `BENCHMARKS.md`, `DEFENCE.md` questions, commit, tag | 1.5 h | TODO |
@@ -252,13 +252,25 @@ message names. Stop and ask if any part of it turns out to be consequential (R6)
 **Open from today:** the trackerless-BitTorrent answer (`WEAK`), and the GFS figures quoted in the
 new "why not just use Drive" defence entry, to be re-checked against the paper before defence week.
 
+**Step 2.2, 13 Sep — two things worth carrying into the defence.**
+- **Why the hop count is checked, not only the owner.** Mutation C1 (scanning fingers nearest
+  first) left *every owner correct* on the real ring; only the hop-count model caught it. That is
+  D-019's silent hop inflation, observed rather than predicted. Mutation C4 (the node bypassing
+  `route_step`) passed every unit test and was caught only on the real ring. Mutation C3 (the
+  stale-table fallback removed) was caught only by a constructed stale table. **No single layer
+  catches all three.**
+- **An estimate corrected.** Before building, the 8-node worst case was predicted as "about 3". It
+  measured **5** (mean 2.37). O(log N) describes the average over many rings; eight hashed
+  identifiers can land unevenly and leave a long tail. The gap from O(N) only becomes dramatic at
+  scale: mean 5.90 hops on 1024 in-process nodes, where a successor walk would average hundreds.
+
 ---
 
 **For whoever reads this first in a fresh session (R16):** Phase 1 is closed and tagged, the
 recall quiz is done, and **Phase 2 is in progress at step 2.0** — see the step table above. F11 is
-**Step 2.0 is closed — F11 → D-018, F12 → D-019, F13 → D-020.** **Step 2.1 is done.** A real ring
-routes correctly in O(N). **Step 2.2 is next:** change the `NEXT` reply from the successor to the
-closest preceding finger, which should drop the worst case from N hops to about log₂N. Every piece of code gets taught as it is written — shell and Python in
+**Step 2.0 is closed — F11 → D-018, F12 → D-019, F13 → D-020.** **Steps 2.1 and 2.2 are done.** A real ring
+routes correctly in O(log N), with hop counts matching an independent model exactly. **Step 2.3 is
+next:** the originator, a C++ lookup loop that counts its own hops. Every piece of code gets taught as it is written — shell and Python in
 `scripts/` included — per the 9 Sep working-style rule. The open teaching debt is **Q3 above**,
 scheduled for re-check before Phase 5.
 **Blocked on:** nothing. F7 is Chaitanya's call when we reach it in Phase 5 (R6).
@@ -415,7 +427,7 @@ repository so they cannot land in a commit by accident.
 |---|---|---|---|---|---|---|
 | 0 | Resurrection and audit | W1 | 6 h | ~6 h | **DONE 9 Sep 2026** — tag `phase-0-complete` | Baseline measured (§1, 71.2 MB/s at 100 MB). Postmortem deferred to W6 by decision |
 | 1 | Design forks resolved | W1 | 6 h | ~4 h | **DONE 12 Sep 2026** — tag `phase-1-complete` | 6 decisions × 3 documents ✅ · target diagram in `ARCHITECTURE.md` and README ✅ |
-| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep. Step 2.0 closed (D-018–D-021), step 2.1 done: node routes correctly in O(N). **Step 2.2 next** | Hop count vs ring size, plotted against log₂N |
+| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep. Step 2.0 closed (D-018–D-021); 2.1 done (O(N)); **2.2 done (O(log N))**. Step 2.3 next | Hop count vs ring size, plotted against log₂N |
 | 3 | Node join / leave + stabilisation thread | W3 | 9 h | | TODO | Time-to-reconverge after a kill, measured |
 | 4 | Virtual nodes + 3-way successor replication | W4 | 9 h | | TODO | Key-distribution evenness, with and without vnodes |
 | 5 | Chunked parallel transfer + deployment kit 1–2 | W5 | 12 h | | TODO | Throughput vs peer count; p50/p99 chunk latency; CI badge |
