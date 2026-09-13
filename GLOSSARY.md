@@ -26,8 +26,12 @@ capacity grows with popularity instead of collapsing under it.
 **Trade-off:** you lose central control — no single place to enforce consistency, authorisation
 or availability, and every one of those has to be rebuilt as a distributed protocol.
 
-**In this project:** `client.cpp` is both a downloader and a server; the `tracker` only ever
-holds metadata and never sees a file byte.
+**In this project — two senses, and only one applies now.** The legacy system was P2P in the
+BitTorrent sense: `client.cpp` downloads *and* serves what it has. The target design is not
+(D-022). Chunks are placed by hash with exactly three copies, and clients serve nobody. So the
+property above, capacity that grows with popularity, is deliberately given up in exchange for
+files that outlive their uploaders. It remains P2P in **Chord's** sense: symmetric nodes, and no
+central index of where data lives.
 
 ---
 

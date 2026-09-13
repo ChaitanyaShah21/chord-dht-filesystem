@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 29 |
-| Marked `WEAK` — scheduled | 10 |
+| Marked SOLID on the facts | 30 |
+| Marked `WEAK` — scheduled | 12 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -1090,6 +1090,68 @@ That migration is a separate step, and it is written down so it does not get for
 
 **Confidence:** SOLID on the reasoning. `WEAK` on the duplication until the migration is done or
 explicitly dropped.
+
+---
+### D-022 · Why did you abandon the BitTorrent design? Why not just build storage from scratch?
+
+**They ask:** "This started as a BitTorrent clone. If you wanted distributed storage, why not start
+fresh instead of replacing most of an assignment? What was the point?"
+
+**I answer:**
+It didn't start as a plan to build storage. It started as my operating-systems assignment, and I
+chose to grow it rather than restart, for three reasons.
+
+**The hard parts I'd already built are the parts that stay.** Chord replaces how you *find* a
+chunk, not how you *move* it. The transfer path carries forward: manifests, per-piece SHA-1 checks,
+parallel workers, the short-read loop, and length-prefixed framing. So does the tracker, which
+shrinks into the namespace.
+
+**I had a measured baseline.** Before changing anything I benchmarked the original: 71.2 MB/s at
+100 MB, sequential, at a pinned commit. That is the "before" for the parallel-transfer claim. A
+from-scratch project has nothing to compare against.
+
+**The audit is where the design came from.** I found and fixed twenty defects in the original,
+including a persistence bug where recovery rejected its own log. The decisions that made it
+storage each answered a specific weakness. A tracker that knows who holds every piece is a
+central index and a single point of failure. In a swarm, a file disappears when its seeders leave.
+Fixing those two things, one at a time, is what made it storage.
+
+**They push:** "So you replaced most of it."
+
+The lookup layer was replaced. The transfer path and the tracker carry forward. I would not quote
+a percentage, because the migration of transfer onto the ring is still ahead of me.
+
+**What I must not say:** that I hit BitTorrent's limits in practice — I found them by audit and
+reasoning, not in production. Nor that I always planned to build storage — the 2025 git history
+shows a BitTorrent clone. "The design followed the problems" is true, and it is also how real
+systems happen: Dynamo came out of Amazon's outages, Git out of losing BitKeeper.
+
+**Confidence:** SOLID on the facts. `WEAK` on delivery — not yet said aloud under time pressure.
+
+---
+
+### Trackerless BitTorrent already exists. Why didn't you just do that?
+
+**They ask:** "BitTorrent replaced its tracker with a DHT years ago — Mainline DHT, which is
+Kademlia. You could have kept the swarm and put peer discovery in the ring. Why didn't you?"
+
+**I answer:**
+Because Mainline DHT stores **who has the file**, not the file. Its entries are peer lists, and
+they go stale as peers come and go. The data still lives only on seeders, so availability still
+depends on people staying online. I put **the data itself** in the ring, addressed by its own hash
+and replicated three times, so a file survives every one of its uploaders leaving. That durability
+is what the project is for.
+
+The price is real and I would name it: in a swarm, a popular file gains sources; here a file has
+three copies however many people want it. I gave up capacity that scales with demand in exchange
+for durability that doesn't depend on anyone staying online.
+
+**The honest part:** I did not weigh this alternative at design time. It was raised afterwards,
+while I was working out how to describe the project. The reasoning above is sound, but it is
+reasoning after the fact, and I would say so if asked when I decided.
+
+**Confidence:** `WEAK` — the alternative was never a fork in Phase 1, and I have not yet read how
+Mainline DHT's peer lists behave under churn. Rehearse, and read that before defence week.
 
 ---
 ## Part 2 — Subsystems

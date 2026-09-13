@@ -1,12 +1,12 @@
 # chord-dht-filesystem | C++17
 
-> Fault-tolerant peer-to-peer distributed file system — a Chord distributed hash table for the
-> data plane, a replicated tracker for the control plane.
+> Fault-tolerant distributed file storage — content-addressed chunks placed on a Chord ring and
+> replicated three ways, under a small tracker that holds only file names.
 
 > [!NOTE]
-> **Under active reconstruction: the legacy peer-to-peer layer works, the Chord layer is not
-> built yet.** This repository began as an operating-systems course assignment and is being
-> rebuilt into a distributed hash table. Every row in the table below was verified by a script
+> **Under active reconstruction: the legacy BitTorrent-style layer works; the Chord ring routes
+> lookups but does not store data yet.** This repository began as an operating-systems course
+> assignment — a BitTorrent-style file sharer — and is being rebuilt into distributed storage. Every row in the table below was verified by a script
 > at the commit it names — nothing is claimed to work that has not been run.
 >
 > An earlier version of this file claimed multi-tracker synchronisation. That feature was never
@@ -26,7 +26,7 @@ the machine described in [`BENCHMARKS.md`](BENCHMARKS.md).
 | Tracker — users, groups, metadata | **Works** in memory | `scripts/e2e-smoke.sh` |
 | Tracker — persistence across restart | **Works.** Replay applies effects directly rather than re-running commands, so recovery cannot be refused by an authorisation guard it never reaches | `scripts/e2e-persistence.sh` — 4/4 |
 | Tracker — multi-tracker sync | **Never existed.** Dead code; superseded by the planned Raft group | — |
-| Peer-to-peer transfer | **Works**, verified by SHA-1 end to end across a piece-boundary sweep | `scripts/e2e-smoke.sh` PASS · `scripts/e2e-edge.sh` 6/7 |
+| Legacy BitTorrent-style transfer | **Works**, verified by SHA-1 end to end across a piece-boundary sweep | `scripts/e2e-smoke.sh` PASS · `scripts/e2e-edge.sh` 6/7 |
 | Chunking + SHA-1 manifests | **Works**, including the short final piece | `scripts/e2e-edge.sh` — the `minus1`, `exact_1piece` and `plus1` cases |
 | Zero-byte file | **Broken.** An empty file produces an empty manifest, the tracker rejects the upload, and the client reports success anyway | `scripts/e2e-edge.sh` — case `empty`, a deliberately failing test |
 | Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
@@ -40,19 +40,23 @@ reproduction steps for every one: [`docs/failures.md`](docs/failures.md) and
 
 ## Overview
 
-A peer-to-peer file-sharing system in which files never live on a central server. Each
-participant stores files on its own disk and serves them directly to others. A tracker process
-holds only metadata — which files exist, how they are split into 512 KB pieces, the SHA-1
-fingerprint of each piece, and which peers hold them. To fetch a file, a peer asks the tracker
-who has it, connects to those peers directly, and pulls different pieces from several of them
-concurrently, verifying each piece against its fingerprint before writing.
+**Distributed file storage.** A file is split into 512 KB chunks. Each chunk is named by the
+SHA-1 hash of its own contents, and stored on the Chord node that owns that hash and on the next
+two nodes around the ring. A small tracker maps each human-readable file name to the hash of the
+file's manifest — the list of its chunk hashes — and knows nothing about where chunks live,
+because their location is computed rather than stored. A client that wants a file asks the
+tracker for one hash, routes to the chunks itself in O(log N) hops, fetches them in parallel from
+their replicas, and verifies every chunk against the name it asked for.
 
-The work in progress replaces the tracker's role as the single index with a **Chord distributed
-hash table**: a ring of nodes that between them own the whole key space, so finding which node
-holds a chunk becomes a routing problem solved in O(log N) hops rather than a lookup in one
-process's memory — with no node knowing the whole map, and no single node's failure losing it.
+**Where it came from.** This began as a BitTorrent-style file sharer, where each participant
+served pieces it had downloaded and a tracker listed who held what. An audit of that system
+found twenty defects and two structural weaknesses — a tracker that was a central index of every
+holder, and files that vanished when their seeders left — and fixing those one decision at a time
+turned it into storage. The trade is stated rather than hidden: a swarm gains serving capacity as
+a file gets popular, and this system does not. A file has three copies however many people want
+it, and in exchange it survives every one of its uploaders going offline.
 
-- **What it does:** distributes file chunks across a ring of peers, routes lookups in O(log N)
+- **What it does:** distributes file chunks across a ring of nodes, routes lookups in O(log N)
   hops, replicates each chunk to three successors, repairs routing state after failures, and
   transfers chunks in parallel with per-chunk integrity verification.
 - **What makes it non-trivial:** the routing state has to stay correct while nodes join and die
@@ -372,6 +376,24 @@ nodes landed and then broken subtly.
 **Checked rather than assumed:** ~100,000 identities in 2⁶⁴ collide with probability ≈ 3 × 10⁻¹⁰.
 Cassandra's default partitioner ships 64-bit tokens in production clusters of thousands of nodes.
 
+### Distributed storage, not a file-sharing swarm
+
+Placement is decided by a chunk's hash, every chunk has exactly three copies, nothing records who
+holds what, and clients do not serve. Together those make this **storage** — closest to Dynamo for
+placement and Git for the data model — rather than BitTorrent.
+
+Is it peer-to-peer? In Chord's sense, yes: nodes are symmetric and there is no central index of
+data. In BitTorrent's sense, no.
+
+**The cost:** capacity no longer grows with popularity. **The gain:** a file outlives its
+uploaders, reads verify themselves, and identical content is stored once.
+
+**Rejected:** making downloaders serve the chunks they fetch, which would need an index of extra
+holders — the thing the tracker was designed not to be. **Rejected in hindsight:** trackerless
+BitTorrent, which puts peer lists rather than data into a DHT, so availability still depends on
+seeders staying online. That alternative was not weighed when the design was made, and the
+reasoning is recorded as after-the-fact rather than presented as deliberation.
+
 ### The ring is wired from a membership file that no node keeps
 
 On the fixed ring used for the routing benchmark, each node starts with a file listing every
@@ -484,11 +506,12 @@ the client reads one line per reply and would hide which side emitted the extra 
 
 ### The tracker never sees file bytes
 
-It holds manifests and peer addresses only. This keeps its state small enough to replicate
-cheaply and makes the data path genuinely peer-to-peer rather than a relay.
+It holds names only. This keeps its state small enough to replicate cheaply, and keeps it off
+the data path entirely: bytes move between clients and ring nodes, never through the tracker.
 
 **Rejected:** a tracker that also caches popular chunks. It would improve cold-start latency and
-would reintroduce the central bandwidth bottleneck that peer-to-peer exists to remove.
+would reintroduce the central bandwidth bottleneck that a decentralised data plane exists to
+remove.
 
 ### The original git history is preserved, not squashed
 

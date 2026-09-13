@@ -296,8 +296,11 @@ get cut.
 ## 5. Project facts (do not re-derive these)
 
 **Project:** chord-dht-filesystem
-**One-line pitch:** Fault-tolerant peer-to-peer distributed file system — a Chord distributed
-hash table for the data plane, a Raft-replicated tracker for the control plane.
+**One-line pitch:** Fault-tolerant distributed file storage — content-addressed chunks placed on a
+Chord ring and replicated three ways for the data plane, and a tracker holding only file names for
+the control plane (Raft-replicated if it survives the 1 Nov trip-wire). **Described as storage,
+not peer-to-peer file sharing — decision D-022.** The BitTorrent-style design is its origin, not
+its identity.
 **Repository:** `/home/csharp/projects/chord-dht-filesystem` (moved there 6 Sep 2026 from
 `/home/csharp/os-assignment3`). Remote: `https://github.com/ChaitanyaShah21/chord-dht-filesystem`,
 pushed 6 Sep 2026 with the `pre-resurrection` tag.

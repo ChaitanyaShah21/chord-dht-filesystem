@@ -195,6 +195,7 @@ decided before the paper is one that cannot be defended in December.
 | **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
 | **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
 | **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
+| **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and defend it in Chord's sense. | Decides whether the first word of the resume survives questioning, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
@@ -1414,3 +1415,66 @@ rule.
 
 **Evidence:** none yet — design time (R11).
 **Defence entry:** `DEFENCE.md` D-021
+
+---
+
+### D-022 — The system is described as distributed storage, not peer-to-peer file sharing
+
+**Fork:** F17. **Date:** 13 Sep 2026. **Gates:** the README headline, the pitch in `CLAUDE.md`
+and `PROMPT.md`, and the resume line.
+
+**What prompted it.** Chaitanya asked what the project is turning into. The honest answer is that
+Phase 1's decisions moved it from a BitTorrent-style swarm to **distributed storage**. No single
+decision did it; four did together:
+- **D-014:** a chunk's location is computed from its hash.
+- **D-015:** every chunk has exactly three copies, whatever its popularity.
+- **D-017:** nothing records who holds what.
+- **D-018:** downloaders sit outside the ring and serve nobody.
+
+The closest real systems are **Dynamo** for placement and **Git** for the data model. The old
+pitch opened with "peer-to-peer", which invites an interviewer who means BitTorrent to argue about
+the first word of the resume.
+
+**The decision (option A).** Describe it as what it is: fault-tolerant distributed file storage,
+with content-addressed chunks on a Chord ring and three-way replication. The BitTorrent origin
+stays in the README as history. "Is it P2P?" gets a prepared follow-up: *in Chord's sense, yes —
+symmetric nodes, no central index; in BitTorrent's sense, no — placement is by hash with a fixed
+replica count, and popularity-scaled capacity was traded for durability.*
+
+**Rejected: B — make "peer-to-peer" true in the BitTorrent sense.** Downloaders would run nodes and
+serve chunks they have fetched, so popular files gain sources. Content addressing makes that cache
+trivially safe. Rejected because discovering those extra holders needs a placement index — the
+thing D-017 rejected — and it is Phase 5+ work below the cut line.
+
+**Rejected: C — keep the wording, defended in Chord's sense.** The Chord paper's title is literally
+*"A Scalable Peer-to-peer Lookup Service"*, so it is true. Rejected because it spends line one of
+the resume on a definitional argument, and R15 says the most conspicuous item should be the thing
+he most wants to be asked about.
+
+**What the shift cost, stated plainly.** BitTorrent's defining property: **serving capacity that
+grows with demand.** A file downloaded a million times still has three copies.
+
+**What it bought.**
+- A file survives every one of its uploaders going offline.
+- Reads are self-verifying.
+- Identical content is stored once.
+
+**The trust model now fits one operator, not volunteers.** Every node is assumed honest, nobody is
+incentivised to store strangers' chunks, and nothing is encrypted. On volunteer machines all three
+break. This is a scope statement, not a flaw to hide.
+
+**Rejected in hindsight — not weighed at the time: trackerless BitTorrent.** BitTorrent already
+replaces its tracker with a DHT: Mainline DHT, a Kademlia variant. Keeping the swarm and moving
+only peer discovery into the ring was a real, cheaper alternative. **It was never presented as a
+fork in Phase 1**, so this entry is written after the fact and is labelled that way rather than
+passed off as deliberation.
+- *The reasoning that rejects it now:* Mainline DHT stores **who has the file** — peer lists, which
+  go stale as peers come and go — while the data still lives only on seeders. Availability
+  therefore still depends on people staying online. This design stores **the data itself** in the
+  ring, replicated, so a file outlives its uploaders. That is the fault-tolerance property the
+  project exists for.
+- *The price:* popularity no longer adds capacity, as above.
+
+**Evidence:** none — this is a positioning decision. The durability claim it rests on is measured
+in Phase 4 (reads succeeding after replica owners are killed).
+**Defence entries:** `DEFENCE.md` D-022, and the trackerless-BitTorrent entry marked `WEAK`.
