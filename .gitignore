@@ -15,6 +15,7 @@ CMakeFiles/
 /tracker
 /client
 /node
+/test-chord
 
 # ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----
 # Regenerate deterministically with scripts/make-testdata.sh

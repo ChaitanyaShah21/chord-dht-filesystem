@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // The identifier space (decision D-019).
@@ -81,5 +82,54 @@ bool in_range_oo(Id k, Id a, Id b);   // (a, b)
 // message: it is an internal loop counter, and a value outside that range is a
 // programmer error, checked with assert() rather than tolerated.
 Id finger_start(Id n, int i);
+
+// ---------------------------------------------------------------------------
+// Building a fixed ring (decision D-020).
+//
+// A node is started with a membership list, computes its routing state from
+// it, and lets the list die by scope. These functions are that computation.
+// ---------------------------------------------------------------------------
+
+// A ring member as routing state sees it: where it sits and how to reach it.
+// This is a routing-table ENTRY, not a node -- D-018 deliberately has no node
+// type, because Phase 4's virtual nodes put many identifiers in one process.
+struct Peer {
+    Id          id = 0;
+    std::string ip;        // canonical dotted quad, re-rendered by inet_ntop
+    int         port = 0;
+};
+
+// Parse a membership list: one "ip:port" per line. Blank lines and lines
+// starting with '#' are skipped; whitespace around an entry, including the
+// '\r' a Windows editor leaves, is ignored. Addresses are canonicalised before
+// hashing, so "127.0.0.1:09001" and "127.0.0.1:9001" are the same member.
+//
+// On success `out` holds every member SORTED BY IDENTIFIER. On failure `out`
+// is untouched and `err` says which line and why. Never throws (invariant I5).
+bool parse_members(const std::string &text, std::vector<Peer> &out, std::string &err);
+
+// Sort by identifier and refuse a ring that cannot be routed on: empty, the
+// same address twice, or two addresses colliding on one identifier (I8).
+// Split out from parse_members so a collision -- which real SHA-1 output will
+// never hand a test -- can be exercised with constructed identifiers.
+bool validate_ring(std::vector<Peer> &members, std::string &err);
+
+// The owner of key k: the first member whose identifier is >= k, wrapping
+// round to the smallest. `sorted` must be non-empty and sorted by identifier.
+//
+// NOTE the trap: successor_of(my_id) returns the node ITSELF, because the
+// bound is inclusive. A node's successor is successor_of(my_id + 1), which is
+// exactly finger[0].
+//
+// Returns BY VALUE on purpose. D-020 destroys the membership list when
+// bootstrap returns, so a reference into it would dangle the moment it was
+// stored in node state.
+Peer successor_of(Id k, const std::vector<Peer> &sorted);
+
+// The member immediately before identifier `id`, wrapping round to the largest.
+Peer predecessor_of(Id id, const std::vector<Peer> &sorted);
+
+// finger[i] = successor_of(finger_start(my_id, i)), for i in [0, ID_BITS).
+std::vector<Peer> build_fingers(Id my_id, const std::vector<Peer> &sorted);
 
 #endif

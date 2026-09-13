@@ -13,7 +13,9 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -163,10 +165,190 @@ void test_id_of_address() {
           "the ':' separator keeps host and port apart");
 }
 
+
+// -------------------------------------------------------------------------
+// Ring construction. Rings below are built from identifiers chosen by hand;
+// addresses are irrelevant to routing and are filled in only so that each
+// Peer is distinguishable.
+
+std::vector<Peer> ring_of(const std::vector<Id> &ids) {
+    std::vector<Peer> ring;
+    int n = 0;
+    for (Id id : ids) ring.push_back(Peer{id, "10.0.0." + std::to_string(++n), 9000});
+    std::string err;
+    validate_ring(ring, err);          // sorts
+    return ring;
+}
+
+// The oracle. Deliberately a DIFFERENT algorithm from successor_of: no sorting
+// assumption and no binary search, just modular subtraction. The clockwise
+// distance from k to a member is (member.id - k) mod 2^64, which unsigned
+// subtraction computes for free; the nearest member clockwise owns k. If the
+// oracle and successor_of shared an implementation, agreeing would prove
+// nothing.
+Peer brute_owner(Id k, const std::vector<Peer> &members) {
+    const Peer *best = &members[0];
+    for (const Peer &p : members)
+        if (Id(p.id - k) < Id(best->id - k)) best = &p;
+    return *best;
+}
+
+void test_parse_members() {
+    std::vector<Peer> ring;
+    std::string err;
+
+    const std::string text =
+        "# three local nodes\n"
+        "127.0.0.1:9001\n"
+        "\n"
+        "   127.0.0.1:9002   \n"
+        "127.0.0.1:9003\r\n";          // a line saved by a Windows editor
+    check(parse_members(text, ring, err) && ring.size() == 3,
+          "comments, blank lines, padding and \\r are all tolerated");
+    check(ring.size() == 3 && ring[0].id < ring[1].id && ring[1].id < ring[2].id,
+          "members come back sorted by identifier");
+    bool ids_right = true;
+    for (const Peer &p : ring) ids_right = ids_right && p.id == id_of_address(p.ip, p.port);
+    check(ids_right, "every identifier is id_of_address of its own canonical address");
+
+    std::vector<Peer> padded;
+    check(parse_members("127.0.0.1:09001\n", padded, err) && padded.size() == 1 &&
+          padded[0].port == 9001 && padded[0].id == id_of_address("127.0.0.1", 9001),
+          "a zero-padded port is canonicalised before hashing");
+
+    const std::vector<std::string> bad = {
+        "127.0.0.1",            // no port
+        "127.0.0.1:",           // empty port
+        "127.0.0.1:0",          // port 0
+        "127.0.0.1:65536",      // one past the largest port
+        "127.0.0.1:123456",     // six digits
+        "127.0.0.1:-1",         // sign
+        "127.0.0.1:+80",        // sign that std::stoi would accept
+        "127.0.0.1:9001x",      // trailing junk that std::stoi would accept
+        "::1:9001",             // IPv6-shaped: separator inside the host
+        "999.0.0.1:9001",       // octet out of range
+        "localhost:9001",       // a name, not an address
+        std::string("127.0.0.1\0junk:9001", 19),   // NUL hidden inside the host
+    };
+    for (const std::string &line : bad) {
+        std::vector<Peer> r;
+        std::string e;
+        std::string shown;
+        for (char c : line) shown += (c == '\0') ? std::string("\\0") : std::string(1, c);
+        check(!parse_members(line + "\n", r, e), "rejects \"" + shown + "\"");
+    }
+
+    std::string e2;
+    std::vector<Peer> r2;
+    check(!parse_members("127.0.0.1:9001\nnot-an-address\n", r2, e2) &&
+          e2.find("line 2") != std::string::npos,
+          "the error names the offending line");
+
+    std::vector<Peer> r3;
+    check(!parse_members("", r3, err),                   "an empty list is refused");
+    check(!parse_members("# only a comment\n\n", r3, err), "a list of only comments is refused");
+    check(!parse_members("127.0.0.1:9001\n127.0.0.1:9001\n", r3, err) &&
+          err.find("duplicate") != std::string::npos,    "the same member twice is refused");
+    check(!parse_members("127.0.0.1:9001\n127.0.0.1:09001\n", r3, err),
+          "the same member written two ways is still a duplicate");
+
+    std::vector<Peer> untouched = ring_of({42});
+    check(!parse_members("garbage\n", untouched, err) && untouched.size() == 1 &&
+          untouched[0].id == 42, "a failed parse leaves the output untouched");
+}
+
+void test_collision_refused() {
+    // Real SHA-1 output will never give a test two addresses with one
+    // identifier, so construct them. This is invariant I8's first line of
+    // defence in Phase 2: a ring that cannot be routed on is never started.
+    std::vector<Peer> ring = {
+        Peer{500, "10.0.0.1", 9001},
+        Peer{100, "10.0.0.2", 9002},
+        Peer{500, "10.0.0.3", 9003},
+    };
+    std::string err;
+    check(!validate_ring(ring, err) && err.find("collision") != std::string::npos,
+          "two addresses on one identifier are refused, and called a collision");
+}
+
+void test_successor_and_predecessor() {
+    const std::vector<Peer> r = ring_of({10, 20, 30});
+
+    check(successor_of(5,   r).id == 10, "successor of a key below every node is the smallest");
+    check(successor_of(10,  r).id == 10, "a key equal to a node's id belongs to that node");
+    check(successor_of(11,  r).id == 20, "a key just past a node belongs to the next");
+    check(successor_of(30,  r).id == 30, "a key equal to the largest id belongs to it");
+    check(successor_of(31,  r).id == 10, "a key past the largest wraps to the smallest");
+    check(successor_of(MAX, r).id == 10, "the largest possible key wraps to the smallest");
+    check(successor_of(0,   r).id == 10, "key 0 belongs to the smallest");
+
+    check(predecessor_of(20, r).id == 10, "predecessor of 20 is 10");
+    check(predecessor_of(15, r).id == 10, "predecessor of a gap point is the node below it");
+    check(predecessor_of(10, r).id == 30, "predecessor of the smallest wraps to the largest");
+    check(predecessor_of(5,  r).id == 30, "predecessor of a point below every node wraps");
+
+    const std::vector<Peer> ends = ring_of({0, MAX});
+    check(successor_of(1, ends).id == MAX,  "ring {0, MAX}: key 1 belongs to MAX");
+    check(successor_of(MAX, ends).id == MAX, "ring {0, MAX}: MAX owns itself");
+    check(predecessor_of(0, ends).id == MAX, "ring {0, MAX}: 0's predecessor wraps to MAX");
+
+    const std::vector<Peer> alone = ring_of({7});
+    check(successor_of(7, alone).id == 7 && successor_of(8, alone).id == 7 &&
+          predecessor_of(7, alone).id == 7, "a one-node ring is its own successor and predecessor");
+}
+
+void test_build_fingers() {
+    const std::vector<Peer> r = ring_of({10, 20, 30});
+
+    // The off-by-one trap written into the header: successor_of(my_id) is the
+    // node itself; the node's actual successor is finger[0].
+    check(successor_of(10, r).id == 10, "successor_of(my_id) is the node itself -- the trap");
+    check(build_fingers(10, r)[0].id == 20, "finger[0] is the true successor");
+    check(build_fingers(30, r)[0].id == 10, "the largest node's successor wraps to the smallest");
+    check(build_fingers(MAX, ring_of({5, MAX}))[0].id == 5,
+          "a node at MAX: finger[0] starts at MAX+1 = 0 and finds 5");
+
+    bool all_self = true;
+    for (const Peer &f : build_fingers(7, ring_of({7}))) all_self = all_self && f.id == 7;
+    check(all_self, "in a one-node ring every one of the 64 fingers is the node itself");
+
+    // Cross-check every finger of every node against the independent oracle,
+    // on rings built to be awkward: clustered ids, both ends of the space, and
+    // a two-node ring.
+    const std::vector<std::vector<Id>> rings = {
+        {10, 20, 30},
+        {0, MAX},
+        {MAX - 2, MAX - 1, MAX, 0, 1},
+        {1, 2, 3, Id(1) << 63},
+        {100, Id(1) << 40, Id(1) << 62, (Id(1) << 63) + 5, MAX - 100},
+        {12345, 67890},
+    };
+    int disagreements = 0;
+    for (const auto &ids : rings) {
+        const std::vector<Peer> ring = ring_of(ids);
+        for (const Peer &node : ring) {
+            const std::vector<Peer> f = build_fingers(node.id, ring);
+            for (int i = 0; i < ID_BITS; ++i)
+                if (f[i].id != brute_owner(finger_start(node.id, i), ring).id) ++disagreements;
+        }
+    }
+    check(disagreements == 0, "every finger of every node agrees with the brute-force oracle");
+
+    // Why the table is O(log N): 1024 evenly spaced nodes, 2^54 apart. From node
+    // 0, fingers 0..54 all land on node 1 (their starts are all <= 2^54), and
+    // fingers 55..63 land on nodes 2, 4, ..., 512. 64 rows, 10 distinct nodes,
+    // and log2(1024) = 10.
+    std::vector<Id> even;
+    for (Id k = 0; k < 1024; ++k) even.push_back(k << 54);
+    std::set<Id> distinct;
+    for (const Peer &p : build_fingers(0, ring_of(even))) distinct.insert(p.id);
+    check(distinct.size() == 10, "1024 evenly spaced nodes: 64 fingers, exactly 10 distinct");
+}
+
 }  // namespace
 
 int main() {
-    std::printf("test-chord: identifier arithmetic\n");
+    std::printf("test-chord: identifier arithmetic and ring construction\n");
 
     test_oc_no_wrap();
     test_oc_wraps();
@@ -176,6 +358,10 @@ int main() {
     test_finger_start();
     test_id_from_key();
     test_id_of_address();
+    test_parse_members();
+    test_collision_refused();
+    test_successor_and_predecessor();
+    test_build_fingers();
 
     std::printf("%s  %d/%d checks passed\n",
                 failures == 0 ? "PASS" : "FAIL", checks - failures, checks);

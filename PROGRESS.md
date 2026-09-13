@@ -144,7 +144,7 @@ is the **first evidence any Phase 1 decision has**. Budget **9 h**.
 | Step | What | Budget | Status |
 |---|---|---|---|
 | **2.0** | Resolve the Phase 2 forks — F11, F12, F13 | 1.5 h | **DONE — D-018, D-019, D-020.** Over budget; F14 folded into 2.1 |
-| 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | TODO |
+| 2.1 | Node skeleton: identifier, successor pointer, listening loop, `FIND_SUCCESSOR` as one message → correct O(N) lookup on a fixed ring | 2 h | **2.1a DONE** (`9c875c7`: identifier arithmetic, 55 checks, mutation-checked) · **2.1b in progress** (membership parsing, successor/predecessor, finger builder) · 2.1c node binary + `FIND_SUCCESSOR` |
 | 2.2 | The finger table, built for the fixed ring → O(log N) | 2 h | TODO |
 | 2.3 | The iterative loop at the originator, counting its own hops | 1 h | TODO |
 | 2.4 | Adversarial self-check (R10) + constructed-data suite `e2e-chord.sh` and an in-process test for the interval arithmetic | 1.5 h | TODO |
@@ -840,6 +840,31 @@ evidence". It has now cost real work.
 from the *shape* of the damage rather than from any error message — every affected file the
 right length and full of zeros — plus the reason git was vulnerable to it, and a recovery that
 worked because the design was documented separately from the code.
+
+---
+
+### E7 — a compiled binary was committed, and the ignore file could not have seen it
+**Date:** 13 Sep 2026
+
+**Symptom:** none at the time. `9c875c7` went in with `test-chord`, an 80 KB ELF executable,
+alongside the source.
+
+**How it was found:** by accident, a day later. During the 2.1b mutation run, a `git diff --stat`
+listed a file with no line counts, just `Bin 74400 -> 80368 bytes`. Nothing had flagged it at commit
+time. `git status` was checked before the commit, as R18 requires, and the binary showed up as an
+ordinary new file.
+
+**Root cause:** `.gitignore` names each root-level binary individually (`/tracker`, `/client`,
+`/node`). A new `Makefile` target that produces a binary therefore needs a matching edit in a second
+file, and nothing connects the two. B1 and B2 had the same shape: two places that must agree, and
+nothing checking that they do.
+
+**Fix:** `/test-chord` added to `.gitignore`, and the file untracked with `git rm --cached` (it is
+still on disk). The copy stored inside `9c875c7` stays unless that commit is recreated.
+
+**Not done, but worth deciding on purpose:** build every binary into `build/`, which is already
+ignored. A new target could then never leak, whatever it is called. The cost is a `Makefile` change
+plus new paths in all six `scripts/`.
 
 ---
 
