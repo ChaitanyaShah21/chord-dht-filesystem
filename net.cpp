@@ -40,8 +40,8 @@ bool recv_line(int fd, std::string &out) {
     char c;
     while (true) {
         // One byte per recv: simple and never reads past the newline, at the cost
-        // of one system call per byte (defect D5 -- a latency cost, not a
-        // correctness one, and it does not affect hop counts).
+        // of one system call per byte -- a latency cost, not a correctness one,
+        // and it does not affect hop counts.
         ssize_t n = recv(fd, &c, 1, 0);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;                    // 0: peer closed. <0: error.

@@ -17,8 +17,8 @@ WORK="${TMPDIR:-/tmp}/p2p-framing-$$"
 TRACKER_PORT="${TRACKER_PORT:-7102}"
 
 # Reap only this suite's processes. Matching on the binary path alone kills
-# every tracker on the machine, including one another suite is using -- that is
-# error-log entry E6, where two green suites run together came out red.
+# every tracker on the machine, including one another suite is using, so two
+# passing suites run at the same time would both fail.
 reap () {
   pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
   local i

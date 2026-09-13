@@ -21,7 +21,7 @@ WORK="${TMPDIR:-/tmp}/p2p-persist-$$"
 TRACKER_PORT="${TRACKER_PORT:-7101}"
 
 reap () {
-  # See E6: match the port, or this kills another suite's tracker too.
+  # Match the port, or this kills another suite's tracker too.
   pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
   pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
   pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null

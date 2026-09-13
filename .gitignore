@@ -1,4 +1,4 @@
-# ---- Build output: never commit. Binaries in git history are a smell a reviewer notices. ----
+# ---- Build output: never commit ----
 *.o
 *.obj
 *.a

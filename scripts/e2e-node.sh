@@ -25,7 +25,7 @@ ALONE_PORT=$((BASE_PORT + N))          # the one-node ring
 STRAY_PORT=$((BASE_PORT + N + 1))      # a node missing from its own file
 
 # Kill only this suite's nodes, by exact command line -- never a machine-wide
-# pkill, which is how two suites once killed each other (error log E6). The
+# pkill, which would kill another suite's processes running at the same time. The
 # trailing space stops port 7300 from also matching 73001.
 reap() {
   local p i

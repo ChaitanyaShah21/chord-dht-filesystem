@@ -20,8 +20,8 @@ SIZE="${SIZE:-300000}"
 # next run then dies with a bind error that looks exactly like a product bug.
 reap () {
   # Match the port too, not just the binary: a bare "$ROOT/tracker" pattern
-  # kills every tracker on the machine, including one another suite is using.
-  # That is error-log entry E6 -- two green suites, run together, both red.
+  # kills every tracker on the machine, including one another suite is using,
+  # so two passing suites run at the same time would both fail.
   pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
   pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
   pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null

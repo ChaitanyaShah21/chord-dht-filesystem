@@ -374,7 +374,7 @@ void test_id_hex() {
 }
 
 // -------------------------------------------------------------------------
-// Routing (step 2.2).
+// Routing.
 
 // Oracle for closest_preceding_finger, by clockwise distance rather than by
 // interval test: among the fingers strictly between self and k, the one farthest

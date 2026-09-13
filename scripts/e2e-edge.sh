@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-edge.sh -- adversarial size sweep across the piece boundary (R10).
+# e2e-edge.sh -- adversarial size sweep across the piece boundary.
 #
 # PIECE_SIZE is 512*1024 = 524288. The happy path with one 300 KB file exercises
 # exactly one code path: a single short piece. This sweeps the boundaries where
@@ -24,7 +24,7 @@ TRACKER_PORT="${TRACKER_PORT:-7100}"
 # killing the `tail` that feeds them leaves the client alive holding 6881/6882. The
 # next run then dies with a bind error that looks exactly like a product bug.
 reap () {
-  # See E6: match the port, or this kills another suite's tracker too.
+  # Match the port, or this kills another suite's tracker too.
   pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
   pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
   pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null

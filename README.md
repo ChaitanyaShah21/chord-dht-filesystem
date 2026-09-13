@@ -534,7 +534,8 @@ remove.
 
 ### The original git history is preserved, not squashed
 
-Ten commits predate the portfolio work; `pre-resurrection` tags the last coursework-era state.
+Ten commits predate the current rebuild; `pre-resurrection` tags the last state of the original
+assignment.
 The diff between what this was and what it becomes is the evidence that it was built over
 months.
 

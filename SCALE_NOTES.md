@@ -109,7 +109,7 @@ precisely so they can be checked.**
 
 ## Why not full membership? — the rejected O(1)-hop design
 
-Recorded 9 Sep 2026, during teaching step 7.2. This is the "why not just tell everyone about
+Recorded 9 Sep 2026. This is the "why not just tell everyone about
 everyone, and do one-hop lookups?" question, which is asked about every distributed hash table.
 
 **The design:** every node keeps the complete membership list. A lookup is a local computation
@@ -172,7 +172,7 @@ fork **F15**, scheduled for Phase 3 with the join path.
 
 ### 13 Sep 2026 — the node has one thread per connection and no read timeout
 
-**Observed:** nothing measured. This comes from reading `node.cpp` in step 2.1c, so it is
+**Observed:** nothing measured. This comes from reading `node.cpp`, so it is
 `REASONED`, not `MEASURED`.
 
 **The mechanism.** Every accepted connection gets a detached thread that blocks in `recv_line`

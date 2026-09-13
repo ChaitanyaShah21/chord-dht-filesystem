@@ -556,7 +556,7 @@ string handle_command(const string &cmdline, const string &client_user) {
 //
 // Anything not named here is skipped, and the skip is announced rather than
 // silent. That covers read commands, login/logout, update_seeder, a record torn
-// in half by a crash, and the coursework-era log format, which recorded every
+// in half by a crash, and the original log format, which recorded every
 // command including `login` and `list_groups`.
 //
 // It also cannot append to the log, because appending lives only in
@@ -733,7 +733,7 @@ int main(int argc, char **argv) {
     for(const auto &u : update_log) {
         size_t space = u.find(' ');
         size_t ignored = 0;
-        // A record this tracker wrote is "<seq> <command>". The coursework-era
+        // A record this tracker writes is "<seq> <command>". The original log
         // format had no sequence prefix, so strip a leading token only when it
         // really is a number -- otherwise the command itself would be eaten.
         string cmdline = (space != string::npos && parse_number(u.substr(0, space), ignored))

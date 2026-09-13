@@ -140,7 +140,7 @@ Peer predecessor_of(Id id, const std::vector<Peer> &sorted);
 std::vector<Peer> build_fingers(Id my_id, const std::vector<Peer> &sorted);
 
 // ---------------------------------------------------------------------------
-// One routing step (step 2.2).
+// One routing step.
 // ---------------------------------------------------------------------------
 
 // The finger that gets closest to k WITHOUT reaching it: the farthest entry

@@ -9,7 +9,7 @@
 //   PING                        ->  PONG <id>
 //   anything else               ->  ERR <reason>
 //
-// NEXT names the closest preceding finger (step 2.2), so a lookup takes about
+// NEXT names the closest preceding finger, so a lookup takes about
 // log2 N hops instead of walking the ring. The decision itself is route_step()
 // in chord.cpp, shared with the in-process tests, so what the tests prove is
 // exactly what the node does.
