@@ -11,7 +11,7 @@ CXXFLAGS = -std=c++17 -Wall -pthread -O2
 # The declaration comes from <openssl/sha.h> at compile time, but the machine code for
 # SHA1 lives in libcrypto, so it must be named at LINK time or the linker reports
 # "undefined reference to SHA1". tracker.cpp does not hash anything today, so it does
-# not need it (defect B2 in PROGRESS.md; see docs/failures.md).
+# not need it (defect B2; see docs/failures.md).
 CRYPTO_LDLIBS = -lcrypto
 
 # Executables

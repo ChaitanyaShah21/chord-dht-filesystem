@@ -104,7 +104,7 @@ This is the single most useful thing about the error: compiling and linking are 
 that fail for separate reasons. A missing header is a compile error and names a file; a missing
 library is a link error and names a *symbol*. `undefined reference` always means the second.
 
-**Correction to the original audit:** `PROGRESS.md` recorded B2 as affecting both binaries. It
+**Correction to the original audit:** the original audit recorded B2 as affecting both binaries. It
 does not. `tracker.cpp` does not include `sha1.h` and hashes nothing today, so it links with no
 `-lcrypto` at all. Verified by linking `tracker.o` alone: it succeeds. The audit entry was
 written from reading, not from running.
@@ -618,7 +618,7 @@ Doing it properly made two things visible that a flag would have hidden:
 ### Verified
 
 Verified twice: once when the fix was first written, and again when it was **rebuilt from these
-documents after the machine lost the implementation** (see the E5 entry in `PROGRESS.md`). The
+documents after the machine lost the implementation** (a WSL restart discarded writes still in the page cache, leaving source files and git objects zero bytes long). The
 numbers below are from the rebuild, re-run from scratch.
 
 `scripts/e2e-persistence.sh` — **4/4**, up from 1/4. After the restart the tracker answers

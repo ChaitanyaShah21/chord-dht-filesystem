@@ -17,12 +17,13 @@
 
 ## Status
 
-Verified at commit `a9c69cc` on 9 Sep 2026, by running the scripts in the Evidence column on
-the machine described in [`BENCHMARKS.md`](BENCHMARKS.md).
+Verified by running the scripts in the Evidence column on the machine described in
+[`BENCHMARKS.md`](BENCHMARKS.md): the legacy suites at `a9c69cc` (9 Sep 2026), the Chord suites
+at `29a829c` (13 Sep 2026).
 
 | Component | State | Evidence |
 |---|---|---|
-| Build | **Works.** Clean build of both binaries, zero warnings | `make clean && make` |
+| Build | **Works.** `tracker`, `client` and `node` build clean, zero warnings | `make clean && make` |
 | Tracker — users, groups, metadata | **Works** in memory | `scripts/e2e-smoke.sh` |
 | Tracker — persistence across restart | **Works.** Replay applies effects directly rather than re-running commands, so recovery cannot be refused by an authorisation guard it never reaches | `scripts/e2e-persistence.sh` — 4/4 |
 | Tracker — multi-tracker sync | **Never existed.** Dead code; superseded by the planned Raft group | — |
@@ -30,11 +31,11 @@ the machine described in [`BENCHMARKS.md`](BENCHMARKS.md).
 | Chunking + SHA-1 manifests | **Works**, including the short final piece | `scripts/e2e-edge.sh` — the `minus1`, `exact_1piece` and `plus1` cases |
 | Zero-byte file | **Broken.** An empty file produces an empty manifest, the tracker rejects the upload, and the client reports success anyway | `scripts/e2e-edge.sh` — case `empty`, a deliberately failing test |
 | Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
-| Chord ring, routing, replication, stabilisation | **Not built yet** | — |
+| Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
+| Chord joins, stabilisation, replication, chunk storage | **Not built yet** | — |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
-reproduction steps for every one: [`docs/failures.md`](docs/failures.md) and
-[`PROGRESS.md`](PROGRESS.md) § Audit.
+reproduction steps for every one are in [`docs/failures.md`](docs/failures.md).
 
 ---
 
@@ -142,7 +143,7 @@ silently drift out of date the way an exported image does.
 
 ## Target architecture — the system the design decisions describe
 
-Drawn **after** the forks were resolved, per R11: a diagram made earlier would have decided them
+Drawn **after** the design decisions were made: a diagram drawn earlier would have decided them
 by implication. Kept as diagram-as-text so it diffs in review and cannot drift from the design.
 
 ```mermaid
@@ -550,24 +551,29 @@ an entry without one is not finished.*
 
 ```
 chord-dht-filesystem/
-├── tracker.cpp            # Metadata index and peer discovery; thread per client
-├── client.cpp             # Peer: main loop, peer server, download workers, heartbeat
+├── chord.h, chord.cpp     # Routing primitives as pure functions: identifiers, arcs, fingers, route_step
+├── net.h, net.cpp         # Line framing for the node: one message, one line, bounded length
+├── node.cpp               # Chord ring member: bootstraps from a membership file, answers FIND_SUCCESSOR
+├── tracker.cpp            # Legacy metadata index and peer discovery; thread per client
+├── client.cpp             # Legacy peer: main loop, peer server, download workers, heartbeat
 ├── sha1.h                 # Header-only wrapper over OpenSSL SHA1(), hex-encoded
-├── Makefile               # Hand-written; builds both binaries with no warnings
+├── test_chord.cpp         # Unit tests: hand-built rings, independent oracles, routing simulation
+├── test_net.cpp           # Unit tests: framing edge cases over a socketpair
+├── Makefile               # Hand-written; `make` builds the binaries, `make check` runs the unit tests
 ├── scripts/
+│   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
 │   ├── e2e-framing.sh     # One command, one reply, one line -- on a raw socket
 │   ├── e2e-hangup.sh      # A client that vanishes must not take the tracker with it
+│   ├── bench-baseline.sh  # The single-peer transfer baseline recorded in BENCHMARKS.md
 │   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
 ├── docs/
 │   └── failures.md        # Every defect: how it was found, root cause, why the fix works
-├── ARCHITECTURE.md        # Design + decision log: every fork, every rejected alternative
+├── ARCHITECTURE.md        # Design and decision log: every decision, every rejected alternative
 ├── BENCHMARKS.md          # Every number, its method, its commit fingerprint
-├── PROGRESS.md            # State, defect audit, error log, week tracker
-├── SCALE_NOTES.md         # "What breaks at 10x", captured while building
-├── GLOSSARY.md            # Every term: plain language first, then technical
+├── SCALE_NOTES.md         # Where the design breaks at 10x, captured while building
 └── testdata/              # Gitignored; regenerate with scripts/make-testdata.sh
 ```
 
@@ -580,8 +586,10 @@ chord-dht-filesystem/
 > suites run directly:
 
 ```bash
-make clean && make          # both binaries, no warnings
+make clean && make          # tracker, client and node, no warnings
+make check                  # unit tests: identifier arithmetic, routing, framing
 
+./scripts/e2e-node.sh       # a real 8-node Chord ring: owners and hop counts vs independent models
 ./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
 ./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
 ./scripts/e2e-framing.sh    # framing: malformed input must not desync the connection
@@ -592,7 +600,7 @@ make clean && make          # both binaries, no warnings
 Each suite reaps only its own processes, matched by port, so they can be run concurrently.
 That was not true until 9 Sep: the reaper matched the binary path alone and two suites run
 together killed each other's tracker, producing a failure that looked exactly like a product
-regression. See error-log entry E6 in [`PROGRESS.md`](PROGRESS.md).
+regression.
 
 **Requirements:** g++ with C++17, OpenSSL development headers (`libssl-dev`), POSIX threads.
 Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
@@ -601,7 +609,15 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-Five end-to-end suites, no unit tests, and no continuous integration yet — CI lands in Phase 5.
+Two unit-test binaries (`make check`) and six end-to-end suites. No continuous integration yet —
+CI lands in Phase 5.
+
+Routing is tested in two layers because each catches bugs the other cannot. The unit tests build
+rings by hand, so they can construct cases a live ring never produces, such as a stale finger
+table. The end-to-end suite runs real processes, so it catches the node not using the tested
+logic at all. Both check **hop counts** against an independent model, not only which node was
+reached: a wrong finger still reaches the right owner, just in more hops, and a suite that checked
+owners alone would pass it.
 
 `e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
 that pins a known defect is more useful than a passing test that avoids it, and it turns a
