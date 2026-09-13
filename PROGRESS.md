@@ -224,6 +224,34 @@ the tables, so the simulation could reach N = 10⁶. **Decided in step 2.5**, wi
 D-010 already fixed the framing (one request, one reply, one line), so what is left is mostly
 message names. Stop and ask if any part of it turns out to be consequential (R6).
 
+**Decided 13 Sep, while step 2.1c was being built:**
+- **D-021 (F14)** — the node's wire protocol: `net.cpp` as its single framing copy, identifiers
+  rather than keys on the wire, and ownership decided from the successor alone.
+- **D-022 (F17)** — the system is described as **distributed storage, not peer-to-peer file
+  sharing**. The pitch in `CLAUDE.md`/`PROMPT.md` and the README headline were rewritten. Raised
+  by Chaitanya asking what the project is turning into. It also exposed **trackerless BitTorrent**
+  as an alternative never weighed in Phase 1, now recorded as rejected *in hindsight* and marked
+  `WEAK`.
+- **D-023 (F18)** — **no deletion in the MVP.** Owner-token unnaming and a mark-and-sweep collector
+  are scheduled for Block 2 (W12–W13) and placed **first in the cut order**, ahead of Raft.
+  Chaitanya raised it. The two traps that make the obvious version wrong: deduplication means
+  deleting a file's chunks can destroy another file, and with no access control delete is a
+  vandalism tool.
+- **Time blocks renamed Block 1 / Block 2**, so "Phase N" only ever means a row in the phases
+  table.
+
+**Comprehension on 2.1c:**
+- **Q1 SOLID.** Two sharpenings: the precise condition is that all writes finish *before the first
+  reader thread exists*; and Phase 3 races even without joins, because the stabilisation thread
+  rewrites the successor. Copying a `std::string` while it is being assigned is undefined
+  behaviour, not merely a stale value.
+- **Q2 right idea, sharpened.** The owner can be found; the bug is a routing *cycle*. What the step
+  limit buys is diagnosis: without it the suite hangs silently instead of failing with the key
+  and the start node named.
+
+**Open from today:** the trackerless-BitTorrent answer (`WEAK`), and the GFS figures quoted in the
+new "why not just use Drive" defence entry, to be re-checked against the paper before defence week.
+
 ---
 
 **For whoever reads this first in a fresh session (R16):** Phase 1 is closed and tagged, the
@@ -387,7 +415,7 @@ repository so they cannot land in a commit by accident.
 |---|---|---|---|---|---|---|
 | 0 | Resurrection and audit | W1 | 6 h | ~6 h | **DONE 9 Sep 2026** — tag `phase-0-complete` | Baseline measured (§1, 71.2 MB/s at 100 MB). Postmortem deferred to W6 by decision |
 | 1 | Design forks resolved | W1 | 6 h | ~4 h | **DONE 12 Sep 2026** — tag `phase-1-complete` | 6 decisions × 3 documents ✅ · target diagram in `ARCHITECTURE.md` and README ✅ |
-| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep, step 2.0 closed — D-018, D-019, D-020 | Hop count vs ring size, plotted against log₂N |
+| 2 | Chord routing — finger tables, O(log N) lookup | W2 | 9 h | | **IN PROGRESS** — started 12 Sep. Step 2.0 closed (D-018–D-021), step 2.1 done: node routes correctly in O(N). **Step 2.2 next** | Hop count vs ring size, plotted against log₂N |
 | 3 | Node join / leave + stabilisation thread | W3 | 9 h | | TODO | Time-to-reconverge after a kill, measured |
 | 4 | Virtual nodes + 3-way successor replication | W4 | 9 h | | TODO | Key-distribution evenness, with and without vnodes |
 | 5 | Chunked parallel transfer + deployment kit 1–2 | W5 | 12 h | | TODO | Throughput vs peer count; p50/p99 chunk latency; CI badge |
@@ -395,12 +423,17 @@ repository so they cannot land in a commit by accident.
 | 7–8 | Frozen | W7–W8 | 0 h | | TODO | Touch only if a benchmark number changed |
 | 9–10 | Raft tracker design + build; deployment kit 3–5 | W9–W10 | 12 h | | TODO | Leader election measured; Grafana dashboard |
 | 11 | Read repair and anti-entropy | W11 | 4 h | | TODO | Staleness window, measured |
+| 12–13 | Deletion — owner-token unnaming + mark-and-sweep collector (D-023) | W12–W13 | 8 h *(estimate; 8–11 h)* | | TODO — **first in the cut order** | A test proving a chunk shared by two files survives deleting one of them; storage reclaimed per sweep |
 | 14 | Fault-injection runs | W14 | 4 h | | TODO | Recovery plots |
 | 15 | Dashboard screenshotted into README | W15 | 3 h | | TODO | A screenshot, not a hypothetical |
 | 16 | **Defence rehearsal** | W16 | 6 h | | TODO | Weak spots found, listed, then closed |
 
-**Phase 1 budgeted:** 57 h against **70 h available** (weeks 1–8). 13 h slack.
-**Phase 2 budgeted:** 29 h against **35 h available** (weeks 9–17). 6 h slack.
+**Block 1 budgeted:** 57 h against **70 h available** (weeks 1–8). 13 h slack.
+**Block 2 budgeted:** 37 h against **35 h available** (weeks 9–17). **2 h over** since deletion was
+added on 13 Sep. Deletion is first in the cut order, so it absorbs the overrun rather than Raft.
+
+*Blocks are time spans. "Phase N" always means a row in the table above — renamed 13 Sep, because
+"Phase 2" had meant both Chord routing and weeks 9–17.*
 
 W1 is the heaviest project week at **12 h**.
 
@@ -411,18 +444,21 @@ W1 is the heaviest project week at **12 h**.
 When this slips, cut in **this order and only this order**. Do not re-plan under pressure;
 re-planning is how the protected items get cut.
 
-1. **The Raft tracker** (Phase 2, W9–W10)
-2. **Deployment kit item 5** — the ring on actual free-tier cloud VMs
-3. **High-level-design breadth**
-4. **Core-CS breadth**
+1. **Deletion** — owner-token unnaming and the mark-and-sweep collector (D-023, Block 2, W12–W13).
+   Added 13 Sep, deliberately **ahead of Raft**: a collector that is designed but not built is
+   easier to defend than an unbuilt consensus layer.
+2. **The Raft tracker** (Block 2, W9–W10)
+3. **Deployment kit item 5** — the ring on actual free-tier cloud VMs
+4. **High-level-design breadth**
+5. **Core-CS breadth**
 
 **Never cut:** algorithm practice · the flagship MVP · the benchmarks · **defence week**.
 
 ### The Raft trip-wire — decided 12 Sep, fires on a date not on a feeling
 
 The corrected calendar leaves roughly **7 OA-season weeks at materially reduced hours** for a
-Phase 2 budgeted at 29 h. On the face of it that does not fit, and the cut order says Raft goes
-first.
+Block 2 budgeted at 29 h. On the face of it that does not fit, and at the time the cut order said
+Raft goes first. *(Since 13 Sep, deletion sits ahead of Raft and goes first.)*
 
 **Raft is NOT cut today.** Cutting in September on a projection is re-planning under pressure in
 the other direction — the plan has not actually slipped yet, and October's real hours are not yet
@@ -433,8 +469,8 @@ the project feels in November.
 |---|---|
 | **Checkpoint** | **1 Nov 2026** |
 | **Test** | Is the Raft tracker *started and demonstrably progressing* — design decided, log replication being built, commits in the last fortnight? |
-| **If no** | **Raft is cut. No discussion, no re-planning.** Cut-order item 1, decided in advance for exactly this moment. |
-| **If yes** | It continues, and the next thing at risk is cut-order item 2 (cloud VMs). |
+| **If no** | **Raft is cut. No discussion, no re-planning.** Cut-order item 2 — deletion, item 1, will already have gone. Decided in advance for exactly this moment. |
+| **If yes** | It continues, and the next thing at risk is cut-order item 3 (cloud VMs). |
 
 **Why 1 Nov:** defence week starts 23 Nov. The work that must sit between Raft and defence week
 is read repair (4 h), fault injection (4 h) and the dashboard (3 h) — about three weeks at
@@ -469,7 +505,7 @@ the thinking is already done — not because it is scheduled.
 
 1. **Deploy the ring on real VMs and measure it.** High value. It converts several `WEAK`
    deployment entries in `DEFENCE.md` to `SOLID`, and it produces the one number loopback can
-   never produce — real network latency per lookup hop. This is already cut-order item 2
+   never produce — real network latency per lookup hop. This is already cut-order item 3
    (deployment kit item 5), so it is understood to be optional.
 2. **The web GUI.** Decoration on top of (1), and only if (1) is already done and measured. Two
    cautions: it is a new thing to defend, and it is the part of the project a backend or
@@ -582,7 +618,7 @@ Reproduce B3/B4 at any time with `git stash && git checkout pre-resurrection~1 &
 
 | ID | Defect | Status |
 |---|---|---|
-| C1 | `readme.md` documented `./tracker 5001 127.0.0.1:5000` for multi-tracker synchronisation. `main` reads only `argv[1]`. `peer_addrs` is never populated. **`connect_to_peer()` is defined and never called.** `broadcast_sync` iterates an always-empty `peer_sockets`. The feature has never existed. | WON'T FIX — superseded by the Raft tracker (Phase 2). `readme.md` deleted; the false claim must not reappear in the new README. |
+| C1 | `readme.md` documented `./tracker 5001 127.0.0.1:5000` for multi-tracker synchronisation. `main` reads only `argv[1]`. `peer_addrs` is never populated. **`connect_to_peer()` is defined and never called.** `broadcast_sync` iterates an always-empty `peer_sockets`. The feature has never existed. | WON'T FIX — superseded by the Raft tracker (Block 2). `readme.md` deleted; the false claim must not reappear in the new README. |
 
 ### Found by reading — not Phase 0 work, logged so they are never re-found
 

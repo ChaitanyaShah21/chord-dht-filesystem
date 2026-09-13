@@ -26,7 +26,7 @@ before writing it to disk.
 distributed hash table (DHT)** — a ring of nodes that between them own the whole key space, so
 that finding which node holds a chunk is a routing problem solved in O(log N) hops rather than
 a lookup in one process's memory. The tracker survives in reduced form as a control plane, to
-be replicated with **Raft** in Phase 2.
+be replicated with **Raft** in Block 2.
 
 **Scope boundary — what it deliberately does not do:**
 
@@ -110,7 +110,7 @@ flowchart TB
     C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
 
     subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
-        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Phase 2"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Block 2"]
     end
 
     subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
@@ -157,7 +157,7 @@ call to the successor from any code path (D-013). Nothing is event-driven; every
 re-derived, so the ring converges from any state.
 
 **What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (Phase 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
+behind the tracker (Block 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
 
 ## Components
 
@@ -188,7 +188,7 @@ decided before the paper is one that cannot be defended in December.
 
 | **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
 | **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
-| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Phase 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
+| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Block 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
 | **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
 | **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
 | **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
@@ -196,6 +196,7 @@ decided before the paper is one that cannot be defended in December.
 | **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
 | **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
 | **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and defend it in Chord's sense. | Decides whether the first word of the resume survives questioning, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
+| **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector in Block 2, cut before Raft |
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
@@ -264,7 +265,7 @@ against. Both need the download path working. Neither needs multi-tracker sync.
 Build-only saves 4 hours and forfeits the baseline, which is the more expensive loss.
 
 **What would change my mind:** if isolating R2 turns out to need the desync fixed first, D2
-gets promoted into Phase 0 and the extra hours come out of the 13 h of Phase 1 slack.
+gets promoted into Phase 0 and the extra hours come out of the 13 h of Block 1 slack.
 
 **Evidence:** `BENCHMARKS.md` §1 — pending, that is the deliverable of this decision.
 **Defence entry:** `DEFENCE.md` D-002
@@ -401,7 +402,7 @@ as a known limitation before someone finds it.
 | Tracker restarts | — | — | **replay is broken (R1); all groups and manifests are lost** | not yet |
 
 **What this system does not survive:** tracker loss (it is a single point of failure — that is
-precisely what Phase 2's Raft group is for); a seeder that is alive but stalled, since there
+precisely what Block 2's Raft group is for); a seeder that is alive but stalled, since there
 are no timeouts anywhere on the peer path, only connection failures; and its own restart.
 
 ---
@@ -616,7 +617,7 @@ that produced R1.
 would record `GROUP_CREATED g1 alice` instead of the client's `create_group g1 alice`, and
 recovery would apply effects that have no notion of a requester at all. **This is the better
 system and it is worth saying so.** It costs ~3 hours and a new on-disk format, spent on a
-control plane that Phase 2 replaces with a Raft-replicated tracker — and Raft brings the same
+control plane that Block 2 replaces with a Raft-replicated tracker — and Raft brings the same
 structure back for a stronger reason, because a follower applies log entries with no client
 attached at all.
 
@@ -1078,7 +1079,7 @@ Phase 5.
 
 ### D-017 — The tracker is a mutable namespace over an immutable store
 
-**Fork:** F2. **Date:** 12 Sep 2026. **Depends on:** D-014. **Gates:** Phase 2, and the Raft work.
+**Fork:** F2. **Date:** 12 Sep 2026. **Depends on:** D-014. **Gates:** Block 2, and the Raft work.
 
 **The decision.** The tracker holds exactly one thing: **`filename → manifest hash`**, about
 40 bytes per file. The **manifest itself is a content-addressed object stored in the ring**, like
@@ -1095,7 +1096,7 @@ ring:     each chunk hash →  the chunk           (concurrent lookups)
 
 **Why.** It makes the **mutable surface of the whole system as small as it can possibly be** — a
 filename and a hash. The mutable surface is precisely what needs consensus, what can be
-inconsistent, and what Phase 2's Raft work has to replicate. Everything beneath it is immutable
+inconsistent, and what Block 2's Raft work has to replicate. Everything beneath it is immutable
 and therefore conflict-free.
 
 **This is Git's data model**, and the parallel is exact and worth stating: content-addressed
@@ -1478,3 +1479,61 @@ passed off as deliberation.
 **Evidence:** none — this is a positioning decision. The durability claim it rests on is measured
 in Phase 4 (reads succeeding after replica owners are killed).
 **Defence entries:** `DEFENCE.md` D-022, and the trackerless-BitTorrent entry marked `WEAK`.
+
+---
+
+### D-023 — No deletion in the MVP; owner-token unnaming and a mark-and-sweep collector in Block 2
+
+**Fork:** F18. **Date:** 13 Sep 2026. **Gates:** the Phase 5 scope, the Block 2 plan, and the cut
+order.
+
+**What prompted it.** Chaitanya pointed out that deletion is needed for two reasons: storage would
+otherwise grow forever, and a user should be able to remove a file uploaded by mistake. Until now
+it had only been settled by accident. D-014 listed "superseded chunks are garbage, no collector" as
+a cost, and user-facing delete was never presented as a fork.
+
+**Deletion is two separate problems.**
+- **Unnaming** — removing `movie.mp4 → <manifest hash>` from the tracker. This is what a user means
+  by "delete".
+- **Reclaiming** — freeing chunks that no remaining file references. This is what bounds storage.
+
+**Two traps that make the obvious implementation wrong.**
+1. **Deleting a file's chunks can destroy someone else's file.** Content addressing stores
+   identical content once. If two people upload the same movie, their manifests list the same
+   chunks, so "delete every chunk in my manifest" deletes the other person's file too.
+2. **Without access control, `delete` is a vandalism tool.** D-004 dropped users and
+   authentication, so anyone who can name a file could remove it. Any delete must at least prove
+   ownership of the name.
+
+**The decision (option A now, B and C later).**
+- **MVP, 28 Sep:** no deletion. Storage grows, and an accidental upload stays downloadable. Both
+  are stated limitations, not hidden ones.
+- **Block 2, option B — unnaming with an owner token.** At upload the tracker returns a random
+  secret, and delete requires it. This proves ownership without reintroducing user accounts.
+  Deleting a name orphans its chunks rather than freeing them.
+- **Block 2, option C — a mark-and-sweep collector, in the style of `git gc`.**
+  - *Mark:* every chunk hash reachable from any live name's manifest, manifests included.
+  - *Sweep:* each node deletes the chunks it holds that are not in that set.
+  - *Grace period:* only chunks **older than a grace period** are deleted. An upload in flight has
+    stored its chunks before registering its name, so without this they look unreferenced and are
+    deleted mid-upload. Git's prune expiry exists for exactly this race.
+  - *A node that is down during a sweep* simply keeps its orphans until the next one. That is a
+    leak, never data loss — the safe direction to fail in.
+- **Cut order:** B and C go in **before Raft**, so they are cut first. Raft is the stronger
+  interview item, and a collector designed but not built is defensible on paper.
+
+**Rejected: option B in the MVP.** About 2–3 h added to Phase 5, already the most loaded phase at
+12 h, while the plan runs about two weeks behind and the MVP is on the never-cut list.
+
+**Rejected: B and C both in the MVP.** About 8–11 h. It would almost certainly displace protected
+work.
+
+**Rejected outright: per-chunk reference counts.** It puts a mutable counter on every chunk,
+replicated three times, which brings back the replica-disagreement problem D-014 removed. A crash
+between registering a name and incrementing the counts either leaks chunks or deletes one still in
+use — and the second failure is data loss, the unsafe direction.
+
+**Evidence:** none — design time. If built, the numbers owed are storage reclaimed per sweep, sweep
+duration against total chunk count, and a test proving a chunk shared by two files survives
+deleting one of them.
+**Defence entry:** `DEFENCE.md` D-023

@@ -17,8 +17,8 @@ off the resume.
 | | Count |
 |---|---|
 | Answers I can give cold | 0 — nothing rehearsed out loud yet |
-| Marked SOLID on the facts | 30 |
-| Marked `WEAK` — scheduled | 12 |
+| Marked SOLID on the facts | 32 |
+| Marked `WEAK` — scheduled | 13 |
 | Marked `WEAK` — not yet scheduled | 0 |
 
 Last full read-through: never. **First read-through due end of W1.**
@@ -411,7 +411,7 @@ live in.
 > owner leaves, the successor is whichever member `unordered_set` yields first. Nothing in the
 > log determines that, so a replay can pick a different owner than the live run did. An effect
 > log would have recorded the decision instead of the request, and could not drift. I did not
-> build it because Phase 2 replaces this control plane with a Raft-replicated tracker, which
+> build it because Block 2 replaces this control plane with a Raft-replicated tracker, which
 > brings the same structure back for a stronger reason — a follower applies entries with no
 > client attached at all. The drift is registered as defect R5 rather than hidden.
 
@@ -1152,6 +1152,78 @@ reasoning after the fact, and I would say so if asked when I decided.
 
 **Confidence:** `WEAK` — the alternative was never a fork in Phase 1, and I have not yet read how
 Mainline DHT's peer lists behave under churn. Rehearse, and read that before defence week.
+
+---
+### D-023 · How do you delete a file?
+
+**They ask:** "I uploaded the wrong file. How do I delete it? And what stops your storage growing
+forever?"
+
+**I answer:**
+In the version I shipped, you can't. That is a stated limitation, and I can tell you exactly what
+I'd build and why the obvious version is wrong.
+
+Deletion is two problems. **Unnaming** removes the file's name from the tracker, which is what a
+user means. **Reclaiming** frees chunks nothing references any more, which is what bounds storage.
+
+The obvious implementation — delete every chunk in my file's manifest — **destroys other people's
+files**. Chunks are content-addressed, so identical content is stored once. If you and I upload
+the same movie, we share every chunk, and my delete would take your copy with it.
+
+And because I have no user accounts, a plain `delete` command would let anyone delete anyone's
+file. So unnaming needs proof of ownership. My design is an **owner token**: at upload the tracker
+returns a random secret, and delete requires it. That proves ownership without adding accounts.
+
+Reclaiming is **mark and sweep**, the way `git gc` works. Mark every chunk reachable from any live
+name's manifest; each node deletes what it holds outside that set. With one guard: **only chunks
+older than a grace period**. An upload stores its chunks before registering its name, so without
+the grace period, a sweep running mid-upload would delete chunks that are about to be referenced.
+Git's prune expiry exists for exactly this race.
+
+**They push:** "Why not just reference-count each chunk?"
+
+Because the counter is mutable state on the data plane, replicated three times. I built the data
+plane to be immutable specifically so replicas cannot disagree, and a counter brings disagreement
+back. It also has a bad crash story: crash between registering a name and incrementing counts, and
+you either leak or delete a chunk still in use. The second is data loss. Mark-and-sweep fails
+safe instead — a node that misses a sweep just keeps its garbage until the next one.
+
+**The honest part:** none of this is built. It was scheduled after the MVP and placed in the cut
+order ahead of my Raft tracker, so it gets cut first, because I judged a designed-but-unbuilt
+collector easier to defend than an unbuilt consensus layer.
+
+**Confidence:** SOLID on the reasoning. `WEAK` on evidence — not built, so there is no test proving
+a shared chunk survives deleting one of its files.
+
+---
+
+### Why would anyone use this instead of Google Drive or S3?
+
+**They ask:** "I can put a file on Google Drive and send a link. What does all this achieve?"
+
+**I answer:**
+For a user, nothing — use Drive. This isn't a competitor to Drive; it's the kind of system Drive is
+built on. Google published how its storage worked in the Google File System paper in 2003: files
+split into 64 MB chunks, each kept as three copies on different machines. That is the layer I'm
+building, and it's invisible to anyone uploading a file.
+
+What chunks and copies buy is the same inside Drive as here:
+- **A disk dies and the file survives.** At data-centre scale machines fail every day.
+- **A file can be bigger than any one disk.**
+- **Downloads run in parallel** from several machines, and a failure retries one chunk, not the
+  whole file.
+- **Load spreads** across replicas.
+- **Identical content is stored once.**
+
+**They push:** "So what's different about yours?"
+
+GFS had a central master that recorded where every chunk lived. In my design a chunk's location is
+**computed from its hash** on a Chord ring, so no component holds a map of the data. The only
+central piece is a name-to-hash table of about 40 bytes per file. That trade — no location
+directory, at the cost of O(log N) routing hops per lookup — is what the project measures.
+
+**Confidence:** SOLID on the reasoning. Re-check the GFS figures (64 MB chunks, three replicas)
+against the paper before defence week, since they are quoted as fact.
 
 ---
 ## Part 2 — Subsystems

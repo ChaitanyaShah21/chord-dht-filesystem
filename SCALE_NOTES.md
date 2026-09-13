@@ -93,7 +93,7 @@ to the 10x question, because it shows the system was thought about rather than j
 | 3 | **Per-piece `open`/`close`** on the destination | ~1 GB files | syscall time becomes visible next to transfer time | hold the fd for the download |
 | 4 | **`state_mtx` global lock** | ~100s of concurrent clients | command latency rises uniformly for everyone | per-group locks, with a stated lock order |
 | 5 | **Thread per client** | ~1,000 clients | memory exhaustion from thread stacks before CPU saturates | `epoll` + bounded worker pool |
-| 6 | **Single tracker** | — | not a load limit — an *availability* limit. It is a single point of failure at any scale | Raft group (Phase 2) |
+| 6 | **Single tracker** | — | not a load limit — an *availability* limit. It is a single point of failure at any scale | Raft group (Block 2) |
 
 **Target system (Chord). Predictions, to be checked against measurement — and recorded now
 precisely so they can be checked.**
@@ -103,7 +103,7 @@ precisely so they can be checked.**
 | 1 | **Lookup round trips** (if fork F1 chooses iterative) | large rings | latency grows as hops × round-trip time; on loopback invisible, on a real network dominant | recursive lookup, or cache finger entries aggressively |
 | 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers | back off the period adaptively |
 | 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2 |
-| 4 | **Free RAM on this host** | ~ring size TBD | cannot start more nodes; **this is a measurement artefact, not a system property, and must be labelled as such on the plot** | cloud VMs — cut-order item 2 |
+| 4 | **Free RAM on this host** | ~ring size TBD | cannot start more nodes; **this is a measurement artefact, not a system property, and must be labelled as such on the plot** | cloud VMs — cut-order item 3 |
 
 ---
 
@@ -198,3 +198,26 @@ real ceiling is processes and memory (D-018), not threads.
 value is the same dead-versus-slow question as fork F4 / D-013, so it is **not** being set silently
 here; it belongs with Phase 3's failure detection. A bounded worker pool, or `epoll`, is the fix for
 connection rate, and it is only worth doing if a measurement shows thread creation matters.
+
+---
+
+### 13 Sep 2026 — storage only ever grows
+
+**Observed:** nothing measured. This follows from D-014 and D-023, so it is `REASONED`, not
+`MEASURED`.
+
+**The mechanism.** Chunks are content-addressed and immutable, and the MVP has no deletion. Changing
+one byte of a file produces a new chunk with a new key; the old chunk stays. Uploading the wrong
+file leaves its chunks behind for good. Every chunk is stored three times.
+
+**At today's scale:** irrelevant. Test files are uploaded and the ring is torn down.
+
+**At 10x use (files edited and re-uploaded regularly):** stored bytes approach **every version of
+every file ever uploaded, times three**, rather than the current files times three. Deduplication
+softens it for unchanged chunks. Because chunk boundaries are fixed offsets, though, inserting one
+byte near the start of a file shifts every later chunk and dedup saves almost nothing.
+
+**Would do.** D-023's mark-and-sweep collector with a grace period, scheduled for Block 2 and first
+in the cut order. The insertion problem is separate. It is solved by **content-defined chunking**,
+where boundaries are chosen by a rolling hash of the content rather than by fixed offsets, so an
+insertion only disturbs nearby chunks. That is a change to D-016 and is noted here, not scheduled.

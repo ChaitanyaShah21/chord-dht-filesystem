@@ -98,7 +98,7 @@ project round will land on. Also `DEFENCE.md` weak spot 2.
 
 ## Raft
 
-**Needed for:** Phase 2 (W9–W10). **Cut-order item 1** — if the project slips, this reading is
+**Needed for:** Block 2 (W9–W10). **Cut-order item 2** — if the project slips, this reading is
 the first thing that goes, so it is not scheduled before W9.
 
 | # | Source | Take from it | Skip | Time |

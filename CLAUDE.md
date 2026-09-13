@@ -323,7 +323,8 @@ development is evidence; new work goes on top as new commits.
 | 30 Nov 2026 | **Interview-ready.** Moved forward from 22 Dec for the same reason |
 | early Dec 2026 onward | **Interviews begin, and OAs continue alongside them back to back.** There is no gap between the assessment window and the interview window — assume zero project time from here |
 
-**Hour budget:** 70 h in Phase 1 (weeks 1–8), 35 h in Phase 2 (weeks 9–17). 105 h total.
+**Hour budget:** 70 h in Block 1 (weeks 1–8), 35 h in Block 2 (weeks 9–17). 105 h total.
+*Blocks are time spans; "Phase N" always means a row in the phases table in `PROGRESS.md`.*
 **Daily rhythm:** 1 h 30 m on weekdays, one 2 h 30 m deep block at the weekend — minimum one
 commit per working day. A visible commit history is itself evidence.
 
@@ -335,8 +336,8 @@ A failed online assessment ends the process before anyone reads the resume; a fl
 cannot defend under an hour of pressure fails the project round — and with no work experience
 there is nothing else to fall back on.
 
-**Cut order when behind:** 1. Raft tracker → 2. deployment kit item 5 (cloud VMs) →
-3. high-level-design breadth → 4. core-CS breadth.
+**Cut order when behind:** 1. deletion (D-023) → 2. Raft tracker → 3. deployment kit item 5
+(cloud VMs) → 4. high-level-design breadth → 5. core-CS breadth.
 
 ---
 

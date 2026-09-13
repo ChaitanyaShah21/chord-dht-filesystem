@@ -37,7 +37,7 @@ attacked, and a keyword that cannot be defended is worse than an absent one.
 | `chord.h`, `chord.cpp` | **A** | ⚠️ | Started 12 Sep 2026, Phase 2. Identifier arithmetic (2.1a) and ring construction (2.1b), both walked through in chunks. **Comprehension checks on 2.1b answered 2/2 on 13 Sep 2026:** why `successor_of` returns by value (the list dies by scope, so a stored reference would dangle), and why the test oracle must be a different algorithm. The 2.1a interval test has not yet been checked by questioning. |
 | `test_chord.cpp` | **A** | ⚠️ | In-process tests over hand-built rings, mutation-checked rather than trusted. Walked through. The reason for an independent oracle was explained back correctly on 13 Sep 2026. |
 | `net.h`, `net.cpp` | **A** | ⚠️ | 13 Sep 2026, step 2.1c. The node's single copy of line framing (D-021a), mirroring the tracker's D-010 sanitiser and adding a `MAX_LINE` cap. Walked through; not yet checked by questioning. |
-| `node.cpp` | **A** | ⚠️ | 13 Sep 2026, step 2.1c. Bootstrap from the membership file (D-020), the successor-only ownership rule (D-021c), and thread-per-connection serving with read-only state. Walked through; not yet checked by questioning. |
+| `node.cpp` | **A** | ⚠️ | 13 Sep 2026, step 2.1c. Bootstrap from the membership file (D-020), the successor-only ownership rule (D-021c), and thread-per-connection serving with read-only state. **Comprehension on 13 Sep 2026:** why the unlocked reads are safe (SOLID, sharpened: writes finish before the first reader thread exists), and what the lookup step limit buys (sharpened: a failure with a diagnosis, instead of a silent hang). |
 | `test_net.cpp`, `scripts/e2e-node.sh` | **A** | ⚠️ | Framing tests over a socketpair, and a real 8-node ring checked against a Python oracle that shares no code with `chord.cpp`. Both mutation-checked. Walked through; not yet checked by questioning. |
 | `.gitignore` | **A** | ✅ | Skill template, project binaries named by hand. |
 | `scripts/e2e-smoke.sh`, `scripts/e2e-edge.sh` | **A** | ⚠️ | Written 1 Sep 2026. **The reason `e2e-edge.sh` exists is ✅** — a single-file test cannot see R3, because the desync is *caused by* the first success. **Not yet covered:** the `tail -f` driving trick and why `disown` is there. |
@@ -61,7 +61,7 @@ December.
 | ~~`README.md` claims a feature that does not exist~~ | **A reviewer who runs it and finds the claim false is the worst possible outcome** — it converts "inexperienced" into "not trustworthy" | ~~REMOVE and rewrite~~ | **CLOSED.** False claim removed in `c65ca7b`; stale "it is broken" rows corrected 9 Sep 2026, each replaced by a row naming the script that verifies it |
 | OpenSSL SHA-1 internals | "Explain the internals of the libraries you used" is asked directly in project-design rounds | LEARN — block structure, Merkle–Damgård, why collision resistance being broken does not matter here | W1, with the `GLOSSARY.md` entry |
 | Chord, consistent hashing, finger tables | The headline of the project | LEARN — `LEARNING.md` § Chord | W1 read, W2 build |
-| Raft, quorums, read repair | Phase 2 keywords | LEARN — **not before W9.** Cut-order item 1 | W9 |
+| Raft, quorums, read repair | Block 2 keywords | LEARN — **not before W9.** Cut-order item 2, behind deletion | W9 |
 
 ---
 

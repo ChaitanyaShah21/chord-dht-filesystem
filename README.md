@@ -150,7 +150,7 @@ flowchart TB
     C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
 
     subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
-        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Phase 2"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Block 2"]
     end
 
     subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
@@ -197,7 +197,7 @@ call to the successor from any code path (D-013). Nothing is event-driven; every
 re-derived, so the ring converges from any state.
 
 **What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (Phase 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
+behind the tracker (Block 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
 
 ## Key Design Rationales
 
@@ -375,6 +375,24 @@ nodes landed and then broken subtly.
 
 **Checked rather than assumed:** ~100,000 identities in 2⁶⁴ collide with probability ≈ 3 × 10⁻¹⁰.
 Cassandra's default partitioner ships 64-bit tokens in production clusters of thousands of nodes.
+
+### Deleting a file is two problems, and the obvious version destroys other people's files
+
+Removing a file's **name** is what a user means by delete. Freeing its **chunks** is what stops
+storage growing forever. The obvious implementation — delete every chunk in the file's manifest —
+is wrong, because identical content is stored once. Two people who upload the same movie share
+every chunk, so one person's delete would destroy the other's file. And with no access control, a
+plain delete command would let anyone remove anyone's file.
+
+**The design, scheduled after the MVP rather than built for it:** at upload the tracker returns a
+random **owner token**, which delete requires. Chunks are reclaimed by **mark and sweep**, as
+`git gc` does: everything reachable from a live name's manifest is kept, and anything else older
+than a **grace period** is deleted. The grace period protects an upload whose chunks are stored
+but whose name is not yet registered. A node that misses a sweep keeps its garbage until the
+next one — a leak, never data loss.
+
+**Rejected:** per-chunk reference counts. They put mutable, three-times-replicated state back into
+a data plane designed to be immutable, and a badly timed crash can delete a chunk still in use.
 
 ### Distributed storage, not a file-sharing swarm
 
@@ -596,8 +614,12 @@ the information.
 
 Stated limits read as engineering judgement. Unstated ones read as things that were missed.
 
-- **The tracker is a single point of failure.** Replicating it with Raft is the planned Phase 2
-  work; it is also the first thing cut if the schedule slips.
+- **The tracker is a single point of failure.** Replicating it with Raft is planned for Block 2
+  (Oct–Nov); it is second in the cut order, after deletion, if the schedule slips.
+- **Files cannot be deleted, and storage only grows** (D-023). Removing a file's name needs proof of
+  ownership, because there is no access control. Freeing its chunks needs a collector, because
+  deduplication means another file may share them. Both are designed and scheduled after the MVP;
+  neither is built.
 - **No wire encryption or peer authentication.** Any peer can join and any peer can be
   impersonated. Lifting this needs node identities bound to keys, not just addresses.
 - **`GET_PIECE` serves any path a requester asks for** — a directory-traversal hole. Fixed when

@@ -47,7 +47,7 @@ performs **peer discovery** and nothing else.
 possible. Something has to answer "who has this?".
 
 **Trade-off:** it is a single point of failure and a central authority in a system whose whole
-point is not having one. This is exactly the tension that Phase 2's Raft replication addresses,
+point is not having one. This is exactly the tension that Block 2's Raft replication addresses,
 and that the Chord ring reduces by owning placement itself.
 
 **In this project:** `tracker.cpp`. Currently one process. See fork **F2** for what it is
