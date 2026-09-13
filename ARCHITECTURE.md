@@ -200,6 +200,7 @@ decided before the paper is one that cannot be defended in December.
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
+| **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024 |
 
 ---
 
@@ -1537,3 +1538,104 @@ use — and the second failure is data loss, the unsafe direction.
 duration against total chunk count, and a test proving a chunk shared by two files survives
 deleting one of them.
 **Defence entry:** `DEFENCE.md` D-023
+
+---
+
+### D-024 — The lookup originator: a transport-agnostic module, and a fresh connection per hop
+
+**Fork:** F19, parts a and b. **Date:** 13 Sep 2026. **Gates:** step 2.3, the Phase 2 benchmark
+harness, and Phase 5's client. Parts c–e (timeouts, bounding a lookup, what counts as a hop) are
+still open.
+
+**F19a — the loop is a module, `lookup.h` / `lookup.cpp`, with the request/reply exchange passed
+in.**
+- One function drives a lookup from a starting node to `OWNER` and returns the owner, the nodes
+  visited, and an error.
+- The single operation "send this line to this peer and return its reply" is a parameter. Real
+  sockets supply it in production; tests supply a ring built in process from `route_step`.
+- A thin `lookup` binary reads many keys from standard input per run, so a sweep does not start a
+  process per lookup. `client` links the same object file in Phase 5.
+- *Why:* the cases that most need testing — a reply pointing backwards, a node naming itself, a
+  malformed reply — cannot be produced by a correct ring of real processes. With the transport
+  injected they are a few lines of constructed data. This extends D-018 from the node to the
+  originator: routing logic never touches a socket.
+- *Rejected — the loop written in a standalone binary's `main`:* fewest lines now, but testable
+  only through real sockets, and Phase 5 would copy it into `client`, the duplication D-021 already
+  records for framing.
+- *Rejected — the loop written into `client.cpp` now:* that file has its own older framing copy
+  (D-021), so this either uses it or starts the deferred migration, and it edits the working
+  transfer path during the routing phase.
+- *Cost accepted:* two files, a Makefile target, and one level of indirection (`std::function`) on
+  a path whose latency Phase 2 does not measure.
+
+**F19b — in Phase 2 each hop opens a fresh connection and closes it after the reply. Connection
+reuse is added later, and only if a measured latency figure justifies it.**
+- *Why:* the Phase 2 result is hop count, which connection handling cannot change, so reuse buys
+  nothing that is measured. And each connect is fresh evidence about exactly one node: under D-013
+  a refused connection is proof of death, and one event produces one signal to interpret.
+- *Rejected — a connection cache keyed by address:* cheaper per hop, but a cached socket to a node
+  that has since died fails on `send` or `recv` (a reset, a broken pipe, or a zero-byte read)
+  rather than on `connect`. One event then has several signals, and telling a stale socket from a
+  dead node needs a retry on a fresh connection — an ambiguity Phase 3's failure detector would
+  inherit.
+- *Cost accepted:* a TCP handshake per hop. And the originator closes first, so it holds every
+  finished connection in `TIME_WAIT` for 60 s; a sweep can open more connections to one node than
+  the 28,232 ephemeral ports (32768–60999) in that window. On this machine
+  `net.ipv4.tcp_tw_reuse = 2`, which lets the kernel reuse `TIME_WAIT` ports **for loopback traffic
+  only**, so the benchmark is safe here and the limit returns on a real network. Recorded in
+  `SCALE_NOTES.md`.
+
+**F19c — a fixed 5 s receive and send timeout on every originator socket, as a hang guard. A
+connect deadline is scheduled into Phase 3.**
+- `SO_RCVTIMEO` and `SO_SNDTIMEO` make a blocked `recv` or `send` give up. A timeout is reported as
+  its own error, naming the node, and never merged with a refused connection: D-013 treats the two
+  as different evidence.
+- 5 s is a backstop set far above any loopback reply, not a failure-detection threshold. Phase 3
+  replaces it with a measured value.
+- *Why this covers Phase 2 completely:* on loopback a connection to a missing node is refused at
+  once, and a frozen node's kernel still completes the handshake, so the only possible hang is at
+  the read.
+- *What it does not cover:* a machine that vanishes on a real network, where nothing answers the
+  handshake. With `tcp_syn_retries = 6` on this kernel, `connect` blocks for about 127 s
+  (1 + 2 + 4 + 8 + 16 + 32 + 64), calculated from the setting rather than measured.
+- *Scheduled:* a non-blocking connect with a `poll` deadline, inside the single successor-call
+  wrapper D-013 already requires, in **Phase 3**, estimated at 45 min. That is where the deadline's
+  value is measured and where killed nodes make it testable.
+- *Rejected — no timeout:* a stuck node hangs a benchmark silently, and an outer `timeout` kills the
+  run without saying which node stalled.
+- *Rejected — a non-blocking connect with a deadline now:* about 45 min added to a phase already over
+  budget, a deadline value chosen before Phase 3 can measure one, and probably untestable here,
+  because it needs an address that silently drops packets.
+
+**F19d — every reply is checked for progress, and a lookup is capped at 65 requests.**
+- A `NEXT` reply must name a node strictly inside `(current, k)`. An `OWNER` reply must name a node
+  with `k ∈ (current, owner]`. Anything else fails the lookup with an error naming the node that
+  sent the reply.
+- `route_step` satisfies both even with stale tables: it only picks fingers inside `(self, k)`, and
+  its successor fallback lies in that arc whenever the node is not the owner. So a violation means
+  a buggy or dishonest node, never merely a stale one.
+- The distance to `k` strictly shrinks, so no node can be visited twice. A cycle is impossible by
+  construction rather than detected after the fact.
+- *The cap.* Let `p` be `k`'s predecessor. With correct fingers, each `NEXT` more than halves the
+  remaining clockwise distance to `p`: if `p` lies in `[n + 2^i, n + 2^(i+1))`, finger `i` lies in
+  `[n + 2^i, p]`, so the jump covers at least `2^i`, which is more than half of `p − n`. That distance
+  starts below 2^64, so at most 64 `NEXT` replies reach `p`, and `p` answers `OWNER`: **65 requests**.
+  More than that on a fixed ring is a bug. Phase 3 revisits the value, because stale fingers can
+  legitimately need more.
+- *Rejected — a fixed hop cap alone:* the value would be arbitrary, and exceeding it says nothing
+  about which node misbehaved.
+- *Rejected — a visited set:* it catches a repeated node exactly, but not a node that keeps naming
+  new addresses, and it reports a symptom rather than the node at fault.
+
+**F19e — the loop records every node it queried; which count is plotted is decided in step 2.5.**
+- Requests sent and node-to-node jumps differ by exactly one on every lookup, so both derive from the
+  recorded path.
+- The plotted definition is fixed before the first benchmark number is taken, against the Chord
+  paper's own definition of path length.
+- The path is also what names the failing node in Phase 3 (D-012, reason 2), so recording it costs
+  nothing extra.
+- *Rejected — fixing one count now:* it would choose a definition before checking the one it is
+  compared against, and an off-by-one shifts every point on the plot.
+
+**Evidence:** none yet — design time. Step 2.4's in-process tests with constructed replies are the
+first evidence for F19a and F19d.

@@ -201,6 +201,29 @@ connection rate, and it is only worth doing if a measurement shows thread creati
 
 ---
 
+### 13 Sep 2026 — a fresh connection per hop fills the originator's TIME_WAIT table
+
+**Observed:** nothing measured. This follows from D-024 and one kernel setting read on this machine,
+so it is `REASONED`, not `MEASURED`.
+
+**The mechanism.** The originator opens a connection for each hop and closes it first, so every
+finished connection sits in `TIME_WAIT` for 60 s. `TIME_WAIT` blocks the four-tuple (source address
+and port, destination address and port), so the budget is roughly 28,232 ephemeral ports
+(32768–60999) **per destination node per minute**.
+
+**At today's scale:** safe. `net.ipv4.tcp_tw_reuse = 2` on this kernel lets `TIME_WAIT` ports be
+reused for loopback traffic, and every benchmark runs on loopback.
+
+**At 10x (a real network, sustained lookups):** loopback reuse no longer applies. The first node of
+every lookup is usually the same one, so it is the first destination to exhaust: above about 470
+lookups a second through one entry node (28,232 ports ÷ 60 s), the ports run out and `connect` fails
+with `EADDRNOTAVAIL`. That failure looks like a network error, not like a full table.
+
+**Would do.** Reuse connections at the originator, measured with a before and after. Phase 3 also
+has to map a failure on a reused socket to the same evidence as a refused connection (D-013).
+
+---
+
 ### 13 Sep 2026 — storage only ever grows
 
 **Observed:** nothing measured. This follows from D-014 and D-023, so it is `REASONED`, not

@@ -452,6 +452,42 @@ correctness.
 Lookups carry the 64-bit **routing identifier**, not the 160-bit key. Routing only ever asks which
 node, and the finger-repair lookups of later phases target ring positions that no key maps to.
 
+### The lookup loop never touches a socket directly
+
+The originator's loop — ask a node, follow `NEXT`, stop at `OWNER` — lives in its own module, and
+the one operation "send this line to this peer and return the reply" is passed in. Real sockets
+supply it in the `lookup` tool and, later, in `client`; tests supply a ring built in process. The
+cases that most need testing — a reply that points backwards, a node that names itself, a garbled
+reply — cannot be produced by a correct ring of real processes, but are a few lines of constructed
+data this way.
+
+**Rejected:** writing the loop directly into a binary, which could only be tested through real
+sockets and would be copied into `client` later.
+
+Each hop currently opens a **fresh connection**. Hop count is what this phase measures, and
+connection handling cannot change it; a fresh connect also gives one unambiguous failure signal per
+node, because a refused connection is proof nothing is listening. **Rejected:** a connection cache,
+where a dead node surfaces as a reset or end-of-stream on a previously good socket and must be
+re-probed to be told apart from a stale one. **Cost:** a handshake per hop, and `TIME_WAIT` sockets
+that can exhaust ephemeral ports under sustained load on a real network. Reuse will be added with a
+measured before and after, if latency needs it.
+
+**Every reply must make progress.** A `NEXT` has to name a node strictly between the one asked and
+the key, and an `OWNER` has to be a node the key falls before. Correct routing passes this even with
+stale tables, so a violation names a faulty node, and because the distance strictly shrinks, a
+lookup cannot cycle. A cap of 65 requests backs it up. It is derived, not chosen: with correct
+fingers each jump covers more than half the remaining distance in a 2⁶⁴ space. **Rejected:** an
+arbitrary hop cap, or a visited set, neither of which says which node misbehaved.
+
+Every originator socket has a **5 s receive and send timeout**, reported separately from a refused
+connection, because a refusal is proof nothing is listening and a timeout is only suspicion. It is
+a hang guard, not a failure detector. It fully covers loopback, where a silent node can only stall
+a read. On a real network a vanished host stalls `connect` instead, for about two minutes by default;
+a connect deadline is planned alongside failure detection.
+
+The loop records **every node it queried**, so a hop count can be reported either as requests or as
+jumps between nodes; the definition used in results is stated alongside them.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
