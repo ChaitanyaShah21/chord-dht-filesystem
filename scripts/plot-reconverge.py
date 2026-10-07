@@ -184,7 +184,9 @@ style(ax, f"c · after one kill, against ring size (T = {chosen_t} ms)", "ring s
       "seconds after the kill")
 
 ax = axes[1][1]
-pts = series_of("kills", "k")
+# One kill on 64 nodes is the size sweep's 64-node point: same ring, period and deadline.
+one = [(1, v) for n, v in series_of("size", "n") if n == 64]
+pts = sorted(one + series_of("kills", "k"), key=lambda p: p[0])
 milestones(ax, pts)
 ax.set_xscale("log", base=2)
 if pts:
