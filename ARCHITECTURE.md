@@ -1744,7 +1744,9 @@ paper does not count it.
   1024 in-process) were requests. Test output now labels those counts "requests", so the two
   counts never share a name.
 
-**Evidence:** the 1024-node simulation figure above; the full curve is `BENCHMARKS.md` §2.
+**Evidence:** the 1024-node simulation figure above; the full curve is `BENCHMARKS.md` §2, where
+hops sit at 0.10–0.19 below ½ log₂ N at every ring size from 32 to 2²⁰, and requests sit one above
+hops at every point.
 
 ---
 
@@ -1769,9 +1771,10 @@ the two curves overlap on the plot wherever both exist.
 - **Hop count is a deterministic function of the membership, the start node and the key.** The
   process boundary adds a transport and nothing else. The transport is tested on its own
   (`test-net`, `e2e-chord.sh`), so what the replay leaves out is covered elsewhere.
-- **A logarithm needs doublings to be visible.** Processes on this machine reach about a dozen
-  doublings; the replay reaches twenty. A curve that keeps tracking ½ log₂ N for twenty doublings is
-  a much stronger claim than one that stops where memory does.
+- **A logarithm needs doublings to be visible.** Processes on this machine reach ten doublings
+  (2 to 2048 nodes, measured in `BENCHMARKS.md` §2); the replay reaches nineteen (2 to 2²⁰). A curve
+  that keeps tracking ½ log₂ N for nineteen doublings is a much stronger claim than one that stops
+  where memory does.
 - **The replay is not a model.** It is the shipped routing code with a different transport, so a
   disagreement with the real ring would be a real bug, not a modelling error.
 
@@ -1796,4 +1799,5 @@ disagree silently and inflate hop counts.
 - **`sim-hops` rebuilds a node's 64 fingers each time that node is asked**, trading CPU for memory:
   64 fingers kept for each of 2²⁰ nodes would be about 3 GB, more than the memory budget.
 
-**Evidence:** `BENCHMARKS.md` §2.
+**Evidence:** `BENCHMARKS.md` §2, at `e042857`. Every one of the 135,168 lookups on real rings (2 to
+2048 nodes) was reproduced exactly by the replay, and the curve reaches 9.87 hops at 2²⁰ nodes.

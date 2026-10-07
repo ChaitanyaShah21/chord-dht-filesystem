@@ -73,7 +73,33 @@ it, and in exchange it survives every one of its uploaders going offline.
 
 ## Results
 
-**Single-peer transfer baseline**, measured 9 Sep 2026 at commit `e381179`, 512 KB pieces, one
+### Lookup hop count tracks ½ log₂ N, from 2 nodes to a million
+
+![Lookup hops versus ring size](docs/figures/hops-vs-n.png)
+
+Measured 7 Oct 2026 at commit `e042857`. 380,928 lookups over 93 rings, every owner checked
+against an independent oracle:
+
+| Ring size | How it ran | Mean hops | ½ log₂ N | 99th percentile |
+|---:|---|---:|---:|---:|
+| 2048 | real `node` processes, lookups over TCP | **5.38** | 5.5 | 9 |
+| 1,048,576 | in process, the same routing code | **9.87** | 10.0 | 15 |
+
+- **A hop is a finger followed**, which is the Chord paper's path length and one less than the
+  number of requests the client sends.
+- **Real processes stop at 2048**, a ceiling derived from measured per-node memory (about
+  0.95 MiB proportional set size per node), not chosen.
+- **Beyond that, `sim-hops` replays the same code in one process**: the same membership parser,
+  finger builder, routing step and lookup loop, with a function call where the socket was. On every
+  real ring it reproduced all 135,168 lookups exactly, owner and path.
+- **The mean sits 0.10–0.19 hops below ½ log₂ N at every size from 32 nodes up.** That offset is
+  measured and not yet explained.
+
+Method, ring-to-ring spread and memory figures: [`BENCHMARKS.md`](BENCHMARKS.md) §2.
+
+### Single-peer transfer baseline
+
+Measured 9 Sep 2026 at commit `e381179`, 512 KB pieces, one
 seeder, all processes on one host. Median of three runs, each with fresh processes:
 
 | Transfer | Median | Throughput |

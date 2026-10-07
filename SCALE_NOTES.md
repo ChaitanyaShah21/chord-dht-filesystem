@@ -103,7 +103,7 @@ precisely so they can be checked.**
 | 1 | **Lookup round trips** (if fork F1 chooses iterative) | large rings | latency grows as hops × round-trip time; on loopback invisible, on a real network dominant | recursive lookup, or cache finger entries aggressively |
 | 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers | back off the period adaptively |
 | 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2 |
-| 4 | **Free RAM on this host** | ~ring size TBD | cannot start more nodes; **this is a measurement artefact, not a system property, and must be labelled as such on the plot** | cloud VMs — cut-order item 3 |
+| 4 | **Free RAM on this host** | **2048 node processes** within a 3.4 GiB budget (measured 7 Oct: about 1 MiB per node at that size, growing with N — see the 7 Oct entry) | cannot start more nodes; **this is a measurement artefact, not a system property, and is labelled as such on the plot** | in-process replay past the ceiling (D-027); cloud VMs — cut-order item 3 |
 
 ---
 
@@ -244,3 +244,64 @@ byte near the start of a file shifts every later chunk and dedup saves almost no
 in the cut order. The insertion problem is separate. It is solved by **content-defined chunking**,
 where boundaries are chosen by a rolling hash of the content rather than by fixed offsets, so an
 insertion only disturbs nearby chunks. That is a change to D-016 and is noted here, not scheduled.
+
+---
+
+### 7 Oct 2026 — the membership list dies by scope, but its memory stays in the process
+
+**Observed:** `MEASURED` on 7 Oct 2026, per-node memory of real `node` processes read from
+`/proc/<pid>/smaps_rollup` (median of up to 64 sampled processes per ring) and, for the heap, from
+`/proc/<pid>/smaps` of one node. The private and heap figures come from a probe run just before
+the benchmark, with node sources unchanged since `9637591` and therefore identical to `e042857`. The
+proportional-set figures were measured again in the `e042857` benchmark run (`BENCHMARKS.md` §2)
+and agree within 1 KiB.
+
+| Ring size | Private memory per node | Proportional set size per node | `[heap]` resident |
+|---|---|---|---|
+| 16 | 720 KiB | 932 KiB | 152 KiB |
+| 256 | 756 KiB | 777 KiB | — |
+| 1024 | 864 KiB | 869 KiB | — |
+| 2048 | 948 KiB | 950 KiB | 380 KiB |
+
+**The mechanism.** D-020 makes the membership list a local variable in `bootstrap()`, so no lookup
+can ever read it. That holds: the list is destroyed when the function returns. But destroying it
+returns the memory to the C++ allocator, not to the operating system. The heap grows from 152 KiB
+to 380 KiB between a 16-member and a 2048-member ring. The 228 KiB difference matches the growth
+in private memory exactly, about 114 bytes per member: the parsed `Peer` entries plus the file's
+text, freed but still resident.
+
+**At today's scale:** harmless, and it does not touch routing. It costs about 0.45 GiB across a
+2048-node ring on one machine, and it is part of why per-node cost rises from 0.7 to 0.95 MiB.
+
+**At 10x (20,000 members):** about 2.2 MiB of dead heap per node, so a one-machine ring of that
+size would spend 44 GiB holding a list nobody reads. Total resident memory grows as O(N²) while
+the routing state stays O(N log N), which is exactly the cost D-020 meant to avoid.
+
+**Would do.** Call `malloc_trim(0)` at the end of bootstrap (glibc-specific, one line), or parse the
+membership file as a stream so the whole text is never held. Neither is done now. The wired ring is
+Phase 2 scaffolding that joins replace in Phase 3, and the ceiling it sets is already measured.
+**Confidence:** `MEASURED` for the numbers; the 10x figure is arithmetic from them.
+
+---
+
+### 7 Oct 2026 — how far real processes go on this machine
+
+**Observed:** `MEASURED` at commit `e042857` (`BENCHMARKS.md` §2). Per-node cost, measured as the
+drop in the kernel's `MemAvailable` (which includes per-process kernel structures, not only user
+memory), was 963 KiB per node at 1024 nodes and 1063 KiB at 2048. The slowest of three 2048-node
+ring start-ups took 7.6 s, because every node hashes the whole membership list (about 4.2 million
+SHA-1 computations in total, on 8 cores).
+
+**The derivation.** The documented budget is ~3.4 GiB free. Reserving 1 GiB of headroom for the
+originator, the oracle, the page cache and measurement noise leaves about 2.4 GiB. 2048 nodes cost
+about 2.1 GiB and fit. 4096 nodes would cost **at least** 4096 × 1.04 MiB ≈ 4.2 GiB, more than the
+whole budget, and the per-node figure is still rising with N. So the real-process series stops at
+2048, and the in-process replay (D-027) continues the curve.
+
+**At 10x:** startup is O(N) per node and O(N²) in total, so a 20,000-node wired ring would need
+about 400 million hashes to start. That is another reason the Phase 3 join path, not a membership
+file, is how a large ring gets built.
+
+**Confidence:** `MEASURED`. On the day of measurement the machine reported more free memory than the
+documented 3.4 GiB (about 8.7 GiB available), so the ceiling is set by the documented budget rather
+than by the machine on one particular day.

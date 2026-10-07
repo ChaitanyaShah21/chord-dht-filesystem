@@ -47,15 +47,15 @@ ax.annotate("½ log₂ N", (xs[-1], 0.5 * math.log2(xs[-1])), xytext=(6, 0),
 
 if sn:
     ax.fill_between(sn, sp1, sp99, color=SIM, alpha=0.14, linewidth=0, zorder=2,
-                    label="in-process replay, 1st–99th percentile")
+                    label="in-process replay: 1st–99th percentile")
     ax.plot(sn, smean, color=SIM, linewidth=2, marker="o", markersize=4, zorder=3,
-            label="in-process replay (sim-hops), mean")
+            label="in-process replay: mean")
 if rn:
     lower = [m - lo for m, lo in zip(rmean, rp1)]
     upper = [hi - m for m, hi in zip(rmean, rp99)]
     ax.errorbar(rn, rmean, yerr=[lower, upper], fmt="D", color=REAL, markersize=6,
                 markeredgecolor=SURFACE, markeredgewidth=1.2, elinewidth=1.4, capsize=3, zorder=4,
-                label="real node processes over TCP, mean and 1st–99th percentile")
+                label="real processes over TCP: mean, 1st–99th percentile")
     ax.axvline(rn[-1], color=GRID, linewidth=1, zorder=0)
     ax.annotate(f"largest real ring: {rn[-1]:,} processes", (rn[-1], ax.get_ylim()[1]),
                 xytext=(4, -12), textcoords="offset points", color=INK_2, fontsize=8.5)
@@ -63,7 +63,8 @@ if rn:
 ax.set_xscale("log", base=2)
 ax.set_xlim(all_n[0] / 1.3, all_n[-1] * 3.2)
 ax.set_ylim(bottom=0)
-ax.set_xticks([n for n in all_n if int(math.log2(n)) % 2 == 0 or n == all_n[0]])
+ax.yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(2))   # hops are whole numbers
+ax.set_xticks([n for n in all_n if int(math.log2(n)) % 2 == 0])
 ax.get_xaxis().set_major_formatter(matplotlib.ticker.FuncFormatter(
     lambda v, _: f"2$^{{{int(round(math.log2(v)))}}}$"))
 ax.set_xlabel("Ring size N (nodes, log scale)", color=INK)
@@ -76,7 +77,7 @@ for side in ("top", "right"):
 for side in ("left", "bottom"):
     ax.spines[side].set_color(INK_2)
 ax.tick_params(colors=INK_2)
-leg = ax.legend(loc="lower right", frameon=False, fontsize=8.5)
+leg = ax.legend(loc="upper left", frameon=False, fontsize=8.5)
 for t in leg.get_texts():
     t.set_color(INK)
 
