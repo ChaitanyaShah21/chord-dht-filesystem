@@ -658,6 +658,22 @@ died falls back to the nearest node it still knows, never to itself, since `(n, 
 claim every key. **Rejected:** evicting on one timeout, which on eight shared cores would evict live
 nodes during scheduling stalls. **Cost:** a frozen node takes two periods and two deadlines to leave.
 
+### A client that reaches a dead node reports it, and the report is only a hint
+
+Iterative routing has a consequence for failure detection: lookup traffic never flows between nodes,
+so a node never sees a client's failed connection, and client load alone would not speed up
+detection at all. So when a lookup fails at a node that an earlier node had named, the client sends
+`SUSPECT` to the node that named it and retries from the start. The receiver pings the suspect
+itself and evicts only on a refusal, so detection becomes faster under load while no client can
+evict anyone. The plain loop is unchanged; recovery is a wrapper, and the `lookup` tool enables it
+with `--retries`.
+
+**Rejected:** failing the lookup, which keeps failing until maintenance reaches the dead node;
+retrying silently, which follows the same stale pointer; and resuming with an exclusion list, which
+changes the request format and the routing decision to save a few round trips. **Cost:** a retry
+repeats its earlier hops, and a dead *owner* is never contacted during routing, so its keys resolve
+to it until its predecessor stabilises.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

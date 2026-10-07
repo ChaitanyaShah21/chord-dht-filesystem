@@ -209,6 +209,7 @@ decided before the paper is one that cannot be defended in December.
 | **F25** | **Is there a graceful leave?** Crash-only; departure messages to the neighbours; or departure with a data hand-off. | Decides whether the system has one recovery path or two, and what a planned shutdown costs. | **RESOLVED** — D-033 |
 | **F26** | **How does `fix_fingers` proceed?** One finger per round (the paper); all fingers every round; or one lookup per round whose answer fills every finger it covers. | Sets how long a dead finger survives and the permanent background load per node. | **RESOLVED** — D-034 |
 | **F27** | **The failure-handling mechanics D-013 left open.** How many strikes; whether a candidate successor is verified before adoption; whether a surprising `NOTIFY` triggers a check; what replaces an evicted finger; what a node does when its whole successor list is gone. | Decides how fast a dead node leaves, whether it can be re-adopted from a neighbour's stale pointer, and whether an orphaned node claims the whole ring. | **RESOLVED** — D-035 |
+| **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
 
 ---
 
@@ -2166,4 +2167,51 @@ cores, so a scheduling stall would evict live nodes — D-013's argument.
 - A frozen node is evicted after two strikes: about two periods plus two deadlines, not one.
 - After more than r adjacent deaths, recovery from fingers depends on the predecessors of the nodes
   fallen back on being right. Likely, not guaranteed.
+
+---
+
+### D-036 — An originator that reaches a dead node tells the node that named it, then retries
+
+**Fork:** F28. **Date:** 7 Oct 2026. **Gates:** lookup success during churn, and whether D-013's
+detection adapts to load under iterative routing.
+
+**The problem.** D-013 relied on natural traffic to speed up detection: any failed call to a
+successor is reported to the detector. But under iterative routing (D-012), lookup traffic does not
+flow between nodes. The originator talks to every node itself, so a node never sees a client's
+failed connection. Left alone, client lookups would add nothing to detection in Phase 3, and
+reconvergence under load would equal reconvergence when idle. The two decisions, each sound alone,
+conflicted, and it surfaced only when the stabilisation path was designed.
+
+**The decision.** `lookup_with_recovery()` wraps `lookup()`. If a lookup fails because a node it
+was sent to could not be reached — refused, timed out or closed — and an earlier node had named it,
+the originator sends `SUSPECT <ip> <port>` to the node that named it, then retries the whole lookup
+from the start, up to a given number of attempts. The node receiving `SUSPECT` pings the suspect
+itself and evicts it only if the ping is refused (D-031). `lookup()` is unchanged, so the Phase 2
+benchmark and `sim-hops` are unaffected. The `lookup` tool takes `--retries <n>`; the default 0 is
+Phase 2's behaviour.
+
+**Why.**
+- **It makes detection load-adaptive again.** On a busy ring the node holding a dead successor or
+  finger learns of it within one client round trip, and the retry routes around it.
+- **The node acts only on its own evidence.** A client cannot evict anyone by claiming they are
+  dead; it can only cause a ping.
+- **Retrying from the start needs no change to `FIND_SUCCESSOR`** and leaves the progress check
+  exactly as it was.
+
+**Rejected: fail the lookup** (Phase 2's behaviour). Simple and honest, and every lookup through a
+dead node then fails until maintenance reaches it — for a finger, up to about log₂ N periods.
+
+**Rejected: retry without telling anyone.** The retry takes the same path to the same dead node
+until the ring repairs itself, so it only adds waiting.
+
+**Rejected: resume at the previous node with an exclusion** (`FIND_SUCCESSOR k AVOID <node>`), the
+paper's "try the next best finger". It saves the hops before the failure, and changes the request
+format, the node's routing decision and the progress check, to save a few round trips.
+
+**Cost accepted.**
+- A retried lookup pays its earlier hops again.
+- `SUSPECT` lets any client make a node send one ping per message; there is no rate limit.
+- **A dead owner is never contacted during routing** — its predecessor answers `OWNER` for it — so a
+  lookup for a dead node's keys returns that node until the predecessor stabilises. Phase 5's data
+  fetch is what contacts the owner, and its failure will feed the same hint.
 
