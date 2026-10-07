@@ -684,6 +684,19 @@ keeps inventing new nodes to forward to. The churn benchmark counts how often it
 **Rejected:** a larger cap with no derivation, or none at all. **Cost:** a ring built by many
 simultaneous joins can trip it until finger repair has run, so joins are retried.
 
+### "Reconverged" is decided by the test harness, not by the nodes
+
+After a kill, the harness computes what every surviving node *should* hold, from the surviving
+addresses alone, and polls every node until reality matches. It records three times, because they
+repair at different speeds and mean different things: **ring correct** (every successor and
+predecessor right — Chord's correctness condition, and the headline), **successor lists correct**,
+and **fingers correct**. A milestone counts only once it stays true. Pointers are read through the
+production paths where possible — the successor by asking the node to route its own identifier + 1 —
+and the node reports only what it holds; it never judges whether that is right. **Rejected:**
+successor pointers alone, which hide the slower repairs; a lookup sweep alone, which cannot say which
+node is wrong; and nodes reporting convergence, which no single node can know. **Cost:** polling is
+load, and timing resolution is one poll, reported with every number.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

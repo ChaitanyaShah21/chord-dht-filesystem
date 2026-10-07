@@ -211,6 +211,7 @@ decided before the paper is one that cannot be defended in December.
 | **F27** | **The failure-handling mechanics D-013 left open.** How many strikes; whether a candidate successor is verified before adoption; whether a surprising `NOTIFY` triggers a check; what replaces an evicted finger; what a node does when its whole successor list is gone. | Decides how fast a dead node leaves, whether it can be re-adopted from a neighbour's stale pointer, and whether an orphaned node claims the whole ring. | **RESOLVED** — D-035 |
 | **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
 | **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
+| **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
 
 ---
 
@@ -2249,4 +2250,51 @@ named are real; a liar can name new identifiers for ever.
 - `fix_fingers` uses the same loop and the same cap; a lookup that fails is retried next round.
 
 **Evidence:** the count of `too-many-requests` failures in the churn benchmark.
+
+---
+
+### D-038 — "Reconverged" is three milestones, judged by an oracle in the harness
+
+**Fork:** F30. **Date:** 7 Oct 2026. **Gates:** the reconvergence benchmark (`BENCHMARKS.md` §3).
+
+**The decision.** After a node is killed, the harness computes the correct state of every live node
+from the set of live addresses alone — SHA-1 of each, sorted — and polls every live node until its
+state matches. It records three times:
+
+1. **Ring correct** — the headline. Every live node's successor and predecessor equal the oracle's.
+   This is Chord's correctness condition: with right successors, every lookup reaches the right owner.
+2. **Successor lists correct.** Every live node's list equals the next min(r, N − 1) live nodes.
+3. **Fingers correct.** Every live node's 64 fingers equal the oracle's.
+
+A milestone counts only once it **stays** true at every later poll for at least two periods, so a
+state that flickers to correct and back is not reported as converged.
+
+**How each is observed**, through production paths wherever one exists. The successor: the node is
+sent `FIND_SUCCESSOR <its own id + 1>`, which it answers from its successor pointer in the code path
+lookups use. The predecessor and list: `NEIGHBOURS`, the message stabilise itself relies on.
+Fingers: the read-only `FINGERS`. The node reports what it holds; the harness decides whether that
+is right. After the last milestone, lookups from every live node must return the oracle's owner.
+
+**Time** runs from the moment SIGKILL has been delivered to the end of the first poll at which the
+milestone holds (and keeps holding). It is an upper bound with a resolution of one poll, and the
+poll duration is reported with every number.
+
+**Why.**
+- **The oracle lives outside the node**, for D-020's reason: the checker must not be the thing being
+  checked. A node asserting "I am converged" would be measuring itself, and no node can know anyway:
+  convergence is a property of the whole ring.
+- **Three milestones because they repair at different speeds and mean different things**:
+  correctness in about one or two periods, the list in about r, fingers in about log₂ N. One number
+  would hide two of them.
+
+**Rejected: successor pointers only.** Chord's correctness condition, but it hides how long a second
+failure would be dangerous (lists) and how long lookups are slow (fingers).
+
+**Rejected: a lookup sweep only.** Behavioural and convincing, but it cannot say which node is wrong,
+and a sweep large enough to touch every node's arc is slow enough to blur the timing.
+
+**Cost accepted.**
+- Polling is load: three connections per live node per poll. None of these messages contacts a
+  third node, so polling cannot itself speed up failure detection, but it costs CPU.
+- The resolution is one poll, which grows with N.
 
