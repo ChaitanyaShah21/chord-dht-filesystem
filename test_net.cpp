@@ -1,4 +1,4 @@
-// In-process tests for the node's line framing (net.cpp).
+// In-process tests for the line framing and the lookup transport (net.cpp).
 //
 // The end-to-end suite cannot reach the most important line in net.cpp: the
 // node never produces a message containing a newline, so D-010's sanitiser is
@@ -8,12 +8,16 @@
 
 #include "net.h"
 
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -115,14 +119,163 @@ void test_recv_line() {
       check(!recv_line(p.b, out), "a peer that closes without sending gives false"); }
 }
 
+// -------------------------------------------------------------------------
+// The lookup transport: exchange_line over real loopback sockets. Each case
+// builds the one server behaviour it needs, so the four outcomes D-013 must
+// keep apart -- refused, timeout, closed, failed -- are each produced on purpose.
+
+// The port the kernel gave a socket bound to port 0.
+int port_of(int fd) {
+    sockaddr_in a{};
+    socklen_t len = sizeof a;
+    getsockname(fd, static_cast<sockaddr *>(static_cast<void *>(&a)), &len);
+    return ntohs(a.sin_port);
+}
+
+// A free port with nothing listening on it: bind, read the number, close.
+// (Another process could take it in between; on a test machine it does not.)
+int dead_port() {
+    const int fd = listen_on("127.0.0.1", 0);
+    const int port = port_of(fd);
+    close(fd);
+    return port;
+}
+
+long elapsed_ms(std::chrono::steady_clock::time_point since) {
+    return static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - since).count());
+}
+
+void test_connect_errno() {
+    // connect_to must hand back the REAL cause. Before this was fixed it called
+    // close() after a failed connect, and close() is allowed to change errno.
+    errno = 0;
+    const int fd = connect_to("127.0.0.1", dead_port(), 1000);
+    check(fd < 0 && errno == ECONNREFUSED, "connect_to a dead port fails with errno ECONNREFUSED");
+
+    errno = 0;
+    check(connect_to("999.0.0.1", 80, 1000) < 0 && errno == EINVAL, "connect_to a bad address sets EINVAL");
+}
+
+void test_recv_line_errno() {
+    std::string out;
+    { Pair p; close(p.a); p.a = -1; errno = EINTR;
+      check(!recv_line(p.b, out) && errno == 0, "a clean close sets errno to 0, whatever it held before"); }
+    { Pair p; write_raw(p.a, std::string(MAX_LINE + 1, 'a')); errno = 0;
+      check(!recv_line(p.b, out) && errno == EMSGSIZE, "an over-long line sets errno to EMSGSIZE"); }
+}
+
+void test_exchange_line() {
+    std::string reply;
+
+    // Ok: a server that answers one line.
+    {
+        const int lfd = listen_on("127.0.0.1", 0);
+        std::thread server([lfd] {
+            const int c = accept(lfd, nullptr, nullptr);
+            std::string req;
+            if (recv_line(c, req)) send_line(c, "echo " + req);
+            close(c);
+        });
+        const Delivery d = exchange_line("127.0.0.1", port_of(lfd), "PING", reply, 2000);
+        server.join();
+        close(lfd);
+        check(d == Delivery::Ok && reply == "echo PING", "a server that answers gives Ok and its one line");
+    }
+
+    // Refused: nothing listening.
+    check(exchange_line("127.0.0.1", dead_port(), "PING", reply, 2000) == Delivery::Refused && reply.empty(),
+          "nothing listening gives Refused");
+
+    // Timeout: a listener that never accepts. The kernel completes the
+    // handshake from the backlog, so connect succeeds and the READ times out --
+    // exactly what a SIGSTOP'd node looks like.
+    {
+        const int lfd = listen_on("127.0.0.1", 0);
+        const auto t0 = std::chrono::steady_clock::now();
+        const Delivery d = exchange_line("127.0.0.1", port_of(lfd), "PING", reply, 200);
+        const long ms = elapsed_ms(t0);
+        close(lfd);
+        check(d == Delivery::Timeout, "a peer that never replies gives Timeout, not Closed or Refused");
+        check(ms >= 150 && ms < 2000, "and it gives up after about the deadline (took " + std::to_string(ms) + " ms for 200)");
+    }
+
+    // Closed: a server that accepts and hangs up without a word.
+    {
+        const int lfd = listen_on("127.0.0.1", 0);
+        std::thread server([lfd] { close(accept(lfd, nullptr, nullptr)); });
+        const Delivery d = exchange_line("127.0.0.1", port_of(lfd), "PING", reply, 2000);
+        server.join();
+        close(lfd);
+        check(d == Delivery::Closed && reply.empty(), "a peer that hangs up before replying gives Closed");
+    }
+
+    // Closed, mid-line: half a reply, then a hang-up. Not a reply.
+    {
+        const int lfd = listen_on("127.0.0.1", 0);
+        std::thread server([lfd] {
+            const int c = accept(lfd, nullptr, nullptr);
+            std::string req;
+            recv_line(c, req);
+            write_raw(c, "OWNER 0123");
+            close(c);
+        });
+        const Delivery d = exchange_line("127.0.0.1", port_of(lfd), "PING", reply, 2000);
+        server.join();
+        close(lfd);
+        check(d == Delivery::Closed && reply.empty(), "half a reply then a hang-up gives Closed, and no partial reply");
+    }
+
+    // Failed: a reply with no newline, longer than MAX_LINE.
+    {
+        const int lfd = listen_on("127.0.0.1", 0);
+        std::thread server([lfd] {
+            const int c = accept(lfd, nullptr, nullptr);
+            std::string req;
+            recv_line(c, req);
+            write_raw(c, std::string(MAX_LINE + 10, 'x'));
+            close(c);
+        });
+        const Delivery d = exchange_line("127.0.0.1", port_of(lfd), "PING", reply, 2000);
+        server.join();
+        close(lfd);
+        check(d == Delivery::Failed, "an over-long reply gives Failed, not Closed");
+    }
+
+    // Failed: an address that is not an address.
+    check(exchange_line("not-an-ip", 80, "PING", reply, 200) == Delivery::Failed, "a bad address gives Failed");
+
+    // A host that never answers the handshake (decision D-025). 192.0.2.1 is in
+    // TEST-NET-1 (RFC 5737), which is never assigned, so a SYN sent there gets
+    // no reply. With the deadline set BEFORE connect, Linux gives up after it;
+    // set after connect, this would block for the kernel's ~127 s of retries.
+    // A machine with no route at all fails at once instead: that is reported
+    // as a skip, because it proves nothing either way.
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Delivery d = exchange_line("192.0.2.1", 80, "PING", reply, 300);
+        const long ms = elapsed_ms(t0);
+        if (d == Delivery::Failed && ms < 100) {
+            std::printf("  SKIP  no route to 192.0.2.1 here, so the connect deadline cannot be observed\n");
+        } else {
+            check(d == Delivery::Timeout && ms < 2000,
+                  "a host that never answers the handshake gives Timeout at the deadline (took " +
+                  std::to_string(ms) + " ms for 300)");
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
     std::signal(SIGPIPE, SIG_IGN);      // exactly as node.cpp does (D-011)
-    std::printf("test-net: line framing\n");
+    std::printf("test-net: line framing and the lookup transport\n");
 
     test_send_line();
     test_recv_line();
+    test_connect_errno();
+    test_recv_line_errno();
+    test_exchange_line();
 
     std::printf("%s  %d/%d checks passed\n",
                 failures == 0 ? "PASS" : "FAIL", checks - failures, checks);

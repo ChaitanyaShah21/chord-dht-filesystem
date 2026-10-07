@@ -18,6 +18,7 @@ CMakeFiles/
 /lookup
 /test-chord
 /test-net
+/test-lookup
 
 # ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----
 # Regenerate deterministically with scripts/make-testdata.sh

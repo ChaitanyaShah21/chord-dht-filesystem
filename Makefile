@@ -20,11 +20,13 @@ CLIENT  = client
 NODE    = node
 LOOKUP  = lookup
 
-# test-chord is a TEST binary, not a deliverable: it exercises the identifier
-# arithmetic in process, with rings built by hand. It is deliberately not part
-# of `all`, so a normal build never depends on it.
+# test-chord, test-net and test-lookup are TEST binaries, not deliverables: they
+# exercise the routing arithmetic, the framing and the lookup loop in process,
+# with rings built by hand. They are deliberately not part of `all`, so a normal
+# build never depends on them; `make check` builds and runs them.
 TEST_CHORD = test-chord
 TEST_NET   = test-net
+TEST_LOOKUP = test-lookup
 
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
@@ -49,6 +51,7 @@ TEST_NET_SRC = test_net.cpp
 # rings; lookup_main.cpp is the thin command-line tool around it.
 LOOKUP_SRC      = lookup.cpp
 LOOKUP_MAIN_SRC = lookup_main.cpp
+TEST_LOOKUP_SRC = test_lookup.cpp
 
 # Object files
 TRACKER_OBJ    = $(TRACKER_SRC:.cpp=.o)
@@ -60,6 +63,7 @@ NET_OBJ        = $(NET_SRC:.cpp=.o)
 TEST_NET_OBJ   = $(TEST_NET_SRC:.cpp=.o)
 LOOKUP_OBJ      = $(LOOKUP_SRC:.cpp=.o)
 LOOKUP_MAIN_OBJ = $(LOOKUP_MAIN_SRC:.cpp=.o)
+TEST_LOOKUP_OBJ = $(TEST_LOOKUP_SRC:.cpp=.o)
 
 # Default target
 all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP)
@@ -87,6 +91,11 @@ $(TEST_CHORD): $(TEST_CHORD_OBJ) $(CHORD_OBJ)
 $(TEST_NET): $(TEST_NET_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+# test-lookup drives lookup.o with rings built in process. It never opens a
+# socket, but lookup.o contains socket_transport, so net.o must be linked.
+$(TEST_LOOKUP): $(TEST_LOOKUP_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 # Rebuild any object file if sha1.h changes. Without this, editing the header leaves
 # stale .o files behind and the next `make` links yesterday's code.
 $(CLIENT_OBJ): sha1.h
@@ -98,14 +107,15 @@ $(TEST_NET_OBJ): net.h
 # lookup.h includes both chord.h and net.h, so anything including it depends on all three.
 $(LOOKUP_OBJ): lookup.h chord.h net.h
 $(LOOKUP_MAIN_OBJ): lookup.h chord.h net.h
+$(TEST_LOOKUP_OBJ): lookup.h chord.h net.h
 
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
-	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) \
-	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(TEST_CHORD) $(TEST_NET)
+	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) \
+	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP)
 
 # -----------------------------
 # Convenience rules
@@ -118,8 +128,9 @@ run-client:
 
 # Build and run the in-process arithmetic tests. Exits non-zero on failure, so
 # it can be used as a gate.
-check: $(TEST_CHORD) $(TEST_NET)
+check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP)
 	./$(TEST_CHORD)
 	./$(TEST_NET)
+	./$(TEST_LOOKUP)
 
 .PHONY: all clean run-tracker run-client check

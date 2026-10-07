@@ -1684,8 +1684,11 @@ paths (`getsockopt(SO_ERROR)` after `poll`).
 - **One value covers connect, send and receive.** Phase 3 may want a shorter connect deadline than
   read deadline; that split is the point where the `poll` version earns its cost.
 
-**Evidence:** the table above. The 5 s value itself remains a backstop, not a failure-detection
-threshold (D-024 F19c).
+**Evidence:** the table above, and a regression test. `test-net` connects to `192.0.2.1:80` with a
+300 ms deadline and requires a timeout within 2 s. With the options moved after `connect` on purpose
+(a mutation test), that same call blocked for **133.7 s** before failing. That measures the hang this
+decision removes; the 127 s in D-024 was calculated from `tcp_syn_retries`. The 5 s value itself
+remains a backstop, not a failure-detection threshold (D-024 F19c).
 
 ---
 
@@ -1742,3 +1745,4 @@ paper does not count it.
   counts never share a name.
 
 **Evidence:** the 1024-node simulation figure above; the full curve is `BENCHMARKS.md` §2.
+

@@ -18,8 +18,8 @@
 ## Status
 
 Verified by running the scripts in the Evidence column on the machine described in
-[`BENCHMARKS.md`](BENCHMARKS.md): the legacy suites at `a9c69cc` (9 Sep 2026), the Chord suites
-at `29a829c` (13 Sep 2026).
+[`BENCHMARKS.md`](BENCHMARKS.md): the legacy suites at `a9c69cc` (9 Sep 2026), the routing suites
+at `29a829c` (13 Sep 2026), the lookup suites on 7 Oct 2026.
 
 | Component | State | Evidence |
 |---|---|---|
@@ -32,6 +32,7 @@ at `29a829c` (13 Sep 2026).
 | Zero-byte file | **Broken.** An empty file produces an empty manifest, the tracker rejects the upload, and the client reports success anyway | `scripts/e2e-edge.sh` — case `empty`, a deliberately failing test |
 | Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
 | Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
+| Chord lookup originator (`lookup`) | **Works** on a fixed ring. Follows `NEXT` to `OWNER`, checks every reply for progress, and reports a refused, timed-out or garbled node by name | `make check` — 70 lookup checks against correct, lying and broken rings · `scripts/e2e-chord.sh` — real 16-node ring, 4000 lookups, one node killed, one frozen |
 | Chord joins, stabilisation, replication, chunk storage | **Not built yet** | — |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
@@ -609,16 +610,20 @@ an entry without one is not finished.*
 ```
 chord-dht-filesystem/
 ├── chord.h, chord.cpp     # Routing primitives as pure functions: identifiers, arcs, fingers, route_step
-├── net.h, net.cpp         # Line framing for the node: one message, one line, bounded length
+├── net.h, net.cpp         # Line framing, and one request/reply exchange that tells refused from timed out
 ├── node.cpp               # Chord ring member: bootstraps from a membership file, answers FIND_SUCCESSOR
+├── lookup.h, lookup.cpp   # The originator's loop: follows NEXT to OWNER, checks every reply for progress
+├── lookup_main.cpp        # `lookup`: runs one lookup per identifier on stdin, prints owner, hops and path
 ├── tracker.cpp            # Legacy metadata index and peer discovery; thread per client
 ├── client.cpp             # Legacy peer: main loop, peer server, download workers, heartbeat
 ├── sha1.h                 # Header-only wrapper over OpenSSL SHA1(), hex-encoded
 ├── test_chord.cpp         # Unit tests: hand-built rings, independent oracles, routing simulation
-├── test_net.cpp           # Unit tests: framing edge cases over a socketpair
+├── test_net.cpp           # Unit tests: framing edge cases, and refused/timeout/closed over real sockets
+├── test_lookup.cpp        # Unit tests: the lookup loop against correct, lying and broken rings
 ├── Makefile               # Hand-written; `make` builds the binaries, `make check` runs the unit tests
 ├── scripts/
 │   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
+│   ├── e2e-chord.sh       # The C++ originator on a real ring: paths vs a model, killed and frozen nodes
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
@@ -643,10 +648,11 @@ chord-dht-filesystem/
 > suites run directly:
 
 ```bash
-make clean && make          # tracker, client and node, no warnings
-make check                  # unit tests: identifier arithmetic, routing, framing
+make clean && make          # tracker, client, node and lookup, no warnings
+make check                  # unit tests: identifier arithmetic, routing, framing, the lookup loop
 
 ./scripts/e2e-node.sh       # a real 8-node Chord ring: owners and hop counts vs independent models
+./scripts/e2e-chord.sh      # the C++ lookup tool on a 16-node ring, including a killed and a frozen node
 ./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
 ./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
 ./scripts/e2e-framing.sh    # framing: malformed input must not desync the connection
@@ -666,7 +672,7 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-Two unit-test binaries (`make check`) and six end-to-end suites. No continuous integration yet —
+Three unit-test binaries (`make check`) and seven end-to-end suites. No continuous integration yet —
 CI lands in Phase 5.
 
 Routing is tested in two layers because each catches bugs the other cannot. The unit tests build
@@ -675,6 +681,13 @@ table. The end-to-end suite runs real processes, so it catches the node not usin
 logic at all. Both check **hop counts** against an independent model, not only which node was
 reached: a wrong finger still reaches the right owner, just in more hops, and a suite that checked
 owners alone would pass it.
+
+The lookup loop is tested the same way. `test-lookup` hands it rings that a correct deployment can
+never produce: replies that point backwards, name the asking node, overshoot the key, are garbled,
+or come from a ring that lies forever, plus a ring built so a correct lookup needs exactly the
+65-request cap. `e2e-chord.sh` runs the real tool against real processes, kills one node and
+freezes another, and checks that each failure is reported as the right kind and names the right
+node. Every test was checked by mutation: a line was broken on purpose, and a suite had to fail.
 
 `e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
 that pins a known defect is more useful than a passing test that avoids it, and it turns a
