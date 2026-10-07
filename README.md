@@ -732,6 +732,16 @@ ring under a partition. **Cost:** an orphan whose every remembered address has d
 of 200 deliberately harsh churn histories in the tests — and the last survivors of a total collapse
 refuse service until an operator restarts one with `--create`.
 
+### When the deadline rule failed, its scope was narrowed and the failure kept
+
+The rule for the call deadline named a load — 256 nodes stabilising every 50 ms — that turned out to
+saturate this machine (load average 66 on eight cores). The slowest exchange there was 345 ms, and the rule
+had no solution among its candidates. Rather than quietly pick a value, the rule is now applied to the
+configurations the benchmark actually runs, the overload measurement is published as the machine's limit,
+and the change is recorded as a change. **Rejected:** the largest candidate, which shrinks the stated margin
+without a reason; and larger candidates, which would slow eviction of frozen nodes to guard against a load
+nobody runs.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

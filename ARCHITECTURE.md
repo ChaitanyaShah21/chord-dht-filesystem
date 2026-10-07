@@ -214,6 +214,7 @@ decided before the paper is one that cannot be defended in December.
 | **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
 | **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §3 |
 | **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
+| **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
 
 ---
 
@@ -2446,3 +2447,39 @@ refuses to route, and rejoins through the node it first joined through), and the
 (200 histories; every one that does not converge is shown to contain a stranded orphan; no running
 node ever claims the ring while others are in it).
 
+---
+
+### D-041 — The deadline rule is applied under the loads the benchmark actually runs
+
+**Fork:** F33, surfaced by the first calibration run. **Date:** 7 Oct 2026. **Gates:** the value of the
+node-to-node call deadline D (D-039).
+
+**What happened.** D-039 fixed the rule before measuring: D is the smallest of 100, 200, 500 and 1000 ms
+that is at least ten times the slowest node-to-node exchange observed "while the heaviest benchmarked ring
+runs (256 nodes at the shortest period swept)". The first calibration, 256 nodes at 50 ms, measured a
+slowest exchange of 345.5 ms (median 4.3 ms, 99th percentile 92.8 ms), which needs D ≥ 3.46 s — above
+every candidate. The rule had no solution. The reason is itself a result: 256 nodes each running a round
+every 50 ms drove the load average to 66 on eight cores. That configuration saturates the machine, and the
+rule's wording had named it without anyone checking that it was runnable.
+
+**The decision.** The rule is applied to the configurations the benchmark actually runs: the heaviest
+point of the period sweep (64 nodes at 50 ms) and the heaviest point of the ring-size sweep (256 nodes at
+the chosen period). The larger of their slowest exchanges decides D. The 256-node, 50 ms calibration is
+kept and reported, as the measured limit of this machine. The period sweep runs at D = 200 ms, the value
+the rule gives for its own heaviest point, so its "no live node wrongly evicted" condition is tested at a
+deadline no more lenient than the final one.
+
+**Rejected: D = 1000 ms, the largest candidate.** It gives a margin of 2.9 times the slowest exchange, under
+a load no benchmark runs, and departs from the rule's stated margin without a reason.
+
+**Rejected: add larger candidates** (2 s, 5 s). It keeps the wording and gives D ≈ 5 s, which makes a frozen
+node take two 5 s deadlines to leave, to protect against a load the benchmark never applies.
+
+**Rejected: drop 50 ms from the period sweep**, so that "the shortest period" is a runnable one. It hides
+the result that 50 ms is where this machine runs out of cores.
+
+**Cost accepted.** This changes a rule after seeing data, which is the thing writing the rule first was meant
+to prevent. It is stated here rather than made silently, the original wording and the measurement that broke
+it are both kept, and the change narrows the rule's scope without touching its margin.
+
+**Evidence:** `BENCHMARKS.md` §3, the calibration table.
