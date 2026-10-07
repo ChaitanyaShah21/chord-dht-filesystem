@@ -1,30 +1,35 @@
-// node -- one member of a fixed Chord ring (Phase 2).
+// node -- one member of a Chord ring.
 //
-//   ./node <ip> <port> <membership-file>
+//   ./node <ip> <port> <membership-file>        fixed ring, never changes (Phase 2, D-020)
+//   ./node <ip> <port> --create     [options]   a new ring of one
+//   ./node <ip> <port> --join <ip:port> [opts]  join through a node already in a ring
+//   ./node <ip> <port> --wired <file> [options] start from the fixed-ring state, then maintain it
 //
-// Answers one routing question, one step at a time (iterative routing, D-012):
+// Options (D-032, D-039):
+//   --period <ms>    time between maintenance rounds              (default DEFAULT_PERIOD_MS)
+//   --timeout <ms>   deadline on every call to another node       (default DEFAULT_TIMEOUT_MS)
+//   --succ <r>       successor-list length, 1..16                 (default 8)
 //
-//   FIND_SUCCESSOR <16-hex id>  ->  OWNER <id> <ip> <port>   my successor owns it
-//                               ->  NEXT  <id> <ip> <port>   ask this node instead
-//   PING                        ->  PONG <id>
-//   anything else               ->  ERR <reason>
-//
-// NEXT names the closest preceding finger, so a lookup takes about
-// log2 N hops instead of walking the ring. The decision itself is route_step()
-// in chord.cpp, shared with the in-process tests, so what the tests prove is
-// exactly what the node does.
+// Requests are answered by handle_request() in stabilize.cpp, shared with the
+// in-process tests, so what the tests prove is what the node does. This file
+// is only sockets, threads and the command line.
 
 #include "chord.h"
+#include "lookup.h"
 #include "net.h"
+#include "stabilize.h"
 
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
+#include <random>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -33,120 +38,199 @@
 
 namespace {
 
-// Everything this node knows. Written once by bootstrap(), before the first
-// connection is accepted, and never again in Phase 2. That -- and only that --
-// is why the handler threads may read it without a mutex. Phase 3 changes the
-// successor and fingers while threads are reading them, and locking arrives then.
-struct NodeState {
-    Peer self;
-    Peer predecessor;
-    Peer successor;
-    std::vector<Peer> fingers;    // finger[0] is the successor; routed on by route_step()
-};
+// The defaults D-039 picks from the reconvergence benchmark (BENCHMARKS.md §3).
+constexpr int DEFAULT_PERIOD_MS  = 500;
+constexpr int DEFAULT_TIMEOUT_MS = 1000;
 
-NodeState node;
+// Set once in main() before any thread starts, and only read afterwards. That
+// ordering -- all writes before the first reader exists -- is what makes them
+// safe to read without a lock.
+int g_timeout_ms = DEFAULT_TIMEOUT_MS;
+std::unique_ptr<NodeState> g_node;
 
-std::string render(const Peer &p) {
-    return id_to_hex(p.id) + " " + p.ip + " " + std::to_string(p.port);
+// Every call this node makes to another node: one fresh connection, with the
+// deadline set before connect (D-025). A plain function, so it lives forever and
+// can be referred to from any thread.
+Delivery node_transport(const Peer &to, const std::string &request, std::string &reply) {
+    return exchange_line(to.ip, to.port, request, reply, g_timeout_ms);
+}
+const Transport g_transport = node_transport;
+
+// One connection: answer lines until the peer closes, a send fails, or a line
+// is too long. Runs on its own detached thread. Work a handler deferred until
+// after its reply (Handled::after) runs once the reply has been sent.
+void serve(int fd) {
+    std::string line;
+    while (recv_line(fd, line)) {
+        Handled h = handle_request(*g_node, line, g_transport);
+        const bool sent = send_line(fd, h.reply);
+        if (h.after) h.after();
+        if (!sent) break;
+    }
+    close(fd);
 }
 
-// Build this node's routing state from the membership file (decision D-020).
-bool bootstrap(const std::string &ip, const std::string &port,
-               const std::string &path, std::string &err) {
+// The maintenance thread: a round, then a fixed delay (D-039). The first round
+// waits a random fraction of a period, so nodes started together do not run
+// their rounds in step.
+void maintain(int period_ms) {
+    std::mt19937_64 rng(std::random_device{}());
+    std::uniform_int_distribution<int> offset(0, period_ms - 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(offset(rng)));
+    while (true) {
+        maintenance_round(*g_node, g_transport);
+        std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+    }
+}
+
+// Parse "ip:port" through the membership parser, so it is validated and
+// canonicalised, and its identifier computed, exactly as every other address is.
+bool parse_address(const std::string &text, Peer &out) {
+    std::vector<Peer> one;
+    std::string err;
+    if (text.find('\n') != std::string::npos || !parse_members(text, one, err) || one.size() != 1)
+        return false;
+    out = one[0];
+    return true;
+}
+
+// A whole number in [lo, hi]; digits only, so "+5", " 5" and "5ms" are refused.
+bool parse_int(const std::string &s, int lo, int hi, int &out) {
+    if (s.empty() || s.size() > 7) return false;
+    int v = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + (c - '0');
+    }
+    if (v < lo || v > hi) return false;
+    out = v;
+    return true;
+}
+
+// Read and parse a membership file. The list is returned to the caller, which
+// lets it die by scope once the state is built (D-020).
+bool read_members(const std::string &path, std::vector<Peer> &members, std::string &err) {
     std::ifstream file(path);
     if (!file) { err = "cannot open membership file " + path; return false; }
     std::stringstream text;
     text << file.rdbuf();
-
-    // D-020: the whole membership lives only in this local variable. It is
-    // destroyed when bootstrap returns, so no lookup can ever consult it.
-    std::vector<Peer> members;
-    if (!parse_members(text.str(), members, err)) return false;
-
-    // Our own address goes through the same parser, so it is validated and
-    // canonicalised exactly as the file's entries were.
-    std::vector<Peer> me;
-    std::string me_err;
-    if (!parse_members(ip + ":" + port, me, me_err)) {
-        err = "invalid own address " + ip + ":" + port;
-        return false;
-    }
-
-    // Find ourselves by ADDRESS, never by identifier (invariant I8).
-    bool listed = false;
-    for (const Peer &p : members)
-        if (p.ip == me[0].ip && p.port == me[0].port) listed = true;
-    if (!listed) {
-        err = me[0].ip + ":" + std::to_string(me[0].port) + " is not in " + path;
-        return false;
-    }
-
-    node.self        = me[0];
-    node.fingers     = build_fingers(node.self.id, members);
-    node.successor   = node.fingers[0];                     // successor_of(self.id + 1)
-    node.predecessor = predecessor_of(node.self.id, members);
-    return true;
+    return parse_members(text.str(), members, err);
 }
 
-// Turn one request line into one reply line. Never throws, never exits.
-std::string handle(const std::string &line) {
-    std::istringstream in(line);
-    std::vector<std::string> words;
-    for (std::string w; in >> w;) words.push_back(w);
-
-    if (words.empty()) return "ERR empty request";
-
-    if (words[0] == "PING" && words.size() == 1)
-        return "PONG " + id_to_hex(node.self.id);
-
-    if (words[0] == "FIND_SUCCESSOR" && words.size() == 2) {
-        Id k;
-        if (!id_from_hex(words[1], k))
-            return "ERR identifier must be 16 hexadecimal characters";
-
-        const RouteStep step = route_step(node.self, node.successor, node.fingers, k);
-        return (step.owner ? "OWNER " : "NEXT ") + render(step.peer);
-    }
-
-    return "ERR unknown request";
-}
-
-// One connection: answer lines until the peer closes, a send fails, or a line
-// is too long. Runs on its own detached thread.
-void serve(int fd) {
-    std::string line;
-    while (recv_line(fd, line)) {
-        if (!send_line(fd, handle(line))) break;
-    }
-    close(fd);
+int usage(const char *argv0) {
+    std::fprintf(stderr,
+                 "usage: %s <ip> <port> <membership-file>\n"
+                 "       %s <ip> <port> (--create | --join <ip:port> | --wired <file>)\n"
+                 "                      [--period <ms>] [--timeout <ms>] [--succ <1..%d>]\n",
+                 argv0, argv0, MAX_SUCCESSORS);
+    return 2;
 }
 
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        std::fprintf(stderr, "usage: %s <ip> <port> <membership-file>\n", argv[0]);
+    if (argc < 4) return usage(argv[0]);
+    std::signal(SIGPIPE, SIG_IGN);      // D-011: a departed peer is an error value
+
+    Peer me;
+    if (!parse_address(std::string(argv[1]) + ":" + argv[2], me)) {
+        std::fprintf(stderr, "[node] invalid own address %s:%s\n", argv[1], argv[2]);
         return 2;
     }
 
-    std::signal(SIGPIPE, SIG_IGN);      // D-011: a departed peer is an error value
-
-    std::string err;
-    if (!bootstrap(argv[1], argv[2], argv[3], err)) {
-        std::fprintf(stderr, "[node] %s\n", err.c_str());
-        return 1;
+    // ---- the command line ----
+    enum class Mode { Fixed, Create, Join, Wired } mode = Mode::Fixed;
+    std::string file, known_text;
+    int period_ms = DEFAULT_PERIOD_MS, successors = DEFAULT_SUCCESSORS;
+    if (argc == 4 && argv[3][0] != '-') {
+        file = argv[3];                                   // Phase 2's form, unchanged
+    } else {
+        bool chosen = false;
+        for (int i = 3; i < argc; ++i) {
+            const std::string a = argv[i];
+            const bool has_value = i + 1 < argc;
+            if (a == "--create" && !chosen)                    { mode = Mode::Create; chosen = true; }
+            else if (a == "--join" && has_value && !chosen)    { mode = Mode::Join; known_text = argv[++i]; chosen = true; }
+            else if (a == "--wired" && has_value && !chosen)   { mode = Mode::Wired; file = argv[++i]; chosen = true; }
+            else if (a == "--period" && has_value)  { if (!parse_int(argv[++i], 10, 600000, period_ms)) return usage(argv[0]); }
+            else if (a == "--timeout" && has_value) { if (!parse_int(argv[++i], 10, 600000, g_timeout_ms)) return usage(argv[0]); }
+            else if (a == "--succ" && has_value)    { if (!parse_int(argv[++i], 1, MAX_SUCCESSORS, successors)) return usage(argv[0]); }
+            else return usage(argv[0]);
+        }
+        if (!chosen) return usage(argv[0]);
     }
 
-    const int listener = listen_on(node.self.ip, node.self.port);
+    g_node = std::make_unique<NodeState>(me, successors);
+    const std::string tag = "[node " + me.ip + ":" + std::to_string(me.port) + "] ";
+    g_node->log = [tag](const std::string &event) {
+        std::fprintf(stderr, "%s%s\n", tag.c_str(), event.c_str());
+    };
+
+    // ---- the starting state (D-029) ----
+    if (mode == Mode::Fixed || mode == Mode::Wired) {
+        std::vector<Peer> members;               // dies at the end of this block (D-020)
+        std::string err;
+        if (!read_members(file, members, err)) {
+            std::fprintf(stderr, "[node] %s\n", err.c_str());
+            return 1;
+        }
+        bool listed = false;
+        for (const Peer &p : members) listed = listed || same_node(p, me);   // by address (I8)
+        if (!listed) {
+            std::fprintf(stderr, "[node] %s:%d is not in %s\n", me.ip.c_str(), me.port, file.c_str());
+            return 1;
+        }
+        init_wired(*g_node, members);
+    } else if (mode == Mode::Create) {
+        init_alone(*g_node);
+    } else {
+        Peer known;
+        if (!parse_address(known_text, known)) {
+            std::fprintf(stderr, "[node] invalid --join address %s\n", known_text.c_str());
+            return 2;
+        }
+        // Not listening yet, on purpose (D-029): until the join succeeds, a
+        // connection to this address is refused, which evicts any stale entry.
+        bool joined = false;
+        for (int attempt = 1; attempt <= JOIN_ATTEMPTS && !joined; ++attempt) {
+            std::string why;
+            const JoinStatus st = join(*g_node, known, g_transport, why);
+            if (st == JoinStatus::Joined) { joined = true; break; }
+            std::fprintf(stderr, "%sjoin attempt %d/%d: %s\n", tag.c_str(), attempt, JOIN_ATTEMPTS, why.c_str());
+            if (st == JoinStatus::Collision) return 1;
+            std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
+        }
+        if (!joined) {
+            std::fprintf(stderr, "%sgiving up: could not join through %s\n", tag.c_str(), known_text.c_str());
+            return 1;
+        }
+    }
+
+    const int listener = listen_on(me.ip, me.port);
     if (listener < 0) {
-        std::fprintf(stderr, "[node] cannot listen on %s:%d: %s\n",
-                     node.self.ip.c_str(), node.self.port, std::strerror(errno));
+        std::fprintf(stderr, "[node] cannot listen on %s:%d: %s\n", me.ip.c_str(), me.port,
+                     std::strerror(errno));
         return 1;
     }
 
-    std::fprintf(stderr, "[node] %s:%d id=%s pred=%s succ=%s\n",
-                 node.self.ip.c_str(), node.self.port, id_to_hex(node.self.id).c_str(),
-                 id_to_hex(node.predecessor.id).c_str(), id_to_hex(node.successor.id).c_str());
+    std::string pred_text = "none", succ_text;
+    {
+        std::lock_guard<std::mutex> lock(g_node->mu);     // copy under the lock, print after it
+        if (g_node->has_pred) pred_text = id_to_hex(g_node->pred.id);
+        succ_text = id_to_hex(g_node->succs[0].id);
+    }
+    std::fprintf(stderr, "%sid=%s pred=%s succ=%s\n", tag.c_str(), id_to_hex(me.id).c_str(),
+                 pred_text.c_str(), succ_text.c_str());
+
+    // The fixed ring has no maintenance thread: its tables never change (D-029).
+    if (mode != Mode::Fixed) {
+        try {
+            std::thread(maintain, period_ms).detach();
+        } catch (const std::system_error &e) {
+            std::fprintf(stderr, "[node] cannot start the maintenance thread: %s\n", e.what());
+            return 1;
+        }
+    }
 
     while (true) {
         const int fd = accept(listener, nullptr, nullptr);

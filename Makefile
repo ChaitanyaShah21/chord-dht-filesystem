@@ -95,7 +95,9 @@ $(TRACKER): $(TRACKER_OBJ)
 $(CLIENT): $(CLIENT_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
-$(NODE): $(NODE_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+# The node answers requests through stabilize.o, and joins and repairs fingers
+# with the client's own lookup loop, so it links lookup.o as well.
+$(NODE): $(NODE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 # lookup links chord.o (identifiers, interval tests), so it needs -lcrypto too.
@@ -124,7 +126,7 @@ $(TEST_STABILIZE): $(TEST_STABILIZE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_
 $(CLIENT_OBJ): sha1.h
 $(CHORD_OBJ): chord.h sha1.h
 $(TEST_CHORD_OBJ): chord.h
-$(NODE_OBJ): chord.h net.h
+$(NODE_OBJ): stabilize.h lookup.h chord.h net.h
 $(NET_OBJ): net.h
 $(TEST_NET_OBJ): net.h
 # lookup.h includes both chord.h and net.h, so anything including it depends on all three.
