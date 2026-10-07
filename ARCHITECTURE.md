@@ -202,6 +202,7 @@ decided before the paper is one that cannot be defended in December.
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | **RESOLVED** — D-027 |
 | **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
 | **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
+| **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
 
 ---
 
@@ -1845,4 +1846,63 @@ Detection costs one comparison on a lookup the join performs anyway.
 
 **Evidence:** in-process tests construct the collision with chosen identifiers, since real SHA-1
 output never produces one.
+
+---
+
+### D-029 — A node starts one of four ways, and listens only once it has a successor
+
+**Fork:** F21. **Date:** 7 Oct 2026. **Gates:** `node`'s command line, and every Phase 3 test
+and benchmark.
+
+**The decision.**
+
+| Command | Starting state | Maintenance thread |
+|---|---|---|
+| `node <ip> <port> <membership-file>` | Phase 2's fixed ring, wired from the file (D-020) | none — unchanged, so the hop-count benchmark and its suites run as before |
+| `node <ip> <port> --create` | a ring of one: the successor is the node itself, no predecessor | yes |
+| `node <ip> <port> --join <ip:port>` | successor found by looking up the node's own identifier through the known node; no predecessor | yes |
+| `node <ip> <port> --wired <membership-file>` | the fixed-ring state plus a successor list, then maintained | yes |
+
+The join lookup is `lookup()` from `lookup.cpp`, the loop the client runs. **A joining node does
+not listen until that lookup has returned a successor**, so until then a connection to its address
+is refused. A join that cannot complete is retried, one period apart, up to 30 times, and then the
+node exits with an error.
+
+**Why.**
+- **The fixed ring stays as a mode** because the Phase 2 result is defined on it (D-020), and the
+  hop-count benchmark, `e2e-node.sh` and `e2e-chord.sh` need tables that do not change under them.
+  `e2e-chord.sh` kills a node and checks the path that still leads to it; a maintained ring would
+  repair that path away.
+- **The wired, maintained mode gives the reconvergence benchmark a known, correct starting state in
+  seconds.** A 256-node ring built by joins is itself a convergence experiment, because every early
+  table is stale, so a kill measured on top of one would measure two things at once. That is D-020's
+  argument applied to Phase 3.
+- **Joins are what the system does in use**, so `--create` and `--join` are tested end to end with
+  real processes, including joins into a running ring and a node rejoining at its old address.
+- **Listening only after the join removes a real hazard.** A node restarted at the same address
+  before the ring notices its death is still named by its predecessor. If it answered while it still
+  believed it was alone, `(n, n]` would make it claim every key, and the join lookup routed through
+  it would return itself. Not listening means its old entry is refused, which is proof of death
+  (D-013), so the ring evicts it, and the join is retried until the answer is no longer its own
+  address.
+
+**Rejected: joins only**, every ring built by joining. One code path, but the benchmark's starting
+state would depend on how well a mass join had converged, and the Phase 2 suites would lose the
+fixed tables they test against.
+
+**Rejected: remove the fixed ring.** The Phase 2 numbers could no longer be reproduced with the
+current binary.
+
+**Rejected: listen first, then join** (the paper's order). Simpler, and wrong under a fast restart,
+for the reason above.
+
+**Cost accepted.**
+- Four starting modes: a longer `main`, and every mode needs a test.
+- The wired mode reads a membership file, which a deployed ring would not have. It exists for the
+  benchmark's starting state, and the list still dies by scope (D-020).
+- A join gives up after 30 attempts. A ring that cannot answer one lookup for that long is
+  reported, not waited on forever.
+
+**Evidence:** none yet — design time. The join, rejoin and concurrent-join cases are tested in
+`scripts/e2e-churn.sh` and in process.
 

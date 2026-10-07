@@ -563,6 +563,25 @@ collisions, which fail silently. **Cost:** an operator restarts the node, at a p
 about 3 × 10⁻¹⁰ for 100,000 identities; and two colliding nodes joining at the same moment are
 contained by the adoption rule, not repaired.
 
+### A node joins through any node it knows, and listens only afterwards
+
+`node <ip> <port> --join <known-ip:port>` looks up the new node's own identifier through the known
+node, using the same lookup loop as the client, and the owner becomes its successor. The background
+thread does the rest: stabilisation tightens the predecessor's pointer onto it, `NOTIFY` makes the
+successor accept it, and finger repair fills its table. `--create` starts a ring of one.
+
+The joining node **starts listening only once it has a successor**. A node restarted at its old
+address before the ring has noticed its death is still named by its predecessor; if it answered
+while it still believed it was alone, it would claim every key. Not listening means its old entry is
+refused, which is proof of death, so the ring evicts it and the join is retried.
+
+The Phase 2 fixed ring (`node <ip> <port> <membership-file>`) is kept unchanged, because the
+hop-count result is defined on it. A fourth mode, `--wired <file>`, starts from that correct state
+and then maintains it: the reconvergence benchmark starts there, so it measures recovery from a
+kill rather than recovery from a mass join as well. **Rejected:** building every ring by joins,
+which would make the benchmark's starting state itself a convergence experiment. **Cost:** four
+start modes to test.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
