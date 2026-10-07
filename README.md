@@ -855,6 +855,8 @@ chord-dht-filesystem/
 │   ├── ringcheck.py       # The oracle and probes shared by the churn suite and its benchmark
 │   ├── bench-hops.py      # Hop count vs ring size: real processes and in-process replay, with oracles
 │   ├── plot-hops.py       # Draws docs/figures/hops-vs-n.png from the benchmark summary
+│   ├── bench-reconverge.py # Time for the ring to repair itself after kills, judged by the oracle
+│   ├── plot-reconverge.py # Summarises that benchmark into docs/figures/reconverge.{csv,png}
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
