@@ -212,6 +212,7 @@ decided before the paper is one that cannot be defended in December.
 | **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
 | **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
 | **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
+| **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §3 |
 
 ---
 
@@ -2297,4 +2298,56 @@ and a sweep large enough to touch every node's arc is slow enough to blur the ti
 - Polling is load: three connections per live node per poll. None of these messages contacts a
   third node, so polling cannot itself speed up failure detection, but it costs CPU.
 - The resolution is one poll, which grows with N.
+
+---
+
+### D-039 — The stabilisation period and the call deadline come off measured curves, by rules fixed before measuring
+
+**Fork:** F31. D-013 required the period T to be measured, and D-024/D-025 left the node's call
+deadline to be chosen in Phase 3. **Date:** 7 Oct 2026. **Gates:** every reconvergence number.
+
+**The decision.** Both are command-line parameters, `--period <ms>` and `--timeout <ms>`. Their
+defaults are picked from the Phase 3 benchmark by rules written down here, before any number was
+taken:
+
+- **The deadline D** bounds connect, send and receive on every node-to-node call (set before
+  `connect`, as in D-025). It is the smallest of 100, 200, 500 and 1000 ms that is at least **ten
+  times the slowest node-to-node exchange observed** while the heaviest benchmarked ring runs (256
+  nodes at the shortest period swept).
+- **The period T** is the **longest swept period whose median time to "ring correct" after one node
+  is killed (64 nodes, idle) is at most 1 s**, provided no live node is wrongly evicted in any run
+  at that period. Longest, because a longer period is cheaper; 1 s, because that window bounds how
+  long a dead node's keys resolve to it. The per-node CPU cost of each period is measured alongside,
+  so the price of the target is visible.
+
+**Scheduling.** A round starts T after the previous one finished (a fixed delay), and each node's
+first round starts after a random delay in [0, T), so nodes started together do not run their
+rounds in step.
+
+**Why.**
+- **T does double duty** (D-013): it bounds how long a death goes unnoticed on an idle ring and sets
+  how fast the repair spreads, one node per round. Reconvergence grows linearly with T while
+  background cost falls as 1/T, so neither curve has a knee on its own. A rule stating the target is
+  what turns two curves into one value, and writing it first stops the data choosing the rule.
+- **D only matters for nodes that stop answering without refusing** — frozen or partitioned, not
+  killed. Too short, and a stall on eight shared cores becomes a false strike; too long, and a frozen
+  node takes two deadlines longer to evict. Ten times the worst observed exchange is a margin over
+  the slowest thing this machine was seen to do, not over its average.
+
+**Rejected: T and D by precedent** (a 1 s period, a 5 s deadline). Numbers with no derivation for
+this system.
+
+**Rejected: D as a multiple of T.** Couples two quantities measuring different things: how often to
+check, and how long a healthy reply can take.
+
+**Rejected: a fixed rate instead of a fixed delay.** A round delayed by a deadline would be followed
+by rounds run back to back to catch up, exactly when a peer is already slow.
+
+**Cost accepted.**
+- Both values are measured on loopback with every node on one machine, so they transfer to a real
+  network only as a method, not as numbers.
+- The 1 s target is a stated objective, not derived from anything deeper. The curve is published so
+  a different objective can be read off it.
+
+**Evidence:** `BENCHMARKS.md` §3, where the values are filled in from the measured curves.
 

@@ -697,6 +697,17 @@ successor pointers alone, which hide the slower repairs; a lookup sweep alone, w
 node is wrong; and nodes reporting convergence, which no single node can know. **Cost:** polling is
 load, and timing resolution is one poll, reported with every number.
 
+### The stabilisation period and the call deadline come off measured curves
+
+Reconvergence grows linearly with the stabilisation period while background cost falls as one over
+it, so neither curve has a knee to pick. The selection rules were therefore written down before
+measuring. The period is the **longest** swept value (the cheapest) whose median time to a correct
+ring after one kill is at most 1 s, with no live node ever wrongly evicted. The node-to-node call
+deadline is the smallest round value at least ten times the slowest exchange observed under the
+heaviest benchmarked load. Rounds run a fixed delay apart, and each node starts at a random offset so
+nodes do not stabilise in step. **Rejected:** values by precedent, and a deadline tied to the period.
+**Cost:** the values hold for this machine; the method is what transfers.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
