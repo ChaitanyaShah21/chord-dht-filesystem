@@ -674,6 +674,16 @@ changes the request format and the routing decision to save a few round trips. *
 repeats its earlier hops, and a dead *owner* is never contacted during routing, so its keys resolve
 to it until its predecessor stabilises.
 
+### The 65-request cap stays during churn
+
+The cap was derived for correct fingers. With stale fingers a lookup still terminates — every reply
+must move strictly closer to the key — but may need up to N requests. The cap stays: a lookup that
+needs more than 65 requests during churn is evidence of a badly stale ring, failing it with the
+reason named beats waiting through a walk of the ring, and the cap is also what stops a node that
+keeps inventing new nodes to forward to. The churn benchmark counts how often it trips.
+**Rejected:** a larger cap with no derivation, or none at all. **Cost:** a ring built by many
+simultaneous joins can trip it until finger repair has run, so joins are retried.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

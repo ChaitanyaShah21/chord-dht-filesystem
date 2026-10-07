@@ -210,6 +210,7 @@ decided before the paper is one that cannot be defended in December.
 | **F26** | **How does `fix_fingers` proceed?** One finger per round (the paper); all fingers every round; or one lookup per round whose answer fills every finger it covers. | Sets how long a dead finger survives and the permanent background load per node. | **RESOLVED** — D-034 |
 | **F27** | **The failure-handling mechanics D-013 left open.** How many strikes; whether a candidate successor is verified before adoption; whether a surprising `NOTIFY` triggers a check; what replaces an evicted finger; what a node does when its whole successor list is gone. | Decides how fast a dead node leaves, whether it can be re-adopted from a neighbour's stale pointer, and whether an orphaned node claims the whole ring. | **RESOLVED** — D-035 |
 | **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
+| **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
 
 ---
 
@@ -2214,4 +2215,38 @@ format, the node's routing decision and the progress check, to save a few round 
 - **A dead owner is never contacted during routing** — its predecessor answers `OWNER` for it — so a
   lookup for a dead node's keys returns that node until the predecessor stabilises. Phase 5's data
   fetch is what contacts the owner, and its failure will feed the same hint.
+
+---
+
+### D-037 — The 65-request cap stays during churn
+
+**Fork:** F29 (D-024 asked Phase 3 to revisit the cap). **Date:** 7 Oct 2026. **Gates:** lookups and
+`fix_fingers` while tables are stale.
+
+**The decision.** `MAX_REQUESTS` stays 65. A lookup that needs more fails with `too-many-requests`,
+and the churn benchmark counts how often that happens.
+
+**Why.**
+- **65 is derived and tight for correct fingers** (D-024). With stale fingers the progress check
+  still guarantees termination — the distance to the key strictly shrinks, so no node is asked
+  twice — but the bound becomes N, a walk along successor pointers.
+- **A lookup needing more than 65 requests during churn is evidence of a badly stale ring.** Failing
+  it with the reason named is more useful than waiting through a walk of the ring, and with D-036's
+  retry the next attempt may take a repaired path.
+- **The cap is also the defence against a node that keeps naming new, invented nodes** (the
+  creeping-liar test). Raising it lengthens that.
+
+**Rejected: raise the cap** (to 1024, say). Fewer failures during heavy churn, a weaker defence, and
+a number with no derivation.
+
+**Rejected: no cap, relying on the progress check.** Termination is guaranteed only if the nodes
+named are real; a liar can name new identifiers for ever.
+
+**Cost accepted.**
+- A ring built by many simultaneous joins, before `fix_fingers` has run, can need more than 65
+  requests for some lookups — joins included, which are retried (D-029). The benchmark's wired start
+  avoids this.
+- `fix_fingers` uses the same loop and the same cap; a lookup that fails is retried next round.
+
+**Evidence:** the count of `too-many-requests` failures in the churn benchmark.
 
