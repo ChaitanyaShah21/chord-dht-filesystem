@@ -481,9 +481,20 @@ arbitrary hop cap, or a visited set, neither of which says which node misbehaved
 
 Every originator socket has a **5 s receive and send timeout**, reported separately from a refused
 connection, because a refusal is proof nothing is listening and a timeout is only suspicion. It is
-a hang guard, not a failure detector. It fully covers loopback, where a silent node can only stall
-a read. On a real network a vanished host stalls `connect` instead, for about two minutes by default;
-a connect deadline is planned alongside failure detection.
+a hang guard, not a failure detector.
+
+### The timeouts are set before the handshake
+
+On Linux a blocking `connect` honours the send timeout, so setting both timeouts **before**
+connecting means a host that never answers costs 5 s rather than the kernel's default of about two
+minutes of SYN retries. Checked on this machine: a non-answering address gave up after 2.01 s with a
+2 s timeout set first, and was still blocked at 8 s without it. The expiry surfaces as
+`EINPROGRESS`, which is reported as a timeout, never as a refusal.
+
+**Rejected:** setting them after `connect`, which keeps the two-minute hang for nothing; and a
+non-blocking `connect` with a `poll` deadline, which is portable to other kernels but behaves
+identically here for about 45 minutes more code. **Cost:** the behaviour is Linux-specific, and one
+deadline covers connect, send and receive.
 
 The loop records **every node it queried**, so a hop count can be reported either as requests or as
 jumps between nodes; the definition used in results is stated alongside them.

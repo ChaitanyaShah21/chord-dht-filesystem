@@ -201,6 +201,7 @@ decided before the paper is one that cannot be defended in December.
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
 | **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024 |
+| **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
 
 ---
 
@@ -1543,9 +1544,8 @@ deleting one of them.
 
 ### D-024 — The lookup originator: a transport-agnostic module, and a fresh connection per hop
 
-**Fork:** F19, parts a and b. **Date:** 13 Sep 2026. **Gates:** step 2.3, the Phase 2 benchmark
-harness, and Phase 5's client. Parts c–e (timeouts, bounding a lookup, what counts as a hop) are
-still open.
+**Fork:** F19, parts a–e. **Date:** 13 Sep 2026. **Gates:** step 2.3, the Phase 2 benchmark
+harness, and Phase 5's client. Part c is refined by D-025 (the timeouts are set before `connect`).
 
 **F19a — the loop is a module, `lookup.h` / `lookup.cpp`, with the request/reply exchange passed
 in.**
@@ -1595,8 +1595,8 @@ connect deadline is scheduled into Phase 3.**
 - *Why this covers Phase 2 completely:* on loopback a connection to a missing node is refused at
   once, and a frozen node's kernel still completes the handshake, so the only possible hang is at
   the read.
-- *What it does not cover:* a machine that vanishes on a real network, where nothing answers the
-  handshake. With `tcp_syn_retries = 6` on this kernel, `connect` blocks for about 127 s
+- *What it does not cover* (as first written; **D-025 closes this on Linux**): a machine that
+  vanishes on a real network, where nothing answers the handshake. With `tcp_syn_retries = 6` on this kernel, `connect` blocks for about 127 s
   (1 + 2 + 4 + 8 + 16 + 32 + 64), calculated from the setting rather than measured.
 - *Scheduled:* a non-blocking connect with a `poll` deadline, inside the single successor-call
   wrapper D-013 already requires, in **Phase 3**, estimated at 45 min. That is where the deadline's
@@ -1639,3 +1639,50 @@ connect deadline is scheduled into Phase 3.**
 
 **Evidence:** none yet — design time. Step 2.4's in-process tests with constructed replies are the
 first evidence for F19a and F19d.
+
+---
+
+### D-025 — The originator's timeouts are set before `connect`, so one 5 s deadline also bounds the handshake
+
+**Fork:** F20, surfaced while building step 2.3. **Date:** 7 Oct 2026. **Gates:** the socket
+transport in `net.cpp`, and the connect-deadline item D-024 scheduled into Phase 3.
+
+**The decision.** The transport creates the socket, sets `SO_RCVTIMEO` and `SO_SNDTIMEO` to 5 s,
+and only then calls `connect`. On Linux a blocking `connect` honours the send timeout: socket(7)
+states that when it expires, `connect` fails with `EINPROGRESS`. That error is reported as a
+**timeout**, the same class as a stalled read, and never as a refusal.
+
+**Checked on this machine before deciding**, with a 2 s timeout:
+
+| Target | Timeout set before `connect` | Result |
+|---|---|---|
+| `127.0.0.1:1` (nothing listening) | yes | `ECONNREFUSED` after 0.00 s |
+| `10.255.255.1:80` (nothing answers) | yes | `EINPROGRESS` after 2.01 s |
+| `192.0.2.1:80` (documentation range, nothing answers) | yes | `EINPROGRESS` after 2.01 s |
+| `192.0.2.1:80` | no | still blocked when killed at 8 s |
+
+**Why.** D-024 F19c recorded that a vanished host blocks `connect` for about 127 s on this kernel,
+and scheduled a non-blocking connect with a `poll` deadline into Phase 3. Setting the same options
+one line earlier closes that gap now, on the platform this project runs on, with no new code path.
+What is left for Phase 3 is choosing the value from a measurement, not building the mechanism.
+
+**Rejected: set the options after `connect`.** This is what the D-024 text implied. It changes
+nothing on loopback, but it keeps the 127 s hang on a real network for no benefit.
+
+**Rejected: a non-blocking `connect` with a `poll` deadline, now.** It is portable to kernels that
+ignore `SO_SNDTIMEO` during `connect`, and it would allow a connect deadline separate from the read
+deadline. On Linux it behaves identically, and it is about 45 minutes of code with its own error
+paths (`getsockopt(SO_ERROR)` after `poll`).
+
+**Cost accepted.**
+- **The behaviour is Linux-specific.** POSIX does not promise that `connect` honours `SO_SNDTIMEO`,
+  so on another kernel the 127 s hang returns. The project builds and runs only on Linux.
+- **`EINPROGRESS` on a blocking socket is surprising.** It normally means "a non-blocking connect
+  has started". The mapping is commented where it happens, because a reader who does not know
+  this rule would classify it as an unknown failure.
+- **One value covers connect, send and receive.** Phase 3 may want a shorter connect deadline than
+  read deadline; that split is the point where the `poll` version earns its cost.
+
+**Evidence:** the table above. The 5 s value itself remains a backstop, not a failure-detection
+threshold (D-024 F19c).
+
