@@ -25,8 +25,9 @@ with the C++ nodes. A node reports what it holds; only the harness decides wheth
 is right.
 
 Modes:
-  --calibrate N        run an N-node ring at --period and time NEIGHBOURS exchanges to
-                       every node for --seconds; prints the distribution (D-039's rule for D)
+  --calibrate N        run an N-node ring at --period until it is verified converged, then
+                       time NEIGHBOURS exchanges to every node for --seconds; prints the
+                       distribution (D-039's rule for D)
   --cpu N              CPU per node over --seconds with the ring idle, for each --periods value
   (default)            the sweep given by --sizes, --periods, --kills, --load, --runs
 
@@ -293,6 +294,17 @@ def calibrate(n, period, timeout, seconds, succ):
     members = members_for(n, 0)
     times = []
     with Ring(members, period, timeout, succ):
+        # Time only a ring verified correct and stable. Nodes start one after another,
+        # and a 256-node ring at a 1 s period takes about 16 s to settle after the last
+        # one starts; timing exchanges before that measures start-up repair, not steady
+        # state (an earlier version did, and its slowest exchange came from start-up).
+        poller = Poller()
+        converged, _, _ = wait_converged(poller, Oracle(members, succ), 300,
+                                         stable_s=max(2 * period / 1000, 0.5))
+        poller.close()
+        if not converged:
+            print(f"calibrate n={n} period={period} ms: ring never converged; exchanges below include "
+                  f"start-up repair", flush=True)
         time.sleep(SETTLE_PERIODS * period / 1000)
         end = time.monotonic() + seconds
         while time.monotonic() < end:
@@ -309,7 +321,7 @@ def calibrate(n, period, timeout, seconds, succ):
                     times.append(float("inf"))
     times.sort()
     pct = lambda q: times[max(0, int(q / 100 * len(times) + 0.999999) - 1)]
-    row = {"n": n, "period_ms": period, "exchanges": len(times), "median_ms": round(1000 * pct(50), 3),
+    row = {"n": n, "period_ms": period, "converged_first": int(converged), "exchanges": len(times), "median_ms": round(1000 * pct(50), 3),
            "p99_ms": round(1000 * pct(99), 3), "p999_ms": round(1000 * pct(99.9), 3),
            "max_ms": round(1000 * times[-1], 3)}
     print(f"calibrate n={n} period={period} ms: {len(times)} exchanges; median {row['median_ms']} ms  "
