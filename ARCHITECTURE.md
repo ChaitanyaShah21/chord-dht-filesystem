@@ -2121,6 +2121,14 @@ permanently, to speed up a rare event.
 - The lookup starts at the node itself, which costs one loopback connection to its own listener. It
   keeps one lookup path (the client's) instead of adding a special case.
 
+**Refined while building, 7 Oct 2026.** A finger whose lookup fails is **skipped until the next
+cycle**, not retried every round. The first version retried the same finger, so one finger whose
+repair kept failing stopped every later finger from ever being refreshed — seen on a real ring as a
+single wrong finger that persisted for 20 s after a node froze. Cost: a finger whose lookup fails
+transiently waits one cycle, about log₂ N periods, instead of one. This and D-035's per-finger strikes
+are independent defences: the in-process test of this stall passes with either one removed and fails
+only with both removed.
+
 ---
 
 ### D-035 — Failure handling: one strike for a refusal, two for anything else, and nothing adopted unverified
@@ -2171,6 +2179,22 @@ cores, so a scheduling stall would evict live nodes — D-013's argument.
 - A frozen node is evicted after two strikes: about two periods plus two deadlines, not one.
 - After more than r adjacent deaths, recovery from fingers depends on the predecessors of the nodes
   fallen back on being right. Likely, not guaranteed.
+
+**Refined while building, 7 Oct 2026 — four corrections, each found by a test rather than by review.**
+- **Strikes count against every peer a node holds — successor, predecessor or finger — not only the
+  two neighbours.** Found on a real ring (`e2e-churn.sh`): after a node was frozen, a third node's
+  finger kept pointing at it for 20 s. Repairing a finger is a lookup, the lookup was routed through
+  the frozen node by another stale finger, it timed out, and a timeout against a mere finger target
+  counted for nothing, so the same failure repeated every round.
+- **Any failure the last node asked can be blamed for is a strike against it** — no answer, `ERR`, a
+  garbled or backwards reply — not only an unreachable node. Otherwise a finger pointing at an orphan,
+  which answers `ERR` (D-040), could never be repaired.
+- **When a call evicts the successor for any reason — a refusal or a second strike — stabilise moves to
+  the next entry in the same round.** The first version did this only for a refusal; a frozen
+  successor then cost one more round than necessary. Found by the in-process frozen-node test.
+- **A `NOTIFY` probe that leads to the old predecessor's eviction, by refusal or by a second strike,
+  installs the notifier.** The first version did so only on a refusal, which left the slot empty for
+  a round after a second strike. Same test.
 
 ---
 

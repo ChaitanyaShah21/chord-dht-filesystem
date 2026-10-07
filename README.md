@@ -658,6 +658,12 @@ died falls back to the nearest node it still knows, never to itself, since `(n, 
 claim every key. **Rejected:** evicting on one timeout, which on eight shared cores would evict live
 nodes during scheduling stalls. **Cost:** a frozen node takes two periods and two deadlines to leave.
 
+Strikes count against **every** peer a node holds, fingers included, and finger repair skips a finger
+whose lookup fails rather than retrying it every round. Both were learned the hard way: on a real
+ring, a frozen node stayed in another node's finger table indefinitely, because the lookup that
+should have repaired that finger was itself routed through the frozen node and timed out, and the
+repair cycle retried that one finger for ever.
+
 ### A client that reaches a dead node reports it, and the report is only a hint
 
 Iterative routing has a consequence for failure detection: lookup traffic never flows between nodes,
