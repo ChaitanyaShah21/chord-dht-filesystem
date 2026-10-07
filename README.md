@@ -19,7 +19,7 @@
 
 Verified by running the scripts in the Evidence column on the machine described in
 [`BENCHMARKS.md`](BENCHMARKS.md): the legacy suites at `a9c69cc` (9 Sep 2026), the routing suites
-at `29a829c` (13 Sep 2026), the lookup suites on 7 Oct 2026.
+at `29a829c` (13 Sep 2026), the lookup and churn suites on 7 Oct 2026.
 
 | Component | State | Evidence |
 |---|---|---|
@@ -33,7 +33,8 @@ at `29a829c` (13 Sep 2026), the lookup suites on 7 Oct 2026.
 | Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
 | Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
 | Chord lookup originator (`lookup`) | **Works** on a fixed ring. Follows `NEXT` to `OWNER`, checks every reply for progress, and reports a refused, timed-out or garbled node by name | `make check` — 70 lookup checks against correct, lying and broken rings · `scripts/e2e-chord.sh` — real 16-node ring, 4000 lookups, one node killed, one frozen |
-| Chord joins, stabilisation, replication, chunk storage | **Not built yet** | — |
+| Chord joins, stabilisation, failure handling | **Works.** Nodes join through any member, a background thread runs stabilise, notify and finger repair, a refused node is evicted at once and a silent one after two strikes, and a node that loses everyone it knew stops routing and rejoins | `make check` — 95 in-process checks: every round order of two joins between the same pair, kills, freezes, a fast restart, collisions, 200 random churn histories · `scripts/e2e-churn.sh` — 22 checks on real processes, also run under ThreadSanitizer |
+| Replication, chunk storage | **Not built yet** | — |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
 reproduction steps for every one are in [`docs/failures.md`](docs/failures.md).
@@ -833,7 +834,9 @@ an entry without one is not finished.*
 chord-dht-filesystem/
 ├── chord.h, chord.cpp     # Routing primitives as pure functions: identifiers, arcs, fingers, route_step
 ├── net.h, net.cpp         # Line framing, and one request/reply exchange that tells refused from timed out
-├── node.cpp               # Chord ring member: bootstraps from a membership file, answers FIND_SUCCESSOR
+├── node.cpp               # Chord ring member: create, join or wire a ring; sockets and the maintenance thread
+├── stabilize.h, stabilize.cpp # A node's routing state and everything that changes it: joins, stabilise, notify,
+│                          #   finger repair, failure detection -- with the network passed in
 ├── lookup.h, lookup.cpp   # The originator's loop: follows NEXT to OWNER, checks every reply for progress
 ├── lookup_main.cpp        # `lookup`: runs one lookup per identifier on stdin, prints owner, hops and path
 ├── sim_hops.cpp           # `sim-hops`: the same routing code and loop with the ring in one process
@@ -843,10 +846,13 @@ chord-dht-filesystem/
 ├── test_chord.cpp         # Unit tests: hand-built rings, independent oracles, routing simulation
 ├── test_net.cpp           # Unit tests: framing edge cases, and refused/timeout/closed over real sockets
 ├── test_lookup.cpp        # Unit tests: the lookup loop against correct, lying and broken rings
+├── test_stabilize.cpp     # Unit tests: a whole ring in one process, with joins, deaths and freezes timed by hand
 ├── Makefile               # Hand-written; `make` builds the binaries, `make check` runs the unit tests
 ├── scripts/
 │   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
 │   ├── e2e-chord.sh       # The C++ originator on a real ring: paths vs a model, killed and frozen nodes
+│   ├── e2e-churn.sh       # Joins, kills, freezes and restarts on real processes, judged by an oracle
+│   ├── ringcheck.py       # The oracle and probes shared by the churn suite and its benchmark
 │   ├── bench-hops.py      # Hop count vs ring size: real processes and in-process replay, with oracles
 │   ├── plot-hops.py       # Draws docs/figures/hops-vs-n.png from the benchmark summary
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
@@ -879,6 +885,10 @@ make check                  # unit tests: identifier arithmetic, routing, framin
 
 ./scripts/e2e-node.sh       # a real 8-node Chord ring: owners and hop counts vs independent models
 ./scripts/e2e-chord.sh      # the C++ lookup tool on a 16-node ring, including a killed and a frozen node
+./scripts/e2e-churn.sh      # a ring built by joins, then kills, a freeze and a fast restart, checked by an oracle
+
+make tsan                   # the node built with ThreadSanitizer; run the churn suite with it:
+NODE_CMD="setarch $(uname -m) -R ./node-tsan" ./scripts/e2e-churn.sh
 ./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
 ./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
 ./scripts/e2e-framing.sh    # framing: malformed input must not desync the connection
@@ -898,7 +908,7 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-Three unit-test binaries (`make check`) and seven end-to-end suites. No continuous integration yet —
+Four unit-test binaries (`make check`) and eight end-to-end suites. No continuous integration yet —
 CI lands in Phase 5.
 
 Routing is tested in two layers because each catches bugs the other cannot. The unit tests build
@@ -914,6 +924,16 @@ or come from a ring that lies forever, plus a ring built so a correct lookup nee
 65-request cap. `e2e-chord.sh` runs the real tool against real processes, kills one node and
 freezes another, and checks that each failure is reported as the right kind and names the right
 node. Every test was checked by mutation: a line was broken on purpose, and a suite had to fail.
+
+The ring's maintenance is tested the same two ways. `test-stabilize` runs a whole ring in one
+process, on one thread, so it can order every node's rounds by hand: two nodes joining between the
+same pair in all 24 round orders, a node dying between its notify and its predecessor's stabilise, a
+frozen node, a node restarted at its old address before the ring has noticed, an identifier
+collision, and 200 random histories of joins, deaths and freezes. Running on one thread also means
+a lock held across a call to another node would deadlock the test rather than pass it. Correctness
+is judged against an oracle computed from the live addresses alone. `e2e-churn.sh` does the same
+with real processes, and is also run against a ThreadSanitizer build of the node. That build was
+checked by removing one lock on purpose, and it reported the race.
 
 `e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
 that pins a known defect is more useful than a passing test that avoids it, and it turns a

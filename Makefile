@@ -138,13 +138,27 @@ $(SIM_HOPS_OBJ): lookup.h chord.h net.h
 $(STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
 $(TEST_STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
 
+# A ThreadSanitizer build of the node, for looking for data races between the
+# maintenance thread and the request threads (decision D-030). Every translation
+# unit must be instrumented, so it compiles from source rather than reusing the
+# normal objects. Not part of `all`. On this aarch64 kernel ThreadSanitizer only
+# runs with address-space randomisation turned off:
+#   NODE_CMD="setarch $$(uname -m) -R ./node-tsan" scripts/e2e-churn.sh
+NODE_TSAN = node-tsan
+NODE_TSAN_SRC = $(NODE_SRC) $(STABILIZE_SRC) $(LOOKUP_SRC) $(CHORD_SRC) $(NET_SRC)
+
+$(NODE_TSAN): $(NODE_TSAN_SRC) stabilize.h lookup.h chord.h net.h sha1.h
+	$(CXX) -std=c++17 -Wall -pthread -g -O1 -fsanitize=thread -o $@ $(NODE_TSAN_SRC) $(CRYPTO_LDLIBS)
+
+tsan: $(NODE_TSAN)
+
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
 	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) $(STABILIZE_OBJ) $(TEST_STABILIZE_OBJ) \
-	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE)
+	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(NODE_TSAN)
 
 # -----------------------------
 # Convenience rules
@@ -163,4 +177,4 @@ check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE)
 	./$(TEST_LOOKUP)
 	./$(TEST_STABILIZE)
 
-.PHONY: all clean run-tracker run-client check
+.PHONY: all clean run-tracker run-client check tsan
