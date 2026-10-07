@@ -460,6 +460,9 @@ void test_route_step() {
 
 // Route every lookup the way an iterative originator will: ask a node, follow
 // NEXT, stop at OWNER. Each node's table is built exactly as bootstrap builds it.
+// `hops` below counts REQUESTS sent, including the first one to the start node.
+// Decision D-026 reserves "hops" in reported results for requests - 1; the
+// printed summary therefore says "requests".
 struct Sim {
     long lookups = 0, hops = 0;
     int worst = 0, wrong = 0, self_next = 0, no_progress = 0, too_long = 0;
@@ -539,16 +542,17 @@ void test_routing_simulation() {
                         sim.wrong, sim.self_next, sim.no_progress, sim.too_long);
 
         const double mean = double(sim.hops) / double(sim.lookups);
-        std::printf("  info  %-24s %6ld lookups, mean %.2f hops, worst %d  (log2 N = %.1f)\n",
+        std::printf("  info  %-24s %6ld lookups, mean %.2f requests, worst %d  (log2 N = %.1f)\n",
                     named.first.c_str(), sim.lookups, mean, sim.worst, std::log2(double(ring.size())));
 
         if (named.first == "1024 random") {
             // The logarithmic claim, as a property of a fixed ring: the Chord paper
-            // predicts a mean near (1/2) log2 N. An O(N) walk on 1024 nodes would
-            // average hundreds of hops.
+            // predicts a mean near (1/2) log2 N fingers followed, which is about
+            // (1/2) log2 N + 1 requests (D-026). An O(N) walk on 1024 nodes would
+            // average hundreds.
             const double lg = std::log2(double(ring.size()));
-            check(mean <= lg, "1024 random nodes: mean hop count is at most log2 N");
-            check(sim.worst <= 3 * lg, "1024 random nodes: worst hop count is at most 3 log2 N");
+            check(mean <= lg, "1024 random nodes: mean request count is at most log2 N");
+            check(sim.worst <= 3 * lg, "1024 random nodes: worst request count is at most 3 log2 N");
         }
     }
     check(all_correct, "every simulated lookup reaches the true owner, never names itself, "

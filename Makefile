@@ -18,6 +18,7 @@ CRYPTO_LDLIBS = -lcrypto
 TRACKER = tracker
 CLIENT  = client
 NODE    = node
+LOOKUP  = lookup
 
 # test-chord is a TEST binary, not a deliverable: it exercises the identifier
 # arithmetic in process, with rings built by hand. It is deliberately not part
@@ -43,6 +44,12 @@ NODE_SRC = node.cpp
 NET_SRC  = net.cpp
 TEST_NET_SRC = test_net.cpp
 
+# The lookup originator (decision D-024). lookup.cpp is the loop, with the
+# request/reply exchange passed in, so the tests can drive it with constructed
+# rings; lookup_main.cpp is the thin command-line tool around it.
+LOOKUP_SRC      = lookup.cpp
+LOOKUP_MAIN_SRC = lookup_main.cpp
+
 # Object files
 TRACKER_OBJ    = $(TRACKER_SRC:.cpp=.o)
 CLIENT_OBJ     = $(CLIENT_SRC:.cpp=.o)
@@ -51,9 +58,11 @@ TEST_CHORD_OBJ = $(TEST_CHORD_SRC:.cpp=.o)
 NODE_OBJ       = $(NODE_SRC:.cpp=.o)
 NET_OBJ        = $(NET_SRC:.cpp=.o)
 TEST_NET_OBJ   = $(TEST_NET_SRC:.cpp=.o)
+LOOKUP_OBJ      = $(LOOKUP_SRC:.cpp=.o)
+LOOKUP_MAIN_OBJ = $(LOOKUP_MAIN_SRC:.cpp=.o)
 
 # Default target
-all: $(TRACKER) $(CLIENT) $(NODE)
+all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP)
 
 # -----------------------------
 # Build rules
@@ -66,6 +75,10 @@ $(CLIENT): $(CLIENT_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 $(NODE): $(NODE_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
+# lookup links chord.o (identifiers, interval tests), so it needs -lcrypto too.
+$(LOOKUP): $(LOOKUP_MAIN_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 $(TEST_CHORD): $(TEST_CHORD_OBJ) $(CHORD_OBJ)
@@ -82,13 +95,17 @@ $(TEST_CHORD_OBJ): chord.h
 $(NODE_OBJ): chord.h net.h
 $(NET_OBJ): net.h
 $(TEST_NET_OBJ): net.h
+# lookup.h includes both chord.h and net.h, so anything including it depends on all three.
+$(LOOKUP_OBJ): lookup.h chord.h net.h
+$(LOOKUP_MAIN_OBJ): lookup.h chord.h net.h
 
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
-	      $(TRACKER) $(CLIENT) $(NODE) $(TEST_CHORD) $(TEST_NET)
+	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) \
+	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(TEST_CHORD) $(TEST_NET)
 
 # -----------------------------
 # Convenience rules

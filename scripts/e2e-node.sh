@@ -166,10 +166,10 @@ for k in sorted(keys):
         if hops != model_hops:
             hop_mismatch += 1
             if hop_mismatch <= 3:
-                print(f"        key {k:016x} from {start}: {hops} hops, model says {model_hops}")
+                print(f"        key {k:016x} from {start}: {hops} requests, model says {model_hops}")
 check(wrong == 0, f"{total} lookups ({len(keys)} keys x {n} start nodes) all reach the oracle's owner")
 check(hop_mismatch == 0, "every lookup's hop count equals the independent model of the finger rule")
-check(worst <= n, f"no lookup looped (worst {worst} hops, mean {hop_sum / total:.2f}; log2 {n} = {math.log2(n):.1f})")
+check(worst <= n, f"no lookup looped (worst {worst} requests, mean {hop_sum / total:.2f}; log2 {n} = {math.log2(n):.1f})")
 
 # ---- one-node ring: (n, n] is the whole ring ----
 alone_reply_ok = all(
