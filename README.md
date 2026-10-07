@@ -582,6 +582,20 @@ kill rather than recovery from a mass join as well. **Rejected:** building every
 which would make the benchmark's starting state itself a convergence experiment. **Cost:** four
 start modes to test.
 
+### One lock per node, never held across a network call
+
+A node's predecessor, successor list and fingers sit behind one mutex. Request handlers hold it for
+microseconds — to run the routing decision or copy an address — and the background thread holds it
+only to copy state before a call and to apply the result after. **No thread holds it while talking
+to another node**, so a frozen peer can delay one maintenance round but never a lookup. The price
+is the check-then-act gap: state can change while a call is in flight, so every result is applied
+only if the state it was based on is still current, and is otherwise asked for again next round.
+
+**Rejected:** a reader-writer lock, which buys concurrency for readers that barely hold the lock;
+and copy-on-write snapshots, which copy the whole state on every update and in C++17 sit on a
+hidden lock pool anyway. Checked with a ThreadSanitizer build of the node driven through the churn
+suite.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

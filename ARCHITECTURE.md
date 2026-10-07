@@ -203,6 +203,7 @@ decided before the paper is one that cannot be defended in December.
 | **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
 | **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
 | **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
+| **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
 
 ---
 
@@ -1905,4 +1906,54 @@ for the reason above.
 
 **Evidence:** none yet — design time. The join, rejoin and concurrent-join cases are tested in
 `scripts/e2e-churn.sh` and in process.
+
+---
+
+### D-030 — One mutex per node's routing state, never held across a network call
+
+**Fork:** F22. **Date:** 7 Oct 2026. **Gates:** the node's concurrency model from Phase 3 on.
+
+**The decision.** A node's mutable routing state — predecessor, successor list, fingers, and the
+failure detector's strikes — sits behind one `std::mutex`. Handler threads take it to compute a
+reply (`route_step` runs under it) or to copy what they need. The maintenance thread takes it to
+copy state before a call and to apply the result after. **No thread holds it during a network
+call.** Because the state can change while a call is in flight, every result is applied only if the
+state it was computed from is still current — a stabilise answer, for example, is applied only if
+the node it was asked of is still the successor — and is otherwise discarded, to be asked for again
+next round.
+
+**Why.**
+- **Phase 3 adds a writer.** In Phase 2 every field was written before the first reader thread
+  existed, so no lock was needed. Now the maintenance thread rewrites the successor while handler
+  threads read it, and copying a `std::string` while another thread assigns it is undefined
+  behaviour — the copy can read a buffer that has just been freed — not merely a stale value.
+- **The critical sections are microseconds**: a 64-entry scan, or a copy of a few addresses.
+  Time goes on network calls, and those are outside the lock.
+- **Not holding the lock across I/O keeps one slow peer from stalling every request.** A maintenance
+  call to a frozen node can take the whole deadline; with the lock held, every lookup the node
+  answers would wait that long.
+- **One lock has no lock order, so it cannot deadlock with itself.** The in-process tests also
+  enforce the I/O rule: they run every node on one thread, so a call made while holding the lock
+  would re-lock the same mutex — formally undefined behaviour, a hang in practice — and the test
+  would not pass.
+
+**Rejected: `std::shared_mutex`** (many readers or one writer). Readers would not block each other,
+but they barely hold the lock, and a shared mutex costs more per acquisition than a plain one. It
+buys concurrency where there is no measurable contention.
+
+**Rejected: copy-on-write snapshots** (a `std::shared_ptr<const State>` swapped atomically). Readers
+never block, but every update copies the whole state, and C++17's atomic `shared_ptr` functions are
+implemented in libstdc++ with a hidden pool of mutexes, so it is a lock plus a copy.
+
+**Rejected: hold the lock for a whole maintenance round.** The easiest to reason about, and it
+would queue every lookup behind a network call.
+
+**Cost accepted.**
+- **The check-then-act gap is real**: state read before a call may be stale when the reply arrives.
+  It is handled by re-validating at every point a result is applied — a discipline written into
+  each one, and therefore the place a mistake would go.
+- Handlers and the maintenance thread contend on one lock. Not measured, because nothing suggests it
+  matters at these sizes.
+
+**Evidence:** a ThreadSanitizer build of the node (`make tsan`), driven through the churn suite.
 
