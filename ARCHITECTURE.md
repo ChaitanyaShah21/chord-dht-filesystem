@@ -207,6 +207,7 @@ decided before the paper is one that cannot be defended in December.
 | **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
 | **F24** | **How long is the successor list?** The replication minimum (3); log₂ of the largest ring measured (8); or estimated at run time from the gap to the successor. | r is the exponent in the probability of a node being orphaned, and it is the replica set Phase 4 reads. | **RESOLVED** — D-032 |
 | **F25** | **Is there a graceful leave?** Crash-only; departure messages to the neighbours; or departure with a data hand-off. | Decides whether the system has one recovery path or two, and what a planned shutdown costs. | **RESOLVED** — D-033 |
+| **F26** | **How does `fix_fingers` proceed?** One finger per round (the paper); all fingers every round; or one lookup per round whose answer fills every finger it covers. | Sets how long a dead finger survives and the permanent background load per node. | **RESOLVED** — D-034 |
 
 ---
 
@@ -2078,4 +2079,39 @@ where three replicas already cover a departure.
 **Cost accepted.** A planned departure leaves the ring briefly wrong — the predecessor names the
 departed node as an owner until its next stabilise — exactly as a crash does. It is the same event
 as the benchmark's kill, so it is measured.
+
+---
+
+### D-034 — `fix_fingers`: one lookup per round, and its answer fills every finger it covers
+
+**Fork:** F26. **Date:** 7 Oct 2026. **Gates:** how long a stale finger survives; background load.
+
+**The decision.** Each round, a node looks up the start of the next finger it has not refreshed,
+`finger_start(n, i)`, with the same `lookup()` loop clients use, starting at itself. The owner `o`
+fills finger `i` **and every following finger whose start also lies in `(n, o]`**, because they have
+the same owner. The next round continues after the last finger filled, wrapping back to finger 1.
+Finger 0 is the successor, and stabilise sets it.
+
+**Why.**
+- **Fingers are mostly repeats.** Of 64 starts only about log₂ N have distinct owners: the low
+  fingers start a few units past `n` and all resolve to the successor. Filling forward refreshes a
+  whole table in about log₂ N rounds instead of 64.
+- **It is exact, not a heuristic.** If `o` is the first node at or after start `i`, and start `j`
+  lies between start `i` and `o`, then no node lies between start `j` and `o` either, so `o` owns
+  start `j` too.
+- **One lookup per round keeps the background cost the paper's.**
+- **A failed `fix_fingers` lookup is evidence too** (D-013): if it ends in a refusal, the node that
+  refused is evicted from this node's tables, because a refusal is proof.
+
+**Rejected: one finger per round** (the paper). 64 rounds per refresh — 64 s at a 1 s period —
+most of them re-confirming that the low fingers equal the successor.
+
+**Rejected: every finger every round.** The fastest repair, at 64 lookups per node per period,
+permanently, to speed up a rare event.
+
+**Cost accepted.**
+- A finger pointing at a dead node survives until the cycle reaches it — about log₂ N periods —
+  unless a refused lookup or a `SUSPECT` hint finds it first. Measured as D-038's third milestone.
+- The lookup starts at the node itself, which costs one loopback connection to its own listener. It
+  keeps one lookup path (the client's) instead of adding a special case.
 

@@ -631,6 +631,17 @@ to the crash path when they are lost. Leaving with a data hand-off is the versio
 and it belongs with replication. **Cost:** a planned departure leaves the ring briefly wrong, exactly
 as a crash does.
 
+### Finger repair: one lookup per round, filling every finger it covers
+
+Each round a node looks up the start of its next unrefreshed finger with the client's own lookup
+loop, and the owner it gets fills that finger **and every later finger whose start it also covers**.
+Of 64 fingers only about log₂ N have distinct owners, so a whole table is refreshed in about log₂ N
+rounds instead of the paper's 64, for the same one lookup per round. It is exact: if `o` is the
+first node after start `i`, no node lies between any later start below `o` and `o` itself.
+**Rejected:** one finger per round, which spends most rounds re-confirming that low fingers equal the
+successor; and every finger every round, 64 lookups per node per period forever. **Cost:** a dead
+finger survives about log₂ N periods unless a lookup or a client's hint finds it first.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
