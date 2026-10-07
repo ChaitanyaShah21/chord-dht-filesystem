@@ -26,23 +26,6 @@ std::string shown(const std::string &reply) {
     return out + "\"";
 }
 
-// Split on SINGLE spaces. A leading, trailing or doubled space produces an
-// empty word, so "OWNER  a b c" is five words and is rejected -- strictness the
-// caller wants, because a correct node never sends it.
-std::vector<std::string> split_spaces(const std::string &s) {
-    std::vector<std::string> words;
-    std::size_t begin = 0;
-    while (true) {
-        const std::size_t space = s.find(' ', begin);
-        if (space == std::string::npos) {
-            words.push_back(s.substr(begin));
-            return words;
-        }
-        words.push_back(s.substr(begin, space - begin));
-        begin = space + 1;
-    }
-}
-
 // A port exactly as the node renders it: 1..65535, digits only, no leading zero.
 bool parse_reply_port(const std::string &s, int &out) {
     if (s.empty() || s.size() > 5 || s[0] == '0') return false;
@@ -96,6 +79,36 @@ LookupResult fail(LookupResult r, LookupError e, const std::string &message) {
 
 }  // namespace
 
+// "OWNER  a b c" is five words here and is rejected -- strictness the caller
+// wants, because a correct node never sends a doubled space.
+std::vector<std::string> split_single_spaces(const std::string &s) {
+    std::vector<std::string> words;
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t space = s.find(' ', begin);
+        if (space == std::string::npos) {
+            words.push_back(s.substr(begin));
+            return words;
+        }
+        words.push_back(s.substr(begin, space - begin));
+        begin = space + 1;
+    }
+}
+
+std::string peer_words(const Peer &p) {
+    return id_to_hex(p.id) + " " + p.ip + " " + std::to_string(p.port);
+}
+
+bool parse_peer_words(const std::string &id, const std::string &ip, const std::string &port,
+                      Peer &out, std::string &why) {
+    Peer parsed;
+    if (!id_from_hex(id, parsed.id)) { why = "identifier is not 16 hexadecimal characters"; return false; }
+    if (!parse_reply_ip(ip, parsed.ip)) { why = "address is not a canonical IPv4 dotted quad"; return false; }
+    if (!parse_reply_port(port, parsed.port)) { why = "port is not a number in 1..65535"; return false; }
+    out = parsed;                      // written only once all three have parsed
+    return true;
+}
+
 const char *lookup_error_name(LookupError e) {
     switch (e) {
         case LookupError::None:            return "none";
@@ -112,7 +125,7 @@ const char *lookup_error_name(LookupError e) {
 }
 
 bool parse_reply(const std::string &line, bool &is_owner, Peer &peer, std::string &why) {
-    const std::vector<std::string> words = split_spaces(line);
+    const std::vector<std::string> words = split_single_spaces(line);
     if (words.size() != 4) {
         why = "expected 4 words separated by single spaces, got " + std::to_string(words.size());
         return false;
@@ -123,9 +136,7 @@ bool parse_reply(const std::string &line, bool &is_owner, Peer &peer, std::strin
     }
 
     Peer parsed;
-    if (!id_from_hex(words[1], parsed.id)) { why = "identifier is not 16 hexadecimal characters"; return false; }
-    if (!parse_reply_ip(words[2], parsed.ip)) { why = "address is not a canonical IPv4 dotted quad"; return false; }
-    if (!parse_reply_port(words[3], parsed.port)) { why = "port is not a number in 1..65535"; return false; }
+    if (!parse_peer_words(words[1], words[2], words[3], parsed, why)) return false;
 
     // Outputs are written only once everything has parsed.
     is_owner = (words[0] == "OWNER");
@@ -190,4 +201,27 @@ LookupResult lookup(const Peer &start, Id k, const Transport &transport) {
 
 Delivery socket_transport(const Peer &to, const std::string &request, std::string &reply) {
     return exchange_line(to.ip, to.port, request, reply, LOOKUP_TIMEOUT_MS);
+}
+
+LookupResult lookup_with_recovery(const Peer &start, Id k, const Transport &transport, int retries) {
+    LookupResult r = lookup(start, k, transport);
+    for (int attempt = 0; attempt < retries && !r.ok(); ++attempt) {
+        // Only a node that could not be REACHED is worth reporting. A node that
+        // answered with nonsense was reached; that is a different fault.
+        const bool unreachable = r.error == LookupError::Refused || r.error == LookupError::Timeout ||
+                                 r.error == LookupError::Closed;
+        // path.back() failed; path[size - 2] is the node that named it. With one
+        // entry the start node itself failed, and nobody named it.
+        if (!unreachable || r.path.size() < 2) break;
+
+        const Peer &dead  = r.path[r.path.size() - 1];
+        const Peer &namer = r.path[r.path.size() - 2];
+        std::string ignored;
+        transport(namer, "SUSPECT " + dead.ip + " " + std::to_string(dead.port), ignored);
+
+        const int attempts = r.attempts + 1;
+        r = lookup(start, k, transport);
+        r.attempts = attempts;
+    }
+    return r;
 }

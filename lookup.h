@@ -84,6 +84,10 @@ struct LookupResult {
     // one fewer, because the first request only reaches the starting node.
     int requests() const { return static_cast<int>(path.size()); }
     int hops() const { return path.empty() ? 0 : requests() - 1; }
+
+    // How many times the whole lookup was run. Always 1 from lookup(); more
+    // only from lookup_with_recovery(), and then `path` is the LAST attempt's.
+    int attempts = 1;
 };
 
 // Find the owner of identifier k, starting at `start`.
@@ -98,6 +102,19 @@ struct LookupResult {
 // Never throws on anything a node sends, however malformed (invariant I5).
 LookupResult lookup(const Peer &start, Id k, const Transport &transport);
 
+// lookup(), plus recovery from a node that could not be reached (decision D-036).
+//
+// If a lookup fails because the node it was sent to refused, timed out or closed
+// the connection, and an EARLIER node had named that node, the originator sends
+//
+//     SUSPECT <ip> <port>
+//
+// to the node that named it, and then runs the whole lookup again from `start`,
+// at most `retries` more times. The SUSPECT reply is ignored: it is a hint, and
+// the receiver acts only on its own probe of the suspect. With retries == 0 this
+// is exactly lookup(). The same lifetime rule applies: `transport` is never kept.
+LookupResult lookup_with_recovery(const Peer &start, Id k, const Transport &transport, int retries);
+
 // The real transport: one fresh connection per request (D-024 F19b), with
 // LOOKUP_TIMEOUT_MS on connect, send and receive. Holds no state, so it is
 // safe to pass anywhere.
@@ -108,5 +125,23 @@ Delivery socket_transport(const Peer &to, const std::string &request, std::strin
 // port in 1..65535 with no sign or leading zero. Exposed so tests can attack it
 // directly. On failure returns false, sets `why`, and leaves the outputs alone.
 bool parse_reply(const std::string &line, bool &is_owner, Peer &peer, std::string &why);
+
+// ---------------------------------------------------------------------------
+// Wire helpers shared with the node's maintenance messages (stabilize.cpp), so
+// that every message naming a peer is rendered and parsed by one copy.
+// ---------------------------------------------------------------------------
+
+// A peer as it appears on the wire: "<16-hex id> <ip> <port>".
+std::string peer_words(const Peer &p);
+
+// Split on SINGLE spaces. A leading, trailing or doubled space produces an empty
+// word, so a sloppy line fails its word count instead of being quietly accepted.
+std::vector<std::string> split_single_spaces(const std::string &s);
+
+// Parse one peer from its three wire words, as strictly as parse_reply does:
+// 16 hexadecimal characters, a canonical dotted quad, a port in 1..65535 with no
+// sign or leading zero. On failure returns false, sets `why`, leaves `out` alone.
+bool parse_peer_words(const std::string &id, const std::string &ip, const std::string &port,
+                      Peer &out, std::string &why);
 
 #endif
