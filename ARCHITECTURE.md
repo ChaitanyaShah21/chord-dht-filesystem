@@ -200,7 +200,7 @@ decided before the paper is one that cannot be defended in December.
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
-| **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024 |
+| **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
 | **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
 
 ---
@@ -1545,7 +1545,8 @@ deleting one of them.
 ### D-024 — The lookup originator: a transport-agnostic module, and a fresh connection per hop
 
 **Fork:** F19, parts a–e. **Date:** 13 Sep 2026. **Gates:** step 2.3, the Phase 2 benchmark
-harness, and Phase 5's client. Part c is refined by D-025 (the timeouts are set before `connect`).
+harness, and Phase 5's client. Part c is refined by D-025 (the timeouts are set before `connect`),
+and the count left open in part e is fixed by D-026.
 
 **F19a — the loop is a module, `lookup.h` / `lookup.cpp`, with the request/reply exchange passed
 in.**
@@ -1686,3 +1687,58 @@ paths (`getsockopt(SO_ERROR)` after `poll`).
 **Evidence:** the table above. The 5 s value itself remains a backstop, not a failure-detection
 threshold (D-024 F19c).
 
+---
+
+### D-026 — A hop is a finger followed: the plotted hop count is requests minus one
+
+**Fork:** F19e. **Date:** 7 Oct 2026. **Gates:** every number on the hop-count plot.
+
+**The decision.** For each lookup the originator records the path of every node it queried. Two
+counts come from it, and both are kept in the raw data:
+
+- **requests** — the number of `FIND_SUCCESSOR` messages sent, which is the path length in nodes
+  queried;
+- **hops** — the number of `NEXT` replies followed, which is **requests − 1**.
+
+**The plotted and quoted figure is hops.**
+
+**Why: it is the quantity the Chord paper measures.** Stoica et al. (SIGCOMM 2001, §6.3) define
+path length as "the number of nodes traversed during a lookup operation", and explain the observed
+mean of about ½ log₂ N this way: "the number of fingers we need to follow will be the number of ones
+in the binary representation of the distance from node to query. Since the distance is random, we
+expect half the log N bits to be ones." So the counted unit is a **finger followed**.
+
+Mapping that onto this design, step by step:
+
+1. In the paper the query starts **at** a ring node, which costs no traversal. Here the originator
+   sits outside the ring (D-018), so its first request reaches the start node. That request
+   corresponds to the paper's starting point, not to a finger.
+2. Each `NEXT` reply is one finger followed: the node handed the lookup to its closest preceding
+   finger.
+3. The lookup ends when the key's predecessor answers `OWNER` with its successor. The owner itself
+   is never contacted, in the paper or here.
+
+So fingers followed = `NEXT` replies = requests − 1.
+
+**A numerical check, not only a reading.** On 1024 random nodes the in-process routing simulation
+measures a mean of 5.90 requests, which is 4.90 hops, against ½ log₂ 1024 = 5. Counting requests
+would sit about one above the paper's curve at every N, an offset produced by definitions rather
+than by routing.
+
+**Rejected: plot requests.** Requests are what a client pays in round trips, so they are the
+latency-relevant count, and they are reported alongside. As the plotted figure they would shift
+every point up by one against the paper's curve, and anyone comparing the two would see a constant
+gap with no routing explanation.
+
+**Rejected: count the data fetch from the owner.** That is a Phase 5 transfer, not routing, and the
+paper does not count it.
+
+**Cost accepted.**
+- **The paper's wording is looser than its explanation.** "Nodes traversed", read literally, could
+  include the start node. The decision follows the paper's own derivation of ½ log₂ N, and the
+  simulation agrees with that reading. The ambiguity is stated here rather than hidden.
+- **Earlier test outputs counted requests.** The step 2.2 figures (mean 2.37 on 8 nodes, 5.90 on
+  1024 in-process) were requests. Test output now labels those counts "requests", so the two
+  counts never share a name.
+
+**Evidence:** the 1024-node simulation figure above; the full curve is `BENCHMARKS.md` §2.

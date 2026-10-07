@@ -496,8 +496,17 @@ non-blocking `connect` with a `poll` deadline, which is portable to other kernel
 identically here for about 45 minutes more code. **Cost:** the behaviour is Linux-specific, and one
 deadline covers connect, send and receive.
 
-The loop records **every node it queried**, so a hop count can be reported either as requests or as
-jumps between nodes; the definition used in results is stated alongside them.
+### A hop is a finger followed
+
+The loop records **every node it queried**. The hop count reported in results is the number of
+`NEXT` replies followed, which is **requests − 1**; both counts are kept in the raw data. That is
+the Chord paper's path length: its explanation of the ½ log₂ N mean counts fingers followed from a
+query's starting node, and in this design the originator's first request only reaches that starting
+node. Counting requests instead would put every point about one above the paper's curve, a gap
+produced by definitions rather than by routing.
+
+**Rejected:** plotting requests. They are what a client pays in round trips, so they are reported
+alongside, not discarded.
 
 ### A ring member is its own process; the client stays outside the ring
 
