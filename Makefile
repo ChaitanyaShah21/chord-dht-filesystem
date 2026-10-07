@@ -19,6 +19,7 @@ TRACKER = tracker
 CLIENT  = client
 NODE    = node
 LOOKUP  = lookup
+SIM_HOPS = sim-hops
 
 # test-chord, test-net and test-lookup are TEST binaries, not deliverables: they
 # exercise the routing arithmetic, the framing and the lookup loop in process,
@@ -53,6 +54,10 @@ LOOKUP_SRC      = lookup.cpp
 LOOKUP_MAIN_SRC = lookup_main.cpp
 TEST_LOOKUP_SRC = test_lookup.cpp
 
+# The hop-count benchmark's in-process replay (decision D-027): the same routing
+# code and lookup loop as the real ring, with a function call for a transport.
+SIM_HOPS_SRC = sim_hops.cpp
+
 # Object files
 TRACKER_OBJ    = $(TRACKER_SRC:.cpp=.o)
 CLIENT_OBJ     = $(CLIENT_SRC:.cpp=.o)
@@ -64,9 +69,10 @@ TEST_NET_OBJ   = $(TEST_NET_SRC:.cpp=.o)
 LOOKUP_OBJ      = $(LOOKUP_SRC:.cpp=.o)
 LOOKUP_MAIN_OBJ = $(LOOKUP_MAIN_SRC:.cpp=.o)
 TEST_LOOKUP_OBJ = $(TEST_LOOKUP_SRC:.cpp=.o)
+SIM_HOPS_OBJ    = $(SIM_HOPS_SRC:.cpp=.o)
 
 # Default target
-all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP)
+all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS)
 
 # -----------------------------
 # Build rules
@@ -83,6 +89,9 @@ $(NODE): $(NODE_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 
 # lookup links chord.o (identifiers, interval tests), so it needs -lcrypto too.
 $(LOOKUP): $(LOOKUP_MAIN_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
+$(SIM_HOPS): $(SIM_HOPS_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 $(TEST_CHORD): $(TEST_CHORD_OBJ) $(CHORD_OBJ)
@@ -108,14 +117,15 @@ $(TEST_NET_OBJ): net.h
 $(LOOKUP_OBJ): lookup.h chord.h net.h
 $(LOOKUP_MAIN_OBJ): lookup.h chord.h net.h
 $(TEST_LOOKUP_OBJ): lookup.h chord.h net.h
+$(SIM_HOPS_OBJ): lookup.h chord.h net.h
 
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
-	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) \
-	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP)
+	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) \
+	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP)
 
 # -----------------------------
 # Convenience rules

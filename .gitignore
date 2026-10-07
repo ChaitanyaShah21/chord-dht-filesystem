@@ -16,6 +16,7 @@ CMakeFiles/
 /client
 /node
 /lookup
+/sim-hops
 /test-chord
 /test-net
 /test-lookup

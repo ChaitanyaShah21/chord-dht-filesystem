@@ -628,6 +628,7 @@ chord-dht-filesystem/
 ├── node.cpp               # Chord ring member: bootstraps from a membership file, answers FIND_SUCCESSOR
 ├── lookup.h, lookup.cpp   # The originator's loop: follows NEXT to OWNER, checks every reply for progress
 ├── lookup_main.cpp        # `lookup`: runs one lookup per identifier on stdin, prints owner, hops and path
+├── sim_hops.cpp           # `sim-hops`: the same routing code and loop with the ring in one process
 ├── tracker.cpp            # Legacy metadata index and peer discovery; thread per client
 ├── client.cpp             # Legacy peer: main loop, peer server, download workers, heartbeat
 ├── sha1.h                 # Header-only wrapper over OpenSSL SHA1(), hex-encoded
@@ -638,6 +639,8 @@ chord-dht-filesystem/
 ├── scripts/
 │   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
 │   ├── e2e-chord.sh       # The C++ originator on a real ring: paths vs a model, killed and frozen nodes
+│   ├── bench-hops.py      # Hop count vs ring size: real processes and in-process replay, with oracles
+│   ├── plot-hops.py       # Draws docs/figures/hops-vs-n.png from the benchmark summary
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
@@ -646,7 +649,8 @@ chord-dht-filesystem/
 │   ├── bench-baseline.sh  # The single-peer transfer baseline recorded in BENCHMARKS.md
 │   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
 ├── docs/
-│   └── failures.md        # Every defect: how it was found, root cause, why the fix works
+│   ├── failures.md        # Every defect: how it was found, root cause, why the fix works
+│   └── figures/           # Benchmark plots and the summary data each is drawn from
 ├── ARCHITECTURE.md        # Design and decision log: every decision, every rejected alternative
 ├── BENCHMARKS.md          # Every number, its method, its commit fingerprint
 ├── SCALE_NOTES.md         # Where the design breaks at 10x, captured while building
