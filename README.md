@@ -742,6 +742,17 @@ and the change is recorded as a change. **Rejected:** the largest candidate, whi
 without a reason; and larger candidates, which would slow eviction of frozen nodes to guard against a load
 nobody runs.
 
+### The period and deadline rules were restated when a repeat run disagreed
+
+The benchmark was run twice on identical code, and the rules picked different periods (1000 ms, then
+2000 ms) and saw a twelvefold different "slowest exchange". The causes were statistical: a dead node's
+predecessor notices at its next round, which lands anywhere in the period, so the median repair time is a
+fixed fraction of the period and the 1 s target sat exactly on one period's median; and the maximum of tens
+of thousands of samples is set by the rarest pause, including the measuring process's own. The rules now ask
+for **at least 9 of 10 runs** to meet the 1 s target — a 99 % upper confidence bound on the median — and set
+the deadline from **ten times the 99.9th percentile, and above the slowest exchange seen**. Both runs and
+every rule version are kept; the final run used rules fixed before it started.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

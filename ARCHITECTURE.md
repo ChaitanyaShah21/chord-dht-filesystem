@@ -215,6 +215,7 @@ decided before the paper is one that cannot be defended in December.
 | **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §3 |
 | **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
 | **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
+| **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
 
 ---
 
@@ -2483,3 +2484,59 @@ to prevent. It is stated here rather than made silently, the original wording an
 it are both kept, and the change narrows the rule's scope without touching its margin.
 
 **Evidence:** `BENCHMARKS.md` §3, the calibration table.
+
+---
+
+### D-042 — The selection rules are restated in statistics that a repeat run reproduces
+
+**Fork:** F34, surfaced by running the whole benchmark a second time. **Date:** 7 Oct 2026. **Gates:** the
+values of the stabilisation period T and the call deadline D. Supersedes the statistics in D-039 and D-041;
+their targets (a 1 s window, a tenfold margin) are kept.
+
+**What happened.** The benchmark was run twice on identical node code, with the rules of D-039 and D-041:
+
+| | First run | Second run |
+|---|---|---|
+| Median time to ring correct, 64 nodes, T = 1000 ms (5 runs) | 0.37 s | 0.54 s |
+| Median time to ring correct, 64 nodes, T = 2000 ms (5 runs) | 1.37 s | **0.96 s** |
+| T chosen by "longest period with median ≤ 1 s" | 1000 ms | **2000 ms** |
+| Slowest of ~70,000 exchanges, converged 64-node ring at 50 ms | 19.6 ms | **241.0 ms** |
+| 99.9th percentile of the same | 4.3 ms | 3.8 ms |
+
+**Both rules gave different answers on a repeat, so neither was measuring a property of the system.**
+- **The period rule was ill-conditioned.** After a kill, the ring is correct once the dead node's
+  predecessor runs its next round, which falls anywhere in the period. So the median time is a fixed
+  fraction of T (0.4–0.7 T measured above 200 ms), and a 1 s target sits right on T = 2000 ms's median. With
+  five runs, whether 2000 ms passes is a coin toss.
+- **The deadline rule keyed on a single sample.** The maximum of tens of thousands of exchanges, timed from a
+  Python process, is set by the rarest pause anywhere in the path, including the measuring process's own,
+  and changed twelvefold between runs while the 99.9th percentile moved by 12 %.
+
+**The decision.**
+- **T is the longest swept period at which at least 9 of 10 runs reach "ring correct" within 1 s**, with no
+  live node wrongly evicted in any run. The 9th of 10 sorted runs is a one-sided 99 % upper confidence bound
+  on the median (it falls below the median only if 9 or 10 of 10 fair coin tosses land the same way, 1.1 %),
+  so the rule now asks for the target to be met with confidence rather than on a coin toss. The period sweep
+  runs 10 times per period instead of 5.
+- **D is the smallest of 100, 200, 500 and 1000 ms that is at least ten times the 99.9th-percentile exchange
+  and longer than the slowest exchange observed**, under each load the benchmark runs (D-041). The first
+  clause keeps D-039's tenfold margin on a statistic that repeats; the second keeps the property that
+  mattered — no exchange ever observed would have timed out.
+
+**Rejected: keep the rules and run more repetitions.** More runs make the period rule's median more precise,
+but a target sitting on the median stays a coin toss however precisely it is estimated; and the maximum only
+grows with more samples.
+
+**Rejected: report both runs' choices and pick one.** That is choosing after seeing the data, with extra
+steps.
+
+**Rejected: measure exchanges inside the nodes**, removing the measuring process from the timing. More
+accurate, and it needs instrumentation in the node's hot path to fix a rule, when a robust statistic fixes
+it without touching the node.
+
+**Cost accepted.** This is the second change to a rule after seeing data (D-041 was the first). The defence is
+what triggered it: the same rule, on the same code, produced two different answers, which is a reproducibility
+failure rather than a disliked value. Every version of the rules, and both runs' data, are kept. The new rules
+were fixed before the final run, which is the one reported.
+
+**Evidence:** the table above; `BENCHMARKS.md` §3 for the final run.
