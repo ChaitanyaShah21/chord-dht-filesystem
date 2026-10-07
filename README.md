@@ -642,6 +642,22 @@ first node after start `i`, no node lies between any later start below `o` and `
 successor; and every finger every round, 64 lookups per node per period forever. **Cost:** a dead
 finger survives about log₂ N periods unless a lookup or a client's hint finds it first.
 
+### A refusal evicts at once; a timeout needs a second strike; nothing is adopted unverified
+
+Every call a node makes to another node goes through one function that reports its outcome to the
+failure detector. A refused connection evicts the peer immediately, because nothing is listening.
+A timeout, a dropped connection or a garbled reply is a strike, and two consecutive strikes evict.
+Eviction removes the node from the successor list, the predecessor and the fingers, and if the
+successor was evicted, stabilisation moves to the next list entry in the same round.
+
+Two additions to the paper close windows it leaves open. A candidate successor is **pinged before it
+is adopted**, because a neighbour's stale predecessor pointer would otherwise re-introduce a node
+that was just evicted. And a `NOTIFY` from an unexpected node triggers a ping of the current
+predecessor, so a dead predecessor is replaced when the evidence arrives. A node whose whole list has
+died falls back to the nearest node it still knows, never to itself, since `(n, n]` would make it
+claim every key. **Rejected:** evicting on one timeout, which on eight shared cores would evict live
+nodes during scheduling stalls. **Cost:** a frozen node takes two periods and two deadlines to leave.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

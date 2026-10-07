@@ -208,6 +208,7 @@ decided before the paper is one that cannot be defended in December.
 | **F24** | **How long is the successor list?** The replication minimum (3); log₂ of the largest ring measured (8); or estimated at run time from the gap to the successor. | r is the exponent in the probability of a node being orphaned, and it is the replica set Phase 4 reads. | **RESOLVED** — D-032 |
 | **F25** | **Is there a graceful leave?** Crash-only; departure messages to the neighbours; or departure with a data hand-off. | Decides whether the system has one recovery path or two, and what a planned shutdown costs. | **RESOLVED** — D-033 |
 | **F26** | **How does `fix_fingers` proceed?** One finger per round (the paper); all fingers every round; or one lookup per round whose answer fills every finger it covers. | Sets how long a dead finger survives and the permanent background load per node. | **RESOLVED** — D-034 |
+| **F27** | **The failure-handling mechanics D-013 left open.** How many strikes; whether a candidate successor is verified before adoption; whether a surprising `NOTIFY` triggers a check; what replaces an evicted finger; what a node does when its whole successor list is gone. | Decides how fast a dead node leaves, whether it can be re-adopted from a neighbour's stale pointer, and whether an orphaned node claims the whole ring. | **RESOLVED** — D-035 |
 
 ---
 
@@ -2114,4 +2115,55 @@ permanently, to speed up a rare event.
   unless a refused lookup or a `SUSPECT` hint finds it first. Measured as D-038's third milestone.
 - The lookup starts at the node itself, which costs one loopback connection to its own listener. It
   keeps one lookup path (the client's) instead of adding a special case.
+
+---
+
+### D-035 — Failure handling: one strike for a refusal, two for anything else, and nothing adopted unverified
+
+**Fork:** F27, the mechanics D-013 left open. **Date:** 7 Oct 2026. **Gates:** how fast a dead
+node leaves the ring, and whether it can come back by accident.
+
+**The decision.** Every call a node makes to another node goes through one function that reports the
+outcome to the failure detector — D-013's answer to "every call site must remember".
+
+1. **A refusal evicts at once.** Anything else that is not a valid reply — a timeout, a closed
+   connection, an `ERR`, a garbled line — is a **strike**. Two consecutive strikes against the
+   successor or the predecessor evict it. A valid reply clears the strikes.
+2. **Eviction removes the node everywhere**: successor list, predecessor, fingers. A finger that
+   pointed at it is replaced by the node that followed it in the successor list when that is known,
+   and otherwise by the successor, which is always a valid if slower next hop.
+3. **When the successor is evicted, stabilise moves to the next entry in the same round**, so k
+   adjacent refused nodes cost one round, not k.
+4. **A candidate successor is verified before it is adopted.** When the successor reports a
+   predecessor `x` lying between this node and the successor, this node pings `x` and adopts it only
+   if `x` answers.
+5. **A `NOTIFY` from a node that is not closer than the current predecessor triggers a ping of the
+   current predecessor**, and the notifier replaces it if that ping is refused.
+6. **The predecessor is pinged every round** (the paper's `check_predecessor`), under the same rules.
+7. **If every entry in the successor list is gone**, the node takes the nearest node it still knows
+   clockwise — among its fingers and predecessor — and stabilise tightens the pointer inward from
+   there. Only a node that knows nobody falls back to itself.
+
+**Why each part.**
+- **1** is D-013(b): a refusal is proof, a timeout is suspicion, and the second strike is "a second
+  independent failure, or confirmation by the next stabilise".
+- **4** closes a window the paper leaves open. P evicts dead X and moves to S, but S still names X as
+  its predecessor until S notices; the paper's stabilise would then adopt X again, and P would point
+  at a dead node for another round. The ping costs one connection, only when the successor is about
+  to change, which is rare.
+- **5** is opportunistic detection: a notify from an unexpected node is evidence that something
+  changed, so it is checked when it arrives instead of at the next round.
+- **7**: falling back to itself would make the node claim the whole ring, `(n, n]`. Any known node
+  clockwise is a safe start, because stabilise only ever moves the pointer inward.
+
+**Rejected: the paper's mechanics alone** (stabilise and `check_predecessor`, no verification, no
+probe on notify). Fewer messages, slower repair, and a window in which a dead node is re-adopted.
+
+**Rejected: evict on one timeout.** Faster for frozen nodes. On this machine every node shares eight
+cores, so a scheduling stall would evict live nodes — D-013's argument.
+
+**Cost accepted.**
+- A frozen node is evicted after two strikes: about two periods plus two deadlines, not one.
+- After more than r adjacent deaths, recovery from fingers depends on the predecessors of the nodes
+  fallen back on being right. Likely, not guaranteed.
 
