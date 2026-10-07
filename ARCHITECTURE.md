@@ -204,6 +204,7 @@ decided before the paper is one that cannot be defended in December.
 | **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
 | **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
 | **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
+| **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
 
 ---
 
@@ -1956,4 +1957,53 @@ would queue every lookup behind a network call.
   matters at these sizes.
 
 **Evidence:** a ThreadSanitizer build of the node (`make tsan`), driven through the churn suite.
+
+---
+
+### D-031 — Phase 3's messages: `NEIGHBOURS`, `NOTIFY`, `SUSPECT`, and a read-only `FINGERS`
+
+**Fork:** F23. **Date:** 7 Oct 2026. **Gates:** the node protocol (extends D-021).
+
+**The decision.** Four new requests, each one line answered by one line (D-010). A *peer* on the
+wire is `<16-hex id> <ip> <port>`, exactly as in `FIND_SUCCESSOR` replies.
+
+| Request | Reply | Sent by |
+|---|---|---|
+| `NEIGHBOURS` | `NEIGHBOURS <pred> <n> <succ_1> … <succ_n>`, where `<pred>` is a peer or `NONE` | a node's stabilise, to its successor |
+| `NOTIFY <peer>` | `OK` | a node's stabilise, to its successor: "I believe I am your predecessor" |
+| `SUSPECT <ip> <port>` | `OK` | an originator, to the node that named a node it could not reach (D-036) |
+| `FINGERS` | `FINGERS <n>` then `<i> <peer>` per run of equal fingers, `i` being where the run starts | test and benchmark harnesses only |
+
+Replies are parsed as strictly as lookup replies: single spaces, exact word counts, canonical
+addresses, ports without sign or leading zero.
+
+**Why.**
+- **One round trip per stabilise round instead of two.** The paper asks the successor for its
+  predecessor and, separately, for its successor list. `NEIGHBOURS` returns both from one snapshot
+  taken under the successor's lock, so the two cannot contradict each other.
+- **Messages carry identifiers** rather than having the receiver hash the address, as
+  `FIND_SUCCESSOR` replies already do (D-021). Deriving an identifier stays the business of the node
+  that owns it, which is exactly what Phase 4's virtual nodes change.
+- **`SUSPECT` is a hint, not a verdict.** The receiver probes the named node itself and acts only on
+  its own evidence. A message that evicted a node on someone else's word would let any client
+  remove any node.
+- **`FINGERS` is read-only and exists for the harness**, which decides whether a table is correct by
+  comparing it with an oracle computed from the live membership (D-038). Runs keep it short: about
+  log₂ N distinct fingers rather than 64 lines of repeats.
+
+**Rejected: separate `GET_PREDECESSOR` and `GET_SUCCESSORS`.** The paper's shape: two connections per
+round, and two snapshots that can disagree.
+
+**Rejected: receivers recompute identifiers from addresses.** It would catch a node lying about its
+identifier, and it would fix the derivation into every receiver.
+
+**Rejected: no finger query, with finger convergence inferred from lookups.** A lookup sweep
+confirms routing (D-038 runs one), but it cannot say which finger of which node is wrong.
+
+**Cost accepted.**
+- **A line is at most 1024 bytes (`MAX_LINE`), so the successor list is capped at 16 entries.** A peer
+  is at most 39 bytes on the wire (16 + 1 + 15 + 1 + 5, plus a separator), so 16 entries and a
+  predecessor fit with room to spare. A `FINGERS` reply that would not fit is refused with `ERR`;
+  that takes more than about 24 distinct fingers, which means rings of millions of nodes.
+- Identifiers are believed as stated, as they already are in lookup replies.
 

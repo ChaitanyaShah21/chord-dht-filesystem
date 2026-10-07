@@ -596,6 +596,19 @@ and copy-on-write snapshots, which copy the whole state on every update and in C
 hidden lock pool anyway. Checked with a ThreadSanitizer build of the node driven through the churn
 suite.
 
+### Four new messages, and a client cannot evict anyone
+
+Stabilisation adds `NEIGHBOURS` (the successor's predecessor and successor list in one reply, from
+one consistent snapshot, so one round trip per period instead of the paper's two) and `NOTIFY`
+("I believe I am your predecessor"). Originators add `SUSPECT <ip> <port>`, a report that a node
+could not be reached. It is a hint: the receiver probes the named node itself and evicts it only if
+its own connection is refused, so a client can cause a ping but never an eviction. `FINGERS` is
+read-only and exists so the test harness, not the node, decides whether a finger table is correct.
+
+**Rejected:** separate predecessor and successor-list queries, which cost two connections per round
+and two snapshots that can disagree. **Cost:** a line is capped at 1024 bytes, which caps the
+successor list at 16 entries.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
