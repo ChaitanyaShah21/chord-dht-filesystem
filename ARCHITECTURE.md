@@ -216,6 +216,7 @@ decided before the paper is one that cannot be defended in December.
 | **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
 | **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
 | **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
+| **F35** | **How fast does stabilise walk back after a distant fallback?** One step per round (the paper); run to the fixed point within a round; rejoin as an orphan; or a longer list. Surfaced by a 256-node ring that took minutes to converge. | Sets recovery after more than r adjacent deaths, and how long a wired ring takes to start. | **RESOLVED** — D-043 |
 
 ---
 
@@ -2540,3 +2541,46 @@ failure rather than a disliked value. Every version of the rules, and both runs'
 were fixed before the final run, which is the one reported.
 
 **Evidence:** the table above; `BENCHMARKS.md` §3 for the final run.
+
+---
+
+### D-043 — Stabilise runs to its fixed point within a round, not one step per round
+
+**Fork:** F35, surfaced by the reconvergence benchmark. **Date:** 7 Oct 2026. **Gates:** recovery after
+more adjacent deaths than the successor list holds, and the start of a wired ring.
+
+**What the benchmark found.** In 3 of 5 runs a 256-node wired ring did not converge from start-up within
+60 s, and once it was still half wrong after 120 s. A diagnostic run caught the state: one successor cycle
+of 245 nodes, winding exactly once round the identifier space, with 11 nodes off it — not a "loopy" ring,
+and not a split. The log of the node responsible showed the mechanism: it had started before its 8
+successors and several fingers were listening, evicted each on a refusal, fallen back to a node most of the
+way round the ring (D-035 part 7), and was then **walking back one node per period** — the paper's
+stabilise takes one inward step per round, so a distant fallback costs O(distance) periods. The same walk
+explains the adjacent-kill results at `5b6830d`: 8 adjacent deaths (the whole list) took a median of 1.49 s
+and 9 took 2.99 s, with a worst run of 7.6 s, against 0.29 s for 4.
+
+**The decision.** In one stabilise round, after adopting a closer successor, the node asks that new
+successor too, and keeps going until no closer live node is named — at most 64 inward steps per round. Every
+step is an ordinary stabilise step: the candidate must lie strictly between the node and its current
+successor, and must answer a ping before it is adopted (D-035). Because each step moves strictly inward, the
+loop ends.
+
+**Rejected: the paper's one step per round.** Simplest, and the measured cost above.
+
+**Rejected: treat an exhausted list as orphaned and rejoin (D-040's path).** A join looks up the node's own
+identifier, and while the node is still in other nodes' tables that lookup comes back to the node itself,
+so it would first have to be evicted — two strikes — and would refuse to route meanwhile.
+
+**Rejected: a longer successor list.** Makes exhaustion rarer, does nothing for a node that starts before
+its neighbours, and leaves the walk as slow as it was.
+
+**Cost accepted.**
+- A round can now make up to 64 extra round trips (two per step: the question and the ping). In steady state
+  it makes none: a step only happens when a closer node exists.
+- A hostile successor cannot keep a node walking: each candidate must answer a ping from an address
+  strictly closer, and the walk is capped.
+
+**Evidence:** two in-process tests written against the old code first. Six adjacent deaths with r = 4, ten
+rings of 64: ring correct after at most **5 rounds before, 1 after**. A ring of 128 in which half the nodes
+start three rounds late: fully correct after at most **64 rounds before, 12 after**. The real-process
+before and after are in `BENCHMARKS.md` §3.

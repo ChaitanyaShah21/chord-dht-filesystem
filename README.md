@@ -753,6 +753,19 @@ for **at least 9 of 10 runs** to meet the 1 s target — a 99 % upper confidence
 the deadline from **ten times the 99.9th percentile, and above the slowest exchange seen**. Both runs and
 every rule version are kept; the final run used rules fixed before it started.
 
+### Stabilisation runs to its fixed point in one round
+
+The Chord paper's stabilise takes one inward step per round: ask the successor for its predecessor, and
+adopt it if it is closer. That is enough after one death, but a node that has lost its whole successor list
+falls back to a node far round the ring and then walks back one node per period. The benchmark showed it: a
+256-node ring whose nodes started at slightly different times sometimes needed minutes, and nine adjacent
+deaths took up to 7.6 s. Now, after adopting a closer successor, a node asks the new one in the same round,
+and keeps going until nothing closer is named — every step still verified with a ping, at most 64 per
+round. In process, six adjacent deaths with a list of four went from 5 rounds to 1. **Rejected:** rejoining
+through the join path, whose lookup for a node's own identifier comes back to the node itself while the ring
+still lists it. **Cost:** up to 64 extra round trips in a round that needs them, none in a round that does
+not.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
