@@ -206,6 +206,7 @@ decided before the paper is one that cannot be defended in December.
 | **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
 | **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
 | **F24** | **How long is the successor list?** The replication minimum (3); log₂ of the largest ring measured (8); or estimated at run time from the gap to the successor. | r is the exponent in the probability of a node being orphaned, and it is the replica set Phase 4 reads. | **RESOLVED** — D-032 |
+| **F25** | **Is there a graceful leave?** Crash-only; departure messages to the neighbours; or departure with a data hand-off. | Decides whether the system has one recovery path or two, and what a planned shutdown costs. | **RESOLVED** — D-033 |
 
 ---
 
@@ -2043,4 +2044,38 @@ changes from round to round makes convergence harder to measure.
   of D-038.
 - **The exponent assumes independent failures.** Correlated failures — one rack, one switch — defeat
   it, and placement by hash cannot be steered around racks.
+
+---
+
+### D-033 — Leaving is crashing: there is no departure protocol
+
+**Fork:** F25. **Date:** 7 Oct 2026. **Gates:** how a node leaves the ring.
+
+**The decision.** A node leaves by stopping. `SIGTERM` and `SIGINT` keep their default action: the
+process ends, the kernel closes its listening socket, and the next connection to its address is
+refused. Its neighbours repair the ring exactly as they repair any death.
+
+**Why.**
+- **The crash path must exist and be fast whatever else is built**, because crashes are not
+  announced. A departure protocol would be a second path to the same end state, exercised far less
+  often than the first.
+- **A clean exit is already the best case of a crash.** A refused connection is proof of death
+  (D-013), so the predecessor evicts the node at its next stabilise without the second strike a
+  timeout needs. A departure message would save at most one period.
+- **It is the crash-only design argued by Candea and Fox**: if stopping and crashing are the same
+  event, the recovery code runs every time anything stops, and so it stays correct.
+
+**Rejected: a graceful leave** (`LEAVING` messages telling the predecessor its new successor and the
+successor its new predecessor). It saves up to one period per planned departure. It costs signal
+handling — a handler may call only async-signal-safe functions, so it needs a self-pipe or a
+dedicated `sigwait` thread — two more messages, and the case where those messages are lost, which
+falls back to the crash path anyway.
+
+**Rejected for now: leaving with a data hand-off.** Moving a node's chunks to its successor before
+it exits is what makes a graceful leave worth having, and it belongs with replication in Phase 4,
+where three replicas already cover a departure.
+
+**Cost accepted.** A planned departure leaves the ring briefly wrong — the predecessor names the
+departed node as an owner until its next stabilise — exactly as a crash does. It is the same event
+as the benchmark's kill, so it is measured.
 

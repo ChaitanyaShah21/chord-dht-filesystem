@@ -621,6 +621,16 @@ Chord paper's r = O(log N), and the first entries are Phase 4's replica set.
 adjacent deaths; and a length estimated at run time, which is noisy. **Cost:** a list takes about
 eight periods to be clean everywhere after a death, and correlated failures defeat the exponent.
 
+### Leaving is crashing
+
+A node leaves by stopping. Its listening socket closes, the next connection is refused, a refusal
+is proof of death, and the neighbours repair the ring the way they repair any crash. There is one
+recovery path, and it runs every time anything stops, so it stays correct — the crash-only argument.
+**Rejected:** departure messages, which save at most one period, need signal handling, and fall back
+to the crash path when they are lost. Leaving with a data hand-off is the version worth building,
+and it belongs with replication. **Cost:** a planned departure leaves the ring briefly wrong, exactly
+as a crash does.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
