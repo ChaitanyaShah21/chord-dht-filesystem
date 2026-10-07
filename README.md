@@ -609,6 +609,18 @@ read-only and exists so the test harness, not the node, decides whether a finger
 and two snapshots that can disagree. **Cost:** a line is capped at 1024 bytes, which caps the
 successor list at 16 entries.
 
+### Eight successors, because the list length is an exponent
+
+Each node keeps its next eight successors, learned every round by shifting its successor's list one
+place. When the successor dies, the node moves to the next live entry in the same round; it is
+orphaned only if all eight die within one period. With independent failures that is pʳ — if half
+the ring fails at once, (½)⁸ = 1/256. Eight is log₂ of the largest ring benchmarked, following the
+Chord paper's r = O(log N), and the first entries are Phase 4's replica set.
+
+**Rejected:** three, the replication minimum, which leaves a node one failure from orphaned after two
+adjacent deaths; and a length estimated at run time, which is noisy. **Cost:** a list takes about
+eight periods to be clean everywhere after a death, and correlated failures defeat the exponent.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

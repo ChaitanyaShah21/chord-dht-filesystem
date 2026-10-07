@@ -205,6 +205,7 @@ decided before the paper is one that cannot be defended in December.
 | **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
 | **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
 | **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
+| **F24** | **How long is the successor list?** The replication minimum (3); log₂ of the largest ring measured (8); or estimated at run time from the gap to the successor. | r is the exponent in the probability of a node being orphaned, and it is the replica set Phase 4 reads. | **RESOLVED** — D-032 |
 
 ---
 
@@ -2006,4 +2007,40 @@ confirms routing (D-038 runs one), but it cannot say which finger of which node 
   predecessor fit with room to spare. A `FINGERS` reply that would not fit is refused with `ERR`;
   that takes more than about 24 distinct fingers, which means rings of millions of nodes.
 - Identifiers are believed as stated, as they already are in lookup replies.
+
+---
+
+### D-032 — The successor list holds 8 entries by default
+
+**Fork:** F24. **Date:** 7 Oct 2026. **Gates:** survival of failures, and the replica set in
+Phase 4.
+
+**The decision.** Each node keeps the next r live nodes clockwise, obtained each round by taking
+its successor's list, putting the successor in front, and cutting the result at r. r is 8 by
+default and set with `--succ <1..16>`.
+
+**Why.**
+- **The list is what lets a node survive its successor's death**: it moves to the next live entry in
+  the same round. A node is orphaned only if all r successors die within one stabilisation period.
+- **r enters as an exponent.** If nodes fail independently, each with probability p within a period,
+  a node is orphaned with probability pʳ. If half the ring fails at once, (½)⁸ = 1/256. The Chord
+  paper's choice, r = O(log N), gives about one orphan in expectation after that event when
+  r = log₂ N, and 8 is log₂ of 256, the largest ring the Phase 3 benchmark runs.
+- **It is also the replica set**: D-015 places a chunk on its owner and the next two nodes, so r must
+  be at least 2, and 8 leaves room to fail over after replicas die.
+
+**Rejected: r = 3**, the replication minimum. Two adjacent deaths, the common case when many nodes
+fail together, would leave a node one failure from orphaned.
+
+**Rejected: r estimated at run time from the gap to the successor** (N ≈ 2⁶⁴ ÷ gap). It adapts to
+ring size, but one gap is a noisy estimate, wrong by a factor of several, and a list length that
+changes from round to round makes convergence harder to measure.
+
+**Cost accepted.**
+- Eight peers on every `NEIGHBOURS` reply, about 320 bytes per stabilise round.
+- **After a death, a list takes about r rounds to be correct everywhere**, because each node learns
+  the change from its successor one round after its successor does. Measured as the second milestone
+  of D-038.
+- **The exponent assumes independent failures.** Correlated failures — one rack, one switch — defeat
+  it, and placement by hash cannot be steered around racks.
 
