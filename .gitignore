@@ -20,6 +20,8 @@ CMakeFiles/
 /test-chord
 /test-net
 /test-lookup
+/test-stabilize
+/node-tsan
 
 # ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----
 # Regenerate deterministically with scripts/make-testdata.sh

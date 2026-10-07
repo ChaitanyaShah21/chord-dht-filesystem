@@ -21,13 +21,15 @@ NODE    = node
 LOOKUP  = lookup
 SIM_HOPS = sim-hops
 
-# test-chord, test-net and test-lookup are TEST binaries, not deliverables: they
-# exercise the routing arithmetic, the framing and the lookup loop in process,
+# test-chord, test-net, test-lookup and test-stabilize are TEST binaries, not
+# deliverables: they exercise the routing arithmetic, the framing, the lookup
+# loop and the ring's maintenance in process,
 # with rings built by hand. They are deliberately not part of `all`, so a normal
 # build never depends on them; `make check` builds and runs them.
 TEST_CHORD = test-chord
 TEST_NET   = test-net
 TEST_LOOKUP = test-lookup
+TEST_STABILIZE = test-stabilize
 
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
@@ -54,6 +56,13 @@ LOOKUP_SRC      = lookup.cpp
 LOOKUP_MAIN_SRC = lookup_main.cpp
 TEST_LOOKUP_SRC = test_lookup.cpp
 
+# A ring member's routing state and everything that changes it: joins,
+# stabilisation, failure handling (Phase 3). Like lookup.cpp it never opens a
+# socket -- calls to other nodes go through an injected transport -- so
+# test_stabilize.cpp runs a whole ring in one process.
+STABILIZE_SRC      = stabilize.cpp
+TEST_STABILIZE_SRC = test_stabilize.cpp
+
 # The hop-count benchmark's in-process replay (decision D-027): the same routing
 # code and lookup loop as the real ring, with a function call for a transport.
 SIM_HOPS_SRC = sim_hops.cpp
@@ -70,6 +79,8 @@ LOOKUP_OBJ      = $(LOOKUP_SRC:.cpp=.o)
 LOOKUP_MAIN_OBJ = $(LOOKUP_MAIN_SRC:.cpp=.o)
 TEST_LOOKUP_OBJ = $(TEST_LOOKUP_SRC:.cpp=.o)
 SIM_HOPS_OBJ    = $(SIM_HOPS_SRC:.cpp=.o)
+STABILIZE_OBJ      = $(STABILIZE_SRC:.cpp=.o)
+TEST_STABILIZE_OBJ = $(TEST_STABILIZE_SRC:.cpp=.o)
 
 # Default target
 all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS)
@@ -105,6 +116,9 @@ $(TEST_NET): $(TEST_NET_OBJ) $(NET_OBJ)
 $(TEST_LOOKUP): $(TEST_LOOKUP_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+$(TEST_STABILIZE): $(TEST_STABILIZE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 # Rebuild any object file if sha1.h changes. Without this, editing the header leaves
 # stale .o files behind and the next `make` links yesterday's code.
 $(CLIENT_OBJ): sha1.h
@@ -118,14 +132,17 @@ $(LOOKUP_OBJ): lookup.h chord.h net.h
 $(LOOKUP_MAIN_OBJ): lookup.h chord.h net.h
 $(TEST_LOOKUP_OBJ): lookup.h chord.h net.h
 $(SIM_HOPS_OBJ): lookup.h chord.h net.h
+# stabilize.h includes lookup.h, which includes chord.h and net.h.
+$(STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
+$(TEST_STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
 
 # -----------------------------
 # Clean rule
 # -----------------------------
 clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
-	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) \
-	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP)
+	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) $(STABILIZE_OBJ) $(TEST_STABILIZE_OBJ) \
+	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE)
 
 # -----------------------------
 # Convenience rules
@@ -138,9 +155,10 @@ run-client:
 
 # Build and run the in-process arithmetic tests. Exits non-zero on failure, so
 # it can be used as a gate.
-check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP)
+check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE)
 	./$(TEST_CHORD)
 	./$(TEST_NET)
 	./$(TEST_LOOKUP)
+	./$(TEST_STABILIZE)
 
 .PHONY: all clean run-tracker run-client check
