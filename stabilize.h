@@ -30,6 +30,7 @@ constexpr int MAX_SUCCESSORS     = 16;     // what fits in one MAX_LINE reply (D
 constexpr int STRIKES_TO_EVICT   = 2;      // non-refusal failures in a row (D-035)
 constexpr int JOIN_ATTEMPTS      = 30;     // join lookups before giving up (D-029)
 constexpr int MAX_CONTACTS       = 32;     // addresses remembered for rejoining (D-040)
+constexpr int MAX_WALK           = 64;     // inward steps stabilise may take in one round (D-043)
 
 struct NodeState {
     NodeState(const Peer &me, int successors);
@@ -111,7 +112,9 @@ Handled handle_request(NodeState &s, const std::string &line, const Transport &t
 
 // Ask the successor for its neighbours; adopt a closer successor if one has
 // appeared (after verifying it answers); take its successor list; notify it.
-// A refused successor is evicted and the next one tried in the same round.
+// A refused successor is evicted and the next one tried in the same round, and
+// after adopting a closer successor the new one is asked in the same round too,
+// so the pointer reaches its fixed point in one round (D-043), not one step per round.
 void stabilize(NodeState &s, const Transport &transport);
 
 // Ping the predecessor; forget it on a refusal or a second strike.

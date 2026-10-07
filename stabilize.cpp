@@ -452,8 +452,11 @@ Handled handle_request(NodeState &s, const std::string &line, const Transport &t
 void stabilize(NodeState &s, const Transport &transport) {
     // Each pass asks the current successor. If the call evicted it -- a refusal,
     // or a second strike -- the next pass asks the next entry in the same round,
-    // so k adjacent dead nodes cost one round, not k.
-    for (int pass = 0; pass <= MAX_SUCCESSORS; ++pass) {
+    // so k adjacent dead nodes cost one round, not k. And if a pass adopts a
+    // closer successor, the next pass asks THAT node, until no closer node is
+    // named (D-043). The paper takes one inward step per round, so a node that
+    // fell back to a distant node walked back one node per period.
+    for (int pass = 0; pass <= MAX_SUCCESSORS + MAX_WALK; ++pass) {
         Peer succ;
         {
             std::lock_guard<std::mutex> lock(s.mu);
@@ -497,6 +500,7 @@ void stabilize(NodeState &s, const Transport &transport) {
             std::string pong;
             if (call_peer(s, transport, candidate, "PING", pong, is_pong) == Call::Good) {
                 Events adopted;
+                bool moved = false;
                 {
                     std::lock_guard<std::mutex> lock(s.mu);
                     if (same_node(s.succs[0], succ)) {
@@ -507,9 +511,13 @@ void stabilize(NodeState &s, const Transport &transport) {
                         s.fingers[0] = s.succs[0];
                         remember_locked(s, candidate);
                         adopted.push_back("successor is now " + address(candidate));
+                        moved = true;
                     }
                 }
                 emit(s, adopted);
+                // Ask the new successor in the same round: it may know a closer
+                // node still. Every step moves strictly inward, so this ends.
+                if (moved) continue;
             }
         }
 

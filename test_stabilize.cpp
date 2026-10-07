@@ -614,6 +614,45 @@ void test_kill_adjacent() {
     check(n >= 0, "...and the ring still converges, from the fingers (" + std::to_string(n) + " rounds)");
 }
 
+void test_walk_after_exhausted_list() {
+    std::printf("more adjacent deaths than the list holds: the walk back is done within a round (D-043)\n");
+    int worst = 0;
+    for (int seed = 0; seed < 10; ++seed) {
+        std::mt19937_64 rng(500 + seed);
+        Sim sim(4);
+        std::vector<Peer> ring = wired_ring(sim, random_peers(rng, 64));
+        std::vector<Peer> live = ring;
+        for (int i = 0; i < 6; ++i) { sim.dead.insert(addr(ring[10 + i])); live = without(live, ring[10 + i]); }
+        const int n = rounds_until(sim, live, rng, 200, [](const Verdict &v) { return v.ring; });
+        worst = std::max(worst, n < 0 ? 999 : n);
+    }
+    std::printf("  info  6 adjacent deaths, r = 4: ring correct after %d rounds at worst (10 rings of 64)\n", worst);
+    check(worst <= 3, "6 adjacent deaths with r = 4, 10 rings of 64: ring correct within 3 rounds every time "
+                      "(worst " + std::to_string(worst) + ")");
+}
+
+void test_mass_start() {
+    std::printf("a wired ring whose nodes come up at different times (D-043)\n");
+    int worst = 0;
+    for (int seed = 0; seed < 10; ++seed) {
+        std::mt19937_64 rng(600 + seed);
+        Sim sim;
+        std::vector<Peer> ring = wired_ring(sim, random_peers(rng, 128));
+        // Half the nodes are not listening yet for the first three rounds: the
+        // others see them refused, evict them, and fall back past them.
+        std::vector<Peer> early, late;
+        for (const Peer &p : ring) (rng() % 2 ? early : late).push_back(p);
+        for (const Peer &p : late) sim.dead.insert(addr(p));
+        for (int r = 0; r < 3; ++r) sim.round(early);
+        for (const Peer &p : late) sim.dead.erase(addr(p));
+        const int n = rounds_until(sim, ring, rng, 400, all_correct);
+        worst = std::max(worst, n < 0 ? 999 : n);
+    }
+    std::printf("  info  half the nodes late: fully correct after %d rounds at worst (10 rings of 128)\n", worst);
+    check(worst <= 20, "10 rings of 128 with half the nodes late: fully correct within 20 rounds every time "
+                       "(worst " + std::to_string(worst) + ")");
+}
+
 void test_frozen() {
     std::printf("a frozen node: two strikes, then back again\n");
     std::mt19937_64 rng(17);
@@ -913,6 +952,8 @@ int main() {
     test_collision();
     test_kill_one();
     test_kill_adjacent();
+    test_walk_after_exhausted_list();
+    test_mass_start();
     test_frozen();
     test_stalled_finger_cycle();
     test_dies_mid_join();
