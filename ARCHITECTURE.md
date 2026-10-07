@@ -197,7 +197,7 @@ decided before the paper is one that cannot be defended in December.
 | **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
 | **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and defend it in Chord's sense. | Decides whether the first word of the resume survives questioning, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
 | **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector in Block 2, cut before Raft |
-| **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
+| **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Salting trades away the property that an identifier is a function of its address. | **RESOLVED** — D-028: refused at join, and never adopted |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
 | **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | **RESOLVED** — D-027 |
 | **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
@@ -1801,3 +1801,48 @@ disagree silently and inflate hop counts.
 
 **Evidence:** `BENCHMARKS.md` §2, at `e042857`. Every one of the 135,168 lookups on real rings (2 to
 2048 nodes) was reproduced exactly by the replay, and the curve reaches 9.87 hops at 2²⁰ nodes.
+
+---
+
+### D-028 — An identifier collision at join is refused, not repaired
+
+**Fork:** F15. **Date:** 7 Oct 2026. **Gates:** the join path (Phase 3).
+
+**The decision.** Two parts, both comparing addresses for identity (I8).
+
+1. **At join.** A joining node looks up its own identifier. If the owner it is given carries the
+   same identifier at a different address, the node refuses to join: it exits with an error
+   naming both addresses, and the operator starts it on another port.
+2. **Always.** No node adopts a peer that carries its own identifier at another address — not as
+   successor, predecessor or finger — and it logs the attempt.
+
+**Why.**
+- **The probability is negligible, and it was computed rather than assumed.** By the birthday
+  bound, 100,000 identities in 2⁶⁴ collide with probability about 3 × 10⁻¹⁰ (D-019). An event that
+  rare needs a loud, correct response, not an automatic one.
+- **Refusing keeps the identifier a pure function of the address.** Every node, every test oracle
+  and every harness computes SHA-1("ip:port") and gets the same answer, with nothing extra stored
+  or carried.
+- **The join lookup already returns the information.** If a node with my identifier exists, it is
+  the owner of my identifier, so the lookup a join performs anyway finds it.
+
+**Rejected: re-hash with a salt** (identifier = SHA-1("ip:port#n"), raising n until it is free).
+Automatic, but the identifier is no longer derivable from the address. Every harness oracle would
+have to learn each node's salt from the node itself, which puts the node's own report inside the
+checker. And two colliding nodes joining at the same moment both see no collision, so salting at
+join is not complete either.
+
+**Rejected: rely on the birthday bound alone**, as the Chord paper does. Free, but the failure is
+silent: two nodes sharing an identifier disagree about a boundary, and nothing reports it.
+Detection costs one comparison on a lookup the join performs anyway.
+
+**Cost accepted.**
+- A collision stops a node from starting and needs an operator. At 3 × 10⁻¹⁰ that is accepted.
+- **Two colliding nodes joining at the same moment are not caught at join**: each looks before the
+  other is reachable. Part 2 contains that case — neither adopts the other, so neither concludes it
+  owns the whole ring — but the arc between them stays ambiguous until one is restarted. Logged,
+  not repaired.
+
+**Evidence:** in-process tests construct the collision with chosen identifiers, since real SHA-1
+output never produces one.
+

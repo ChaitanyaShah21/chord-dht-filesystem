@@ -549,6 +549,20 @@ which never touches the running system; and a faster purpose-built simulator, wh
 second implementation of the finger rule that could disagree silently. **Cost:** the simulated
 series measures routing, not the network, and is labelled as in-process.
 
+### An identifier collision stops a node from joining
+
+A joining node looks up its own identifier. A node with the same identifier would be that
+identifier's owner, so if the owner returned has the same identifier at a different address, the
+new node refuses to start and names both addresses. Separately, no node ever adopts a peer that
+carries its own identifier at another address, because the interval test reads `(n, n]` as the
+whole ring and the node would conclude it owns every key.
+
+**Rejected:** re-hashing with a salt, which makes the identifier no longer a function of the
+address, so every test oracle would need each node's salt from the node itself; and ignoring
+collisions, which fail silently. **Cost:** an operator restarts the node, at a probability of
+about 3 × 10⁻¹⁰ for 100,000 identities; and two colliding nodes joining at the same moment are
+contained by the adoption rule, not repaired.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
