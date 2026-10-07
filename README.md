@@ -708,6 +708,23 @@ heaviest benchmarked load. Rounds run a fixed delay apart, and each node starts 
 nodes do not stabilise in step. **Rejected:** values by precedent, and a deadline tied to the period.
 **Cost:** the values hold for this machine; the method is what transfers.
 
+### A node that loses everyone it knew stops routing, rather than claiming the ring
+
+If eviction leaves a node knowing no other node, it could conclude it is alone — and then `(n, n]`
+makes it the owner of every key. Worse, the in-process churn tests showed a later joiner routed
+through such a node forming a **second, separate ring** with it, which stabilisation can never merge
+back. So the node becomes an *orphan*: it answers `ERR` to everything the ring routes or checks
+liveness with, including `PING`, and each round it re-runs the join procedure through one of up to
+32 addresses it remembers (its join contact, successors, predecessors and finger owners). A newcomer
+also copies its successor's list at join, so it never depends on one node during its first period.
+
+A node cannot tell "everyone else died" from "I am cut off", so this picks consistency over
+availability. **Rejected:** falling back to itself, which splits the ring silently; and orphans
+electing one of themselves to restart the ring, which is an agreement problem and would split the
+ring under a partition. **Cost:** an orphan whose every remembered address has died stays out — 9
+of 200 deliberately harsh churn histories in the tests — and the last survivors of a total collapse
+refuse service until an operator restarts one with `--create`.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

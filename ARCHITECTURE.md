@@ -213,6 +213,7 @@ decided before the paper is one that cannot be defended in December.
 | **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
 | **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
 | **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §3 |
+| **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
 
 ---
 
@@ -2350,4 +2351,74 @@ by rounds run back to back to catch up, exactly when a peer is already slow.
   a different objective can be read off it.
 
 **Evidence:** `BENCHMARKS.md` §3, where the values are filled in from the measured curves.
+
+---
+
+### D-040 — A node that has lost every node it knew refuses to route, and rejoins through addresses it remembers
+
+**Fork:** F32, surfaced by the in-process churn tests while D-035 was being built. **Date:**
+7 Oct 2026. **Gates:** what a node does after D-035's last fallback fails.
+
+**What the tests found.** D-035 part 7 said a node whose whole successor list has died falls back
+to the nearest node it knows, and "only a node that knows nobody falls back to itself". The first
+implementation did exactly that, and the random-churn test showed what it costs. A newcomer knows
+one node, its successor, until its first round. If that node dies first, the newcomer falls back to
+itself, and `(n, n]` makes it claim the whole ring. Worse, a later join routed through it receives
+`OWNER <itself>`, and the two form a **separate two-node ring** — seen in the test as nodes 21 and
+23 pointing only at each other — which stabilisation can never merge back, because no pointer
+leads from one ring to the other.
+
+**The decision.** Three parts.
+
+1. **Orphaned, not alone.** When eviction leaves a node with no other node it knows, it marks itself
+   *orphaned*. An orphan answers `ERR` to `PING`, `FIND_SUCCESSOR`, `NEIGHBOURS` and `NOTIFY`, so it
+   routes nothing and recruits nobody. Refusing `PING` matters: an orphan that still answered it was
+   kept by its neighbours' liveness checks and re-adopted by their verify-before-adopt (D-035), and
+   its own rejoin then waited for ever for the ring to forget it — a livelock, also found by the test.
+2. **Rejoin through remembered addresses.** Every node keeps up to 32 addresses it has seen — the node
+   it joined through, its successors, its predecessors, and the owners its finger lookups returned —
+   newest first. An orphan does no maintenance; each round it runs the join procedure (D-029) through
+   the next remembered address.
+3. **A newcomer copies its successor's list at join**, with one `NEIGHBOURS` call, instead of waiting
+   for its first stabilise. It no longer depends on one node during its first period. There is no
+   `NOTIFY` at that point: the newcomer is not listening yet, and a successor that accepted it as
+   predecessor would ping it, be refused, and evict it.
+
+**Why.**
+- **A node cannot tell "everyone else died" from "I am cut off".** Claiming the ring is right in the
+  first case and builds a second, disjoint ring in the second. Refusing to route is wrong only in the
+  first case, and then only until an operator restarts a node with `--create`. This chooses
+  consistency over availability for a node that has lost contact, which is the side a storage system
+  should be on.
+- **Rejoining reuses the join path**, which already handles a contact that is dead, a ring that still
+  names this address, and a collision.
+
+**Rejected: fall back to itself** (the first implementation). Available, and it splits the ring
+silently.
+
+**Rejected: stay orphaned with no rejoin.** Safe, and a node that loses its neighbourhood for one
+moment is lost for good.
+
+**Rejected: let orphans elect one of themselves to re-create the ring.** That needs the orphans to
+agree on which one, the agreement problem the Raft work in Block 2 exists for, and under a partition
+it would build exactly the second ring this decision prevents.
+
+**Rejected for now: a configured seed list** (Cassandra's approach: a few well-known addresses every
+node can always rejoin through). It is the operational answer to a stranded orphan, and belongs with
+the deployment kit, where there is an operator to configure it.
+
+**Cost accepted.**
+- **A stranded orphan — one whose every remembered address is dead or orphaned — stays out of the
+  ring.** Under the test's deliberately harsh churn (16 to 48 nodes, a death or a freeze in about one
+  step in five, some nodes frozen for long stretches), 191 of 200 histories converge once quiet; the
+  other 9 are all stranded: 5 single orphans whose whole remembered world died while they were frozen,
+  and 4 total collapses in which every survivor of a ring cut down to 4–6 nodes was orphaned.
+- **The last survivors of a total collapse refuse service** instead of forming a ring. An operator
+  restarts one with `--create`.
+- An orphan costs one refused connection per round while its contacts are dead.
+
+**Evidence:** `test-stabilize`: the orphan test (a newcomer whose eight known nodes die is orphaned,
+refuses to route, and rejoins through the node it first joined through), and the churn property test
+(200 histories; every one that does not converge is shown to contain a stranded orphan; no running
+node ever claims the ring while others are in it).
 
