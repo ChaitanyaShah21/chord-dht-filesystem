@@ -199,7 +199,7 @@ decided before the paper is one that cannot be defended in December.
 | **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector in Block 2, cut before Raft |
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Surfaced while resolving F12 and deliberately **not** settled by implication (R6). Salting trades away part of the property that an identifier is verifiable from an address, which touches the Sybil/eclipse answer already marked `WEAK`. | OPEN — decide in Phase 3, with the join path |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
-| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | OPEN — decide in step 2.5, with the benchmark |
+| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | **RESOLVED** — D-027 |
 | **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
 | **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
 
@@ -1746,3 +1746,54 @@ paper does not count it.
 
 **Evidence:** the 1024-node simulation figure above; the full curve is `BENCHMARKS.md` §2.
 
+---
+
+### D-027 — The hop-count curve: real processes to a measured memory ceiling, then the same code in one process to 2²⁰ nodes
+
+**Fork:** F16. **Date:** 7 Oct 2026. **Gates:** step 2.5, the hop-count benchmark.
+
+**The decision.** The plot carries two series, each drawn from the same kind of workload:
+
+1. **Real processes.** N `node` processes on loopback, queried by the `lookup` tool over TCP, for
+   N in powers of two up to a ceiling **derived from measured per-node memory** rather than chosen.
+2. **In-process replay.** `sim-hops` parses a membership file with `parse_members`, builds each
+   asked node's table with `build_fingers`, decides its answer with `route_step`, and runs the loop
+   with `lookup()`, the same function the `lookup` tool runs. Only the transport differs: a function
+   call instead of a connection. N runs from 2 to 2²⁰ (1,048,576).
+
+Agreement is shown two ways. **Every real ring is also replayed in `sim-hops` with the identical
+workload, and every lookup must return the same owner by the same path, node for node.** Separately,
+the two curves overlap on the plot wherever both exist.
+
+**Why.**
+- **Hop count is a deterministic function of the membership, the start node and the key.** The
+  process boundary adds a transport and nothing else. The transport is tested on its own
+  (`test-net`, `e2e-chord.sh`), so what the replay leaves out is covered elsewhere.
+- **A logarithm needs doublings to be visible.** Processes on this machine reach about a dozen
+  doublings; the replay reaches twenty. A curve that keeps tracking ½ log₂ N for twenty doublings is
+  a much stronger claim than one that stops where memory does.
+- **The replay is not a model.** It is the shipped routing code with a different transport, so a
+  disagreement with the real ring would be a real bug, not a modelling error.
+
+**Rejected: real processes only.** No simulation to defend, but the curve stops at the memory
+ceiling, which is a property of this laptop rather than of the design.
+
+**Rejected: simulation only.** It reaches any N cheaply, but the plot would then never touch the
+system that actually runs, and "a simulation of the design" is not evidence that the binaries
+behave that way.
+
+**Rejected: a faster purpose-built simulator** (integer indices instead of addresses, fingers
+precomputed in flat arrays). It would be several times faster, and it would be **a second
+implementation of the finger rule**, the thing D-020 refused because two implementations can
+disagree silently and inflate hop counts.
+
+**Cost accepted.**
+- **The simulated series measures routing, not the network.** It is labelled as in-process on the
+  plot and in `BENCHMARKS.md`.
+- **`sim-hops` renders replies itself**, three lines that mirror `node.cpp`. A change to the node's
+  rendering would not reach the simulator by itself. The per-lookup replay of every real ring is what
+  would catch such a divergence.
+- **`sim-hops` rebuilds a node's 64 fingers each time that node is asked**, trading CPU for memory:
+  64 fingers kept for each of 2²⁰ nodes would be about 3 GB, more than the memory budget.
+
+**Evidence:** `BENCHMARKS.md` §2.

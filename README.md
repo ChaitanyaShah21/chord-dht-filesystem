@@ -509,6 +509,20 @@ produced by definitions rather than by routing.
 **Rejected:** plotting requests. They are what a client pays in round trips, so they are reported
 alongside, not discarded.
 
+### The hop-count curve goes past what fits in memory, and shows where
+
+Hop count is a deterministic function of the membership, the start node and the key, so the curve
+has two series. Real `node` processes, queried over TCP, run up to a ring size derived from measured
+per-node memory. Past that, `sim-hops` runs the **same** code in one process: `parse_members`,
+`build_fingers`, `route_step` and the `lookup()` loop, with a function call where the socket was. It
+goes to 2²⁰ nodes. Every real ring is also replayed through `sim-hops`, and every lookup must come
+back with the same owner by the same path, node for node.
+
+**Rejected:** real processes only, where the curve stops at this laptop's memory; simulation only,
+which never touches the running system; and a faster purpose-built simulator, which would be a
+second implementation of the finger rule that could disagree silently. **Cost:** the simulated
+series measures routing, not the network, and is labelled as in-process.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
