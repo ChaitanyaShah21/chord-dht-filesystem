@@ -31,8 +31,8 @@ bool send_line(int fd, const std::string &line);
 // Returns false if the peer closed, the socket failed, or the line exceeded
 // MAX_LINE. On false, `out` may hold a partial line and must not be used.
 // errno tells the cases apart for a caller that needs to: an over-long line
-// sets EMSGSIZE, and a clean close by the peer leaves errno exactly as it was
-// before the call (so a caller that zeroes errno first reads 0).
+// sets EMSGSIZE, a clean close by the peer sets errno to 0, and any other
+// failure leaves the errno recv() reported (EAGAIN: the receive timeout fired).
 bool recv_line(int fd, std::string &out);
 
 // Connect to an IPv4 ip:port. Returns the socket, or -1 with errno describing
