@@ -903,6 +903,17 @@ would have to read it back to forward it), no cap (a burst or a hostile client c
 limit), and a waiting queue (a slow failure instead of a fast one). **Cost:** 32 is sized to this machine, not
 derived; a larger burst gets `busy` and must retry.
 
+### W is compared on one ring under one failure; durability is tested by killing the coordinator
+
+The `W` sweep interleaves writes at `W` = 1, 2 and 3 from the same clients on the same ring through the same
+failure — healthy, one replica frozen, one killed — so the settings are compared under identical conditions rather
+than on separate rings. Durability is measured directly: the coordinating process is killed the instant it
+acknowledges a write, and the harness then asks every live process whether any copy survived. Re-replication time
+is judged from outside, like reconvergence: the harness computes every chunk's three correct processes from the live
+addresses and asks each one. **Rejected:** a fresh ring per `W` (differences between rings would be mixed into
+differences between settings), and inferring durability from the copy count at acknowledgement (true by
+construction, and silent about what a crash does next).
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

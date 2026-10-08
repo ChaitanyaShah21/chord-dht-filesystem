@@ -226,6 +226,7 @@ decided before the paper is one that cannot be defended in December.
 | **F42** | **How is RF = 3 restored after a death, and who is responsible?** A periodic full scan; an event when the successor list changes; both; every replica checking every chunk; or hash-tree comparison. | Decides how long a chunk stays one copy short, how much background traffic repair costs, and whether a silently lost file is ever found. | **RESOLVED** — D-050 |
 | **F43** | **How many virtual nodes per process?** One; a large fixed number such as 256; a number read off a measured balance curve by a rule fixed first; or in proportion to capacity. | Load balance improves as 1/√V while every member adds its own stabilisation traffic. | **RESOLVED** — D-051 (rule); value in `BENCHMARKS.md` |
 | **F44** | **How much of a chunk is in memory, and is it bounded?** The whole body, shared between parallel sends, capped per process; streamed to disk while hashing; uncapped; or a waiting queue. | Sets memory per node under write load, whether a client can make a node allocate without limit, and how many processes fit on this machine. | **RESOLVED** — D-052 |
+| **F45** | **How are W, durability and re-replication measured?** A fresh ring per W, or all W on one ring under one failure; durability from copy counts, or by killing the coordinator at acknowledgement; and who judges that RF = 3 is restored. | Decides whether the W comparison is between settings or between rings, and whether a durability claim was tested or inferred. | **RESOLVED** — D-053 |
 
 ---
 
@@ -3041,3 +3042,39 @@ ring), not derived from a workload. Under a burst larger than 32 concurrent chun
 `busy` and must be retried.
 
 **Evidence:** none yet — design time. A test drives 33 concurrent bodies at one node.
+
+---
+
+### D-053 — W is compared on one ring under one failure, and repair is judged from outside by the same kind of oracle
+
+**Fork:** F45. **Date:** 8 Oct 2026. **Depends on:** D-015, D-046, D-050. **Gates:** the Phase 4 results.
+
+**The decision.**
+- **The `W` sweep** runs `W = 1, 2, 3` interleaved — one write at each in turn — from the same client threads, on
+  the same ring, during the same failure, so every setting sees the same conditions. A run has three phases on a
+  ring of 16 processes: healthy; one replica-holding process **frozen** (SIGSTOP: connections are accepted by the
+  kernel and never answered, so every call to it waits for the deadline); and one process **killed** (connections
+  refused until the ring evicts it). Each write is a fresh random 512 KiB chunk. Reported per `W` and phase: write
+  latency at the 50th and 99th percentile, the fraction acknowledged, and, from the coordinators' logs, how long
+  after the acknowledgement the last copy landed.
+- **Durability after a coordinator crash** is measured directly: for each `W`, a write is sent, and the moment its
+  acknowledgement arrives the coordinating process is killed. Afterwards — before any repair can run — the harness
+  asks every live process whether it holds the chunk. An acknowledged write with no surviving copy is a lost
+  write. Repeated enough times per `W` to report a rate with its count.
+- **Re-replication** is the time from killing one process until every chunk is held by all three of its correct
+  replica processes among the live ones — computed by the harness from the live addresses with its own
+  implementation of D-048's rule, and checked by asking each process `HAVE`. Like D-038, the instrument is outside
+  the thing measured, and a milestone counts only once it stays true.
+
+**Rejected: a fresh ring per `W`.** Simpler harness, and the differences between `W` values would include the
+differences between rings and kill timings.
+
+**Rejected: inferring durability from the copy count at acknowledgement.** `W` copies at acknowledgement is true by
+construction; whether an acknowledged write survives its coordinator's death depends on what happened after the
+acknowledgement, which only a kill can show.
+
+**Cost accepted.** Sixteen processes on eight cores, not a cluster: the frozen-replica phase measures the deadline
+as much as the protocol, and the coordinator-crash test measures a race between the kill and the background
+copies on loopback, where a real network would make that window wider.
+
+**Evidence:** `BENCHMARKS.md`, Phase 4 entries.
