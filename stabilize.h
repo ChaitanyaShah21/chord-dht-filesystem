@@ -58,13 +58,21 @@ struct NodeState {
     std::size_t       next_contact = 0;
 
     // The failure detector's memory (D-035): consecutive failed calls to each
-    // peer this node holds -- successor, predecessor or finger -- by address.
-    // Cleared by a valid reply; the second strike evicts.
+    // peer this node holds -- successor, predecessor or finger -- keyed by member
+    // ("ip:port/<identifier>", D-047). Cleared by a valid reply; the second strike
+    // evicts that member. A refusal evicts every member at the address at once.
     std::map<std::string, int> strikes;
 };
 
-// Same node? By ADDRESS, never by identifier (invariant I8).
+// Same ring member? Same address AND same identifier -- never the identifier
+// alone (invariant I8). With virtual nodes (D-047) one process at one address is
+// several members, each with its own identifier.
 bool same_node(const Peer &a, const Peer &b);
+
+// Same process? Same address. A refused connection is evidence about a process
+// (nothing listens at that address), so it evicts all of its members; replicas
+// must be on different processes (D-048); a node never suspects its own process.
+bool same_process(const Peer &a, const Peer &b);
 
 // ---- Starting states (D-029) ----------------------------------------------
 

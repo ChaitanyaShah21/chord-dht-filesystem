@@ -117,7 +117,8 @@ LookupResult lookup_with_recovery(const Peer &start, Id k, const Transport &tran
 
 // The real transport: one fresh connection per request (D-024 F19b), with
 // LOOKUP_TIMEOUT_MS on connect, send and receive. Holds no state, so it is
-// safe to pass anywhere.
+// safe to pass anywhere. The request is addressed to the member `to` names
+// (addressed(), below), so it reaches the right member of a process.
 Delivery socket_transport(const Peer &to, const std::string &request, std::string &reply);
 
 // Strictly parse one reply line: exactly "OWNER" or "NEXT", one space, 16 hex
@@ -143,5 +144,26 @@ std::vector<std::string> split_single_spaces(const std::string &s);
 // sign or leading zero. On failure returns false, sets `why`, leaves `out` alone.
 bool parse_peer_words(const std::string &id, const std::string &ip, const std::string &port,
                       Peer &out, std::string &why);
+
+// ---------------------------------------------------------------------------
+// Addressing a member of a process (virtual nodes, decision D-047).
+//
+// One process listens on one socket and may be several ring members, so a
+// request says which member it is for:   TO <16-hex identifier> <request>
+// A request without the prefix is for the process's member 0, whose identifier
+// is SHA-1 of its address -- so tools written before virtual nodes still work.
+// ---------------------------------------------------------------------------
+
+// "TO <to.id> " + request. Every transport that sends to a ring member uses it.
+std::string addressed(const Peer &to, const std::string &request);
+
+enum class Target {
+    None,        // no prefix: `rest` is the whole line, for member 0
+    Member,      // "TO <id> <rest>": `id` and `rest` set
+    Malformed,   // starts with "TO " but the identifier or the space after it is wrong
+};
+// Split a received line. Strict: exactly "TO", one space, 16 hexadecimal
+// characters, one space, then a non-empty request.
+Target split_target(const std::string &line, Id &id, std::string &rest);
 
 #endif

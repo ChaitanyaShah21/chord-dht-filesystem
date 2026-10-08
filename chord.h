@@ -60,6 +60,13 @@ bool id_from_hex(const std::string &hex16, Id &out);
 //     hash a raw line from a file.
 Id id_of_address(const std::string &ip, int port);
 
+// The identifier of member `i` of the process at ip:port (virtual nodes, D-047).
+// Member 0 is id_of_address(ip, port), so a process with one member keeps the
+// identifier it always had; member i >= 1 is SHA-1("ip:port#i"), truncated.
+// '#' cannot occur in a dotted quad or a port number, so no string hashed for one
+// process can equal one hashed for another. `i` must be >= 0.
+Id id_of_member(const std::string &ip, int port, int i);
+
 // Membership tests for an arc travelled CLOCKWISE from `a` round to `b`.
 // Both handle the arc that wraps past zero, which is the whole reason they
 // exist as named functions rather than as inline comparisons.
@@ -164,7 +171,9 @@ Peer closest_preceding_finger(const Peer &self, const std::vector<Peer> &fingers
 //   owner == true   ->  `peer` owns k             (k is in (self, successor])
 //   owner == false  ->  ask `peer` next           (the closest preceding finger)
 //
-// Never names `self` as the next hop. With a correct table that cannot happen:
+// Never names `self` as the next hop. "Self" is the same ADDRESS and the same
+// identifier: with virtual nodes (D-047) another member of this process has this
+// address and a different identifier, and is a perfectly good next hop. With a correct table that cannot happen:
 // whenever k is not in (self, successor], the successor itself lies in
 // (self, k), so finger[0] always qualifies. With a stale table (Phase 3) it can,
 // and naming self would send the originator back to the same node forever -- so

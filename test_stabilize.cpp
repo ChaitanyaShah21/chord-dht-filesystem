@@ -45,6 +45,10 @@ void check(bool condition, const std::string &what) {
 
 std::string addr(const Peer &p) { return p.ip + ":" + std::to_string(p.port); }
 
+// How the failure detector files a member's strikes: address and identifier,
+// because one process can be several members (D-047).
+std::string strike_key(const Peer &p) { return addr(p) + "/" + id_to_hex(p.id); }
+
 // A distinct, canonical address for the n-th constructed node.
 Peer make_peer(Id id, int n) {
     return Peer{id, "10.0." + std::to_string((n >> 8) & 255) + "." + std::to_string(n & 255), 9000};
@@ -380,7 +384,7 @@ void test_requests() {
     // A frozen suspect: a timeout from a hint changes nothing, not even a strike.
     sim.frozen.insert(addr(c));
     handle_request(sb, "SUSPECT " + c.ip + " " + std::to_string(c.port), sim.transport);
-    { std::lock_guard<std::mutex> l(sb.mu); check(same_node(sb.succs[0], c) && sb.strikes.count(addr(c)) == 0,
+    { std::lock_guard<std::mutex> l(sb.mu); check(same_node(sb.succs[0], c) && sb.strikes.count(strike_key(c)) == 0,
                                                   "SUSPECT naming a frozen node: no eviction and no strike"); }
     sim.frozen.erase(addr(c));
     // A dead suspect is evicted on the node's own refused probe.
@@ -663,11 +667,11 @@ void test_frozen() {
     sim.frozen.insert(addr(x));
     stabilize(sim.at(p), sim.transport);
     { NodeState &s = sim.at(p); std::lock_guard<std::mutex> l(s.mu);
-      check(same_node(s.succs[0], x) && s.strikes[addr(x)] == 1, "one timeout is one strike, not an eviction"); }
+      check(same_node(s.succs[0], x) && s.strikes[strike_key(x)] == 1, "one timeout is one strike, not an eviction"); }
     sim.frozen.erase(addr(x));
     stabilize(sim.at(p), sim.transport);
     { NodeState &s = sim.at(p); std::lock_guard<std::mutex> l(s.mu);
-      check(s.strikes.count(addr(x)) == 0, "a valid reply clears the strike"); }
+      check(s.strikes.count(strike_key(x)) == 0, "a valid reply clears the strike"); }
 
     sim.frozen.insert(addr(x));
     const std::vector<Peer> live = without(ring, x);

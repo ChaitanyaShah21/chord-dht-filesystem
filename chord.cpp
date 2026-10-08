@@ -121,6 +121,16 @@ Id id_of_address(const std::string &ip, int port) {
     return id;
 }
 
+Id id_of_member(const std::string &ip, int port, int i) {
+    assert(i >= 0);
+    if (i == 0) return id_of_address(ip, port);
+    Id id = 0;
+    const bool ok = id_from_key(sha1(ip + ":" + std::to_string(port) + "#" + std::to_string(i)), id);
+    assert(ok && "sha1() must return 40 hexadecimal characters");
+    (void)ok;
+    return id;
+}
+
 bool in_range_oc(Id k, Id a, Id b) {
     if (a < b) return a < k && k <= b;   // the arc does not cross zero
     return a < k || k <= b;              // it wraps past zero (or a == b: whole ring)
@@ -220,7 +230,9 @@ RouteStep route_step(const Peer &self, const Peer &successor,
     if (in_range_oc(k, self.id, successor.id)) return {true, successor};
 
     Peer next = closest_preceding_finger(self, fingers, k);
-    if (next.ip == self.ip && next.port == self.port)   // by address, never identifier (I8)
+    // Self by address AND identifier, never identifier alone (I8): a different
+    // member of this same process is a valid hop (D-047).
+    if (next.ip == self.ip && next.port == self.port && next.id == self.id)
         next = successor;
     return {false, next};
 }

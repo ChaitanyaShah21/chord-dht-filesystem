@@ -21,6 +21,9 @@ CMakeFiles/
 /test-net
 /test-lookup
 /test-stabilize
+/test-chunk
+/chunk
+/sim-balance
 /node-tsan
 
 # ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----

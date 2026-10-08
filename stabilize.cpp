@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <iterator>
 #include <sstream>
 #include <utility>
 
@@ -11,6 +12,10 @@ namespace {
 using Events = std::vector<std::string>;
 
 std::string address(const Peer &p) { return p.ip + ":" + std::to_string(p.port); }
+
+// The failure detector's key for one ring member (D-047): its address and its
+// identifier, because two members of one process share an address.
+std::string member_key(const Peer &p) { return address(p) + "/" + id_to_hex(p.id); }
 
 // Hand collected events to the log, AFTER the lock has been released (D-030).
 void emit(const NodeState &s, const Events &events) {
@@ -30,11 +35,11 @@ bool is_ok(const std::string &reply)   { return reply == "OK"; }
 // `dead` -- the fallback when every successor-list entry has gone. Falling back
 // to ourselves would mean claiming the whole ring, (n, n], so it is the very
 // last resort.
-Peer nearest_known_locked(const NodeState &s, const Peer &dead) {
+Peer nearest_known_locked(const NodeState &s, const std::function<bool(const Peer &)> &gone) {
     Peer best = s.self;
     Id best_distance = 0;                              // 0 means "nothing found yet"
     auto consider = [&](const Peer &p) {
-        if (same_node(p, s.self) || same_node(p, dead) || p.id == s.self.id) return;
+        if (same_node(p, s.self) || gone(p) || p.id == s.self.id) return;
         const Id distance = p.id - s.self.id;          // clockwise, wraps modulo 2^64
         if (best_distance == 0 || distance < best_distance) { best = p; best_distance = distance; }
     };
@@ -45,7 +50,7 @@ Peer nearest_known_locked(const NodeState &s, const Peer &dead) {
 
 // Remember an address for rejoining (D-040): newest first, no repeats, bounded.
 void remember_locked(NodeState &s, const Peer &p) {
-    if (same_node(p, s.self)) return;
+    if (same_process(p, s.self)) return;               // not an independent way back in
     for (std::size_t i = 0; i < s.contacts.size(); ++i) {
         if (same_node(s.contacts[i], p)) { s.contacts.erase(s.contacts.begin() + i); break; }
     }
@@ -54,29 +59,36 @@ void remember_locked(NodeState &s, const Peer &p) {
 }
 
 // Remove `dead` from every structure: successor list, predecessor, fingers.
-void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events &events) {
-    if (same_node(dead, s.self)) return;               // never evict ourselves
+// With `whole_process`, every member at dead's ADDRESS goes: a refused connection
+// proves nothing is listening there, which is true of all its members at once
+// (D-047). Otherwise only the member itself, the subject of a timeout or a bad reply.
+void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events &events,
+                  bool whole_process) {
+    if (same_process(dead, s.self)) return;            // never evict ourselves, or our siblings
+    auto gone = [&](const Peer &p) { return whole_process ? same_process(p, dead) : same_node(p, dead); };
 
     // The entry after `dead` in our list now owns everything `dead` owned, so it
     // is the exact replacement for any finger that pointed at `dead`.
     Peer replacement;
     bool have_replacement = false;
-    for (std::size_t i = 0; i + 1 < s.succs.size(); ++i) {
-        if (same_node(s.succs[i], dead)) {
-            replacement = s.succs[i + 1];
-            have_replacement = true;
-            break;
+    // With a whole process gone, the replacement is the first entry after it that
+    // is not also one of its members.
+    for (std::size_t i = 0; i < s.succs.size() && !have_replacement; ++i) {
+        if (!gone(s.succs[i])) continue;
+        for (std::size_t j = i + 1; j < s.succs.size(); ++j) {
+            if (!gone(s.succs[j])) { replacement = s.succs[j]; have_replacement = true; break; }
         }
+        break;
     }
 
     bool was_known = false;
     std::vector<Peer> kept;
     for (const Peer &p : s.succs) {
-        if (same_node(p, dead)) was_known = true;
+        if (gone(p)) was_known = true;
         else kept.push_back(p);
     }
     if (kept.empty()) {
-        const Peer fallback = nearest_known_locked(s, dead);
+        const Peer fallback = nearest_known_locked(s, gone);
         kept.push_back(fallback);
         if (same_node(fallback, s.self) && !same_node(s.succs[0], s.self)) {
             // Nobody left that we know of. Claiming the ring would be (n, n]:
@@ -89,20 +101,29 @@ void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events
     }
     s.succs = std::move(kept);
 
-    if (s.has_pred && same_node(s.pred, dead)) {
+    if (s.has_pred && gone(s.pred)) {
         s.has_pred = false;
         was_known = true;
     }
     for (Peer &f : s.fingers) {
-        if (same_node(f, dead)) {
+        if (gone(f)) {
             f = have_replacement ? replacement : s.succs[0];
             was_known = true;
         }
     }
     s.fingers[0] = s.succs[0];
 
-    s.strikes.erase(address(dead));
-    if (was_known) events.push_back("evict " + address(dead) + " (" + why + ")");
+    // Forget the strikes of everything evicted. The log line names the address
+    // first, so tools that read "evict <ip:port> (" keep working; a single member's
+    // eviction also names the member.
+    for (auto it = s.strikes.begin(); it != s.strikes.end();) {
+        const bool match = whole_process ? it->first.compare(0, address(dead).size() + 1, address(dead) + "/") == 0
+                                         : it->first == member_key(dead);
+        it = match ? s.strikes.erase(it) : std::next(it);
+    }
+    if (was_known)
+        events.push_back("evict " + address(dead) + " (" + why + ")" +
+                         (whole_process ? "" : " member " + id_to_hex(dead.id)));
 }
 
 // A failure that is not a refusal: suspicion, not proof (D-013). It counts
@@ -115,19 +136,18 @@ void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events
 // evidence such as how long the failed call actually took.
 void strike_locked(NodeState &s, const Peer &p, const std::string &why, Events &events,
                    const std::string &detail = "") {
-    if (same_node(p, s.self)) return;
+    if (same_process(p, s.self)) return;               // we are running: our siblings are alive
     bool held = s.has_pred && same_node(p, s.pred);
     for (const Peer &q : s.succs) held = held || same_node(p, q);
     for (const Peer &f : s.fingers) held = held || same_node(p, f);
     if (!held) return;                         // nothing to evict it from
 
-    const std::string who = address(p);
-    const int n = ++s.strikes[who];
-    events.push_back("strike " + std::to_string(n) + " against " + who + " (" + why + ")" + detail);
-    if (n >= STRIKES_TO_EVICT) evict_locked(s, p, why + ", second strike", events);
+    const int n = ++s.strikes[member_key(p)];
+    events.push_back("strike " + std::to_string(n) + " against " + address(p) + " (" + why + ")" + detail);
+    if (n >= STRIKES_TO_EVICT) evict_locked(s, p, why + ", second strike", events, false);
 }
 
-void clear_strikes_locked(NodeState &s, const Peer &p) { s.strikes.erase(address(p)); }
+void clear_strikes_locked(NodeState &s, const Peer &p) { s.strikes.erase(member_key(p)); }
 
 // ---------------------------------------------------------------------------
 // The one wrapper every maintenance call goes through (D-013, D-035), so that
@@ -155,7 +175,7 @@ Call call_peer(NodeState &s, const Transport &transport, const Peer &to, const s
     {
         std::lock_guard<std::mutex> lock(s.mu);
         if (good)                          clear_strikes_locked(s, to);
-        else if (d == Delivery::Refused)   evict_locked(s, to, "refused", events);
+        else if (d == Delivery::Refused)   evict_locked(s, to, "refused", events, true);
         else strike_locked(s, to, d == Delivery::Ok ? "bad reply to " + request.substr(0, request.find(' '))
                                                     : delivery_name(d), events,
                            " after " + std::to_string(took_ms) + " ms");
@@ -183,7 +203,9 @@ bool parse_count(const std::string &w, int &out) {
 NodeState::NodeState(const Peer &me, int successors)
     : self(me), r(successors), succs{me}, fingers(ID_BITS, me) {}
 
-bool same_node(const Peer &a, const Peer &b) { return a.ip == b.ip && a.port == b.port; }
+bool same_node(const Peer &a, const Peer &b) { return a.ip == b.ip && a.port == b.port && a.id == b.id; }
+
+bool same_process(const Peer &a, const Peer &b) { return a.ip == b.ip && a.port == b.port; }
 
 // ---------------------------------------------------------------------------
 // Starting states
@@ -375,7 +397,7 @@ Handled handle_request(NodeState &s, const std::string &line, const Transport &t
             if (!s.has_pred || in_range_oo(c.id, s.pred.id, s.self.id)) {
                 s.pred = c;                                  // closer than what we had: Chord's notify
                 s.has_pred = true;
-                s.strikes.erase(address(c));
+                s.strikes.erase(member_key(c));
                 remember_locked(s, c);
                 events.push_back("predecessor is now " + address(c));
             } else if (!same_node(s.pred, c)) {
@@ -422,7 +444,7 @@ Handled handle_request(NodeState &s, const std::string &line, const Transport &t
             for (const Peer &p : s.succs) check(p);
             for (const Peer &p : s.fingers) check(p);
         }
-        if (!known || same_node(target, s.self)) return {"OK", {}};
+        if (!known || same_process(target, s.self)) return {"OK", {}};
 
         // A hint, not a verdict (D-031): probe with our own connection, and act
         // only on a refusal. A timeout from a hint changes nothing, so a client
@@ -432,7 +454,7 @@ Handled handle_request(NodeState &s, const std::string &line, const Transport &t
             Events events;
             {
                 std::lock_guard<std::mutex> lock(s.mu);
-                evict_locked(s, target, "refused, after a client reported it", events);
+                evict_locked(s, target, "refused, after a client reported it", events, true);
             }
             emit(s, events);
         }
@@ -583,7 +605,7 @@ void fix_next_finger(NodeState &s, const Transport &transport) {
             const bool blame = r.error != LookupError::TooManyRequests && r.error != LookupError::Unreachable;
             if (blame && !r.path.empty()) {
                 const std::string why = std::string(lookup_error_name(r.error)) + " during fix_fingers";
-                if (r.error == LookupError::Refused) evict_locked(s, r.path.back(), why, events);
+                if (r.error == LookupError::Refused) evict_locked(s, r.path.back(), why, events, true);
                 else strike_locked(s, r.path.back(), why, events);
             }
             // Then MOVE ON. Retrying the same finger every round would let one

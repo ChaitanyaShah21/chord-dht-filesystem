@@ -200,7 +200,19 @@ LookupResult lookup(const Peer &start, Id k, const Transport &transport) {
 }
 
 Delivery socket_transport(const Peer &to, const std::string &request, std::string &reply) {
-    return exchange_line(to.ip, to.port, request, reply, LOOKUP_TIMEOUT_MS);
+    return exchange_line(to.ip, to.port, addressed(to, request), reply, LOOKUP_TIMEOUT_MS);
+}
+
+std::string addressed(const Peer &to, const std::string &request) {
+    return "TO " + id_to_hex(to.id) + " " + request;
+}
+
+Target split_target(const std::string &line, Id &id, std::string &rest) {
+    if (line.compare(0, 3, "TO ") != 0) { rest = line; return Target::None; }
+    // "TO " + 16 hex + " " + at least one character of request = 21 characters minimum.
+    if (line.size() < 21 || line[19] != ' ' || !id_from_hex(line.substr(3, 16), id)) return Target::Malformed;
+    rest = line.substr(20);
+    return Target::Member;
 }
 
 LookupResult lookup_with_recovery(const Peer &start, Id k, const Transport &transport, int retries) {

@@ -20,16 +20,19 @@ CLIENT  = client
 NODE    = node
 LOOKUP  = lookup
 SIM_HOPS = sim-hops
+CHUNK    = chunk
+SIM_BALANCE = sim-balance
 
-# test-chord, test-net, test-lookup and test-stabilize are TEST binaries, not
-# deliverables: they exercise the routing arithmetic, the framing, the lookup
-# loop and the ring's maintenance in process,
+# test-chord, test-net, test-lookup, test-stabilize and test-chunk are TEST
+# binaries, not deliverables: they exercise the routing arithmetic, the framing,
+# the lookup loop, the ring's maintenance and the chunk plane in process,
 # with rings built by hand. They are deliberately not part of `all`, so a normal
 # build never depends on them; `make check` builds and runs them.
 TEST_CHORD = test-chord
 TEST_NET   = test-net
 TEST_LOOKUP = test-lookup
 TEST_STABILIZE = test-stabilize
+TEST_CHUNK     = test-chunk
 
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
@@ -63,6 +66,21 @@ TEST_LOOKUP_SRC = test_lookup.cpp
 STABILIZE_SRC      = stabilize.cpp
 TEST_STABILIZE_SRC = test_stabilize.cpp
 
+# The chunk plane (Phase 4): the store on disk (store.cpp), replicated writes and
+# verified reads (chunk.cpp), and re-replication (repair.cpp). Like stabilize.cpp,
+# none of them opens a socket -- calls go through an injected transport -- so
+# test_chunk.cpp runs several processes' stores and ring members in one process.
+# chunk_main.cpp is the command-line client.
+STORE_SRC      = store.cpp
+CHUNK_SRC      = chunk.cpp
+REPAIR_SRC     = repair.cpp
+CHUNK_MAIN_SRC = chunk_main.cpp
+TEST_CHUNK_SRC = test_chunk.cpp
+
+# The load-balance simulation (decision D-051): placement computed with the node's
+# own identifier and replica-set code, for rings far larger than fit as processes.
+SIM_BALANCE_SRC = sim_balance.cpp
+
 # The hop-count benchmark's in-process replay (decision D-027): the same routing
 # code and lookup loop as the real ring, with a function call for a transport.
 SIM_HOPS_SRC = sim_hops.cpp
@@ -81,9 +99,15 @@ TEST_LOOKUP_OBJ = $(TEST_LOOKUP_SRC:.cpp=.o)
 SIM_HOPS_OBJ    = $(SIM_HOPS_SRC:.cpp=.o)
 STABILIZE_OBJ      = $(STABILIZE_SRC:.cpp=.o)
 TEST_STABILIZE_OBJ = $(TEST_STABILIZE_SRC:.cpp=.o)
+STORE_OBJ          = $(STORE_SRC:.cpp=.o)
+CHUNK_OBJ          = $(CHUNK_SRC:.cpp=.o)
+REPAIR_OBJ         = $(REPAIR_SRC:.cpp=.o)
+CHUNK_MAIN_OBJ     = $(CHUNK_MAIN_SRC:.cpp=.o)
+TEST_CHUNK_OBJ     = $(TEST_CHUNK_SRC:.cpp=.o)
+SIM_BALANCE_OBJ    = $(SIM_BALANCE_SRC:.cpp=.o)
 
 # Default target
-all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS)
+all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE)
 
 # -----------------------------
 # Build rules
@@ -95,9 +119,14 @@ $(TRACKER): $(TRACKER_OBJ)
 $(CLIENT): $(CLIENT_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
-# The node answers requests through stabilize.o, and joins and repairs fingers
-# with the client's own lookup loop, so it links lookup.o as well.
-$(NODE): $(NODE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+# The node answers requests through stabilize.o and chunk.o, and joins and repairs
+# fingers with the client's own lookup loop, so it links lookup.o as well.
+$(NODE): $(NODE_OBJ) $(REPAIR_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
+# The chunk client: chunk.o's put_chunk/get_chunk, which use the lookup loop and
+# read successor lists with stabilize.o's parser.
+$(CHUNK): $(CHUNK_MAIN_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 # lookup links chord.o (identifiers, interval tests), so it needs -lcrypto too.
@@ -121,12 +150,18 @@ $(TEST_LOOKUP): $(TEST_LOOKUP_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 $(TEST_STABILIZE): $(TEST_STABILIZE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+$(SIM_BALANCE): $(SIM_BALANCE_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
+$(TEST_CHUNK): $(TEST_CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 # Rebuild any object file if sha1.h changes. Without this, editing the header leaves
 # stale .o files behind and the next `make` links yesterday's code.
 $(CLIENT_OBJ): sha1.h
 $(CHORD_OBJ): chord.h sha1.h
 $(TEST_CHORD_OBJ): chord.h
-$(NODE_OBJ): stabilize.h lookup.h chord.h net.h
+$(NODE_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(NET_OBJ): net.h
 $(TEST_NET_OBJ): net.h
 # lookup.h includes both chord.h and net.h, so anything including it depends on all three.
@@ -137,6 +172,13 @@ $(SIM_HOPS_OBJ): lookup.h chord.h net.h
 # stabilize.h includes lookup.h, which includes chord.h and net.h.
 $(STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
 $(TEST_STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
+$(STORE_OBJ): store.h chord.h sha1.h
+# chunk.h includes stabilize.h, store.h, lookup.h, chord.h and net.h.
+$(CHUNK_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(REPAIR_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(CHUNK_MAIN_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(TEST_CHUNK_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(SIM_BALANCE_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h sha1.h
 
 # A ThreadSanitizer build of the node, for looking for data races between the
 # maintenance thread and the request threads (decision D-030). Every translation
@@ -145,9 +187,9 @@ $(TEST_STABILIZE_OBJ): stabilize.h lookup.h chord.h net.h
 # runs with address-space randomisation turned off:
 #   NODE_CMD="setarch $$(uname -m) -R ./node-tsan" scripts/e2e-churn.sh
 NODE_TSAN = node-tsan
-NODE_TSAN_SRC = $(NODE_SRC) $(STABILIZE_SRC) $(LOOKUP_SRC) $(CHORD_SRC) $(NET_SRC)
+NODE_TSAN_SRC = $(NODE_SRC) $(REPAIR_SRC) $(CHUNK_SRC) $(STORE_SRC) $(STABILIZE_SRC) $(LOOKUP_SRC) $(CHORD_SRC) $(NET_SRC)
 
-$(NODE_TSAN): $(NODE_TSAN_SRC) stabilize.h lookup.h chord.h net.h sha1.h
+$(NODE_TSAN): $(NODE_TSAN_SRC) repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h sha1.h
 	$(CXX) -std=c++17 -Wall -pthread -g -O1 -fsanitize=thread -o $@ $(NODE_TSAN_SRC) $(CRYPTO_LDLIBS)
 
 tsan: $(NODE_TSAN)
@@ -158,7 +200,9 @@ tsan: $(NODE_TSAN)
 clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
 	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) $(STABILIZE_OBJ) $(TEST_STABILIZE_OBJ) \
-	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(NODE_TSAN)
+	      $(STORE_OBJ) $(CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_MAIN_OBJ) $(TEST_CHUNK_OBJ) $(SIM_BALANCE_OBJ) \
+	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) \
+	      $(TEST_STABILIZE) $(TEST_CHUNK) $(NODE_TSAN)
 
 # -----------------------------
 # Convenience rules
@@ -171,10 +215,11 @@ run-client:
 
 # Build and run the in-process arithmetic tests. Exits non-zero on failure, so
 # it can be used as a gate.
-check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE)
+check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(TEST_CHUNK)
 	./$(TEST_CHORD)
 	./$(TEST_NET)
 	./$(TEST_LOOKUP)
 	./$(TEST_STABILIZE)
+	./$(TEST_CHUNK)
 
 .PHONY: all clean run-tracker run-client check tsan
