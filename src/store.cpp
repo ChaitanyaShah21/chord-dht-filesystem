@@ -84,7 +84,13 @@ const char *put_result_name(PutResult r) {
         case PutResult::Stored:       return "stored";
         case PutResult::AlreadyHeld:  return "already held";
         case PutResult::BadKey:       return "key must be 40 lowercase hexadecimal characters";
-        case PutResult::TooLarge:     return "chunk larger than 524288 bytes";
+        case PutResult::TooLarge: {
+            // Built from MAX_CHUNK so the chunk-size sweep build reports its own limit.
+            // A function-local static is initialised once, thread-safely (C++11).
+            static const std::string too_large =
+                "chunk larger than " + std::to_string(MAX_CHUNK) + " bytes";
+            return too_large.c_str();
+        }
         case PutResult::HashMismatch: return "bytes do not hash to the key";
         case PutResult::IoError:      return "disk error";
     }
