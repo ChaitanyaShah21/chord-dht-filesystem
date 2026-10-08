@@ -84,7 +84,7 @@ class Ring:
             ip, port = m.split(":")
             log = open(os.path.join(self.logdir, f"{ip}-{port}.log"), "w")
             self.procs[m] = subprocess.Popen(
-                [os.path.join(ROOT, "node"), ip, port, "--wired", self.file, "--period", str(self.period),
+                [os.path.join(ROOT, "node"), ip, port, "--wired", self.file, "--vnodes", "1", "--period", str(self.period),
                  "--timeout", str(self.timeout), "--succ", str(self.succ)],
                 stdout=subprocess.DEVNULL, stderr=log)
             log.close()

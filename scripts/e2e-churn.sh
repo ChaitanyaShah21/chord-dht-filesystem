@@ -172,7 +172,7 @@ try:
     # ---- 6. joining through a dead address ----
     lone = addr(40)
     t0 = time.monotonic()
-    p = subprocess.run(node_cmd + ["127.0.0.1", str(base + 40), "--join", addr(41), "--period", "20"],
+    p = subprocess.run(node_cmd + ["127.0.0.1", str(base + 40), "--join", addr(41), "--period", "20", "--vnodes", "1"],
                        capture_output=True, text=True, timeout=60)
     check(p.returncode == 1 and "giving up" in p.stderr,
           f"a join through a dead address gives up after its attempts and exits 1 ({time.monotonic() - t0:.1f} s)")

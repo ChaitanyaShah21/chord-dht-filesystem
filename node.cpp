@@ -9,7 +9,7 @@
 //   --period <ms>    time between maintenance rounds              (default DEFAULT_PERIOD_MS)
 //   --timeout <ms>   deadline on every call to another node       (default DEFAULT_TIMEOUT_MS)
 //   --succ <r>       successor-list length, 1..16                 (default 8)
-//   --vnodes <v>     ring members in this process, 1..64          (default DEFAULT_VNODES)
+//   --vnodes <v>     ring members in this process, 1..64          (default DEFAULT_VNODES = 8)
 //   --store <dir>    keep chunks in <dir>; without it, chunk requests are refused
 //   --scan <rounds>  rounds between full repair scans, 0 = never  (default DEFAULT_SCAN_ROUNDS)
 //
@@ -53,9 +53,10 @@ namespace {
 constexpr int DEFAULT_PERIOD_MS  = 1000;
 constexpr int DEFAULT_TIMEOUT_MS = 200;
 
-// Members per process (D-051): provisional until the load-balance benchmark
-// applies its rule.
-constexpr int DEFAULT_VNODES     = 1;
+// Members per process, chosen by D-051's rule at commit 7d99fc0 (BENCHMARKS.md §5):
+// the smallest power of two for which the copies stored per process vary by at most
+// 0.25 of the mean (coefficient of variation), at 16 and at 64 processes.
+constexpr int DEFAULT_VNODES     = 8;
 constexpr int MAX_VNODES         = 64;
 
 // Rounds between full repair scans (D-050): once a minute at the default period.
@@ -251,6 +252,7 @@ int main(int argc, char **argv) {
     int vnodes = DEFAULT_VNODES, scan_rounds = DEFAULT_SCAN_ROUNDS;
     if (argc == 4 && argv[3][0] != '-') {
         file = argv[3];                                   // Phase 2's form, unchanged
+        vnodes = 1;                                       // the fixed ring is one member per process
     } else {
         bool chosen = false;
         for (int i = 3; i < argc; ++i) {

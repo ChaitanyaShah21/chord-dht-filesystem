@@ -172,7 +172,8 @@ class Cluster:
 
     def __init__(self, node_bin, logdir, period_ms, timeout_ms, succ=8):
         self.node_bin, self.logdir = node_bin, logdir
-        self.opts = ["--period", str(period_ms), "--timeout", str(timeout_ms), "--succ", str(succ)]
+        # One member per process: this oracle computes one identifier per address.
+        self.opts = ["--period", str(period_ms), "--timeout", str(timeout_ms), "--succ", str(succ), "--vnodes", "1"]
         self.procs = {}
         os.makedirs(logdir, exist_ok=True)
 
