@@ -238,6 +238,7 @@ decided before the paper is one that cannot be defended in December.
 | **F52** | **How long may a peer take to send what it announced?** A deadline per request line and per body, enforced before every receive; a per-system-call timeout; an event loop with timers; or nothing. | A peer that announces a chunk and never sends it holds a memory slot and a thread; with the chunk path user-facing, any client can do it. | **RESOLVED** — D-061 |
 | **F53** | **How is deduplication measured, and on what?** Counted at the stores, on stated synthetic edits plus one real corpus; reported by the client; a real corpus only; or not measured. | D-014 claims deduplication for free; the number decides whether that claim survives, and the workload decides whether the number means anything. | **RESOLVED** — D-062 |
 | **F54** | **How is the chunk-size sweep run above the 512 KiB framing limit?** A second build with a raised limit, used for every point; a run-time limit on every program; a sweep only up to 512 KiB; or a raised default. | D-016 promised five sizes up to 8 MiB, and the framing and stores refuse anything above 512 KiB (D-044). | **RESOLVED** — D-063 |
+| **F55** | **How does someone else start a ring, given that Docker is not installed on the development machine?** A tested local launcher plus container files marked not yet run; container files only; nothing until Docker is installed; or installing Docker now. | Decides what "how would someone run this?" can honestly be answered with, and what is claimed about containers. | **RESOLVED** — D-064 |
 
 ---
 
@@ -3529,5 +3530,36 @@ process under load.
 **Cost accepted.** At 2 and 8 MiB each body slot holds 16 times the memory; the harness runs the sweep on a 16-process
 ring with the default worker count, which stays well under this machine's memory (`ESTIMATE`: at most workers × 3 bodies
 in flight). Two builds to keep straight: the harness records the limit and both fingerprints with every row.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-064 — A tested one-command local cluster now; container files written and marked not yet run
+
+**Fork:** F55. **Date:** 8 Oct 2026. **Depends on:** D-018, D-019. **Gates:** the Quick start.
+
+**The decision.**
+1. **`scripts/cluster.sh up | down | status`** starts a tracker and N nodes on this host — the first `--create`,
+   the rest `--join` it — each with its own store under one directory, and stops exactly the processes it started
+   (by the PIDs it recorded, never a machine-wide `pkill`, error log E6). The smoke suite drives it, so it is tested
+   on every run.
+2. **A `Dockerfile` and a `compose.yaml`** are written: a two-stage build from source on `ubuntu:24.04` (the image is
+   built for whatever architecture builds it, arm64 or amd64), and a compose file with a tracker and five nodes on a
+   network with a fixed subnet. The addresses are fixed because a node's dotted-quad address is also its ring
+   identity (D-019) and `--join` takes an address, not a host name. **Docker is not installed on the development
+   machine, so these files have never been run**; the README says so next to them, and no claim is made until they
+   have been.
+
+**Rejected: the container files only.** Nothing in them can be verified here, and they would be the only way offered to
+start a ring.
+
+**Rejected: wait until Docker is installed.** The one-command local cluster is useful now and testable now.
+
+**Rejected: install Docker inside WSL now** (the `docker.io` package). A change to the development machine's setup that
+belongs to its owner; Docker Desktop with WSL integration is the planned route.
+
+**Cost accepted.** The container files are unverified until someone runs them, and a fixed subnet can collide with an
+existing Docker network on the host that runs it.
 
 **Evidence:** none yet — design time.

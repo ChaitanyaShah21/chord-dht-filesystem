@@ -1053,6 +1053,15 @@ changes nothing. **Rejected:** a run-time limit on every program (one value thre
 disagree on what a valid message is), stopping the sweep at 512 KiB (no large-chunk side), and raising the default (the
 per-process memory cap was sized for 512 KiB). **Cost:** two builds to keep straight; both fingerprints are recorded.
 
+### One command starts a local cluster; the container files are not yet run
+
+`scripts/cluster.sh up` starts a tracker and a ring of nodes on one machine, each with its own store, and `down` stops
+exactly the processes it started; the smoke suite drives it, so it is tested on every run. A `Dockerfile` and
+`compose.yaml` (a tracker and five nodes on a fixed-address network, because a node's address is its ring identity) are
+written but **have not been run** — the development machine has no Docker. **Rejected:** shipping only container files
+(nothing verifiable), waiting for Docker (the local launcher is useful and testable now), and installing Docker as a
+side effect of this work. **Cost:** the container files stay unverified until they are run.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
