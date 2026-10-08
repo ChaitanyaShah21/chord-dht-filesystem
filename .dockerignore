@@ -2,6 +2,8 @@
 *.o
 testdata
 bench
+build
+tests
 cluster
 docs
 tracker

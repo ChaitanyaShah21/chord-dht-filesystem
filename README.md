@@ -1233,71 +1233,37 @@ worth keeping visible.
 
 ```
 chord-dht-filesystem/
-├── chord.h, chord.cpp     # Routing primitives as pure functions: identifiers, arcs, fingers, route_step
-├── net.h, net.cpp         # Line framing, and one request/reply exchange that tells refused from timed out
-├── node.cpp               # A ring process: one or more members (virtual nodes), a chunk store, sockets,
-│                          #   the maintenance and repair threads
-├── store.h, store.cpp     # The chunk store: one file per chunk, written to a temporary name, flushed, renamed
-├── chunk.h, chunk.cpp     # The chunk plane: PUT/STORE/GET/HAVE, the write coordinator, replica sets on
-│                          #   distinct processes, and the client's verified, falling-through reads and writes
-├── repair.h, repair.cpp   # Re-replication: owner-driven arc checks, the scrub, and the hand-off
-├── chunk_main.cpp         # `chunk`: put and get chunks through a ring, or run many from stdin
-├── sim_balance.cpp        # `sim-balance`: chunk placement with the node's own code, for load-balance curves
-├── stabilize.h, stabilize.cpp # A node's routing state and everything that changes it: joins, stabilise, notify,
-│                          #   finger repair, failure detection -- with the network passed in
-├── lookup.h, lookup.cpp   # The originator's loop: follows NEXT to OWNER, checks every reply for progress
-├── lookup_main.cpp        # `lookup`: runs one lookup per identifier on stdin, prints owner, hops and path
-├── sim_hops.cpp           # `sim-hops`: the same routing code and loop with the ring in one process
-├── transfer.h, transfer.cpp # Whole files: chunking, manifests and their tree, the worker pool, the part file
-├── client.cpp             # `client`: put, get, ls, info -- files through the ring, names through the tracker
-├── names.h, names.cpp     # The namespace: name -> manifest key, written once, with a self-checking log
-├── tracker.cpp            # `tracker`: the namespace on a socket, one thread per connection
-├── sha1.h                 # Header-only wrapper over OpenSSL SHA1(), hex-encoded
-├── test_chord.cpp         # Unit tests: hand-built rings, independent oracles, routing simulation
-├── test_net.cpp           # Unit tests: framing edge cases, and refused/timeout/closed over real sockets
-├── test_lookup.cpp        # Unit tests: the lookup loop against correct, lying and broken rings
-├── test_stabilize.cpp     # Unit tests: a whole ring in one process, with joins, deaths and freezes timed by hand
-├── test_chunk.cpp         # Unit tests: the store, body framing, virtual nodes, replica sets, writes, reads,
-│                          #   repair -- several processes' stores and members in one process
-├── test_transfer.cpp      # Unit tests: manifests (and hostile ones), trees, the pool, whole transfers against a
-│                          #   ring in memory that loses, delays and lies
-├── test_names.cpp         # Unit tests: the namespace, its log, torn and damaged records, a disk that refuses writes
+├── src/                    # Everything that runs. Logic modules never open a socket (the network is passed in),
+│   │                       #   so tests/ drives them in process
+│   ├── chord.{h,cpp}       # Routing primitives as pure functions: identifiers, arcs, fingers, route_step
+│   ├── net.{h,cpp}         # The one framing layer: lines, length-prefixed bodies, connect and read deadlines
+│   ├── lookup.{h,cpp}      # The originator's loop: follows NEXT to OWNER, checks every reply for progress
+│   ├── stabilize.{h,cpp}   # A ring member's routing state: joins, stabilise, notify, finger repair, failure handling
+│   ├── store.{h,cpp}       # The chunk store: one file per chunk, written to a temporary name, flushed, renamed
+│   ├── chunk.{h,cpp}       # PUT/STORE/GET/HAVE, the write coordinator, replica sets on distinct processes,
+│   │                       #   verified reads that fall through to the next replica
+│   ├── repair.{h,cpp}      # Re-replication: owner-driven arc checks, the scrub, the hand-off
+│   ├── transfer.{h,cpp}    # Whole files: chunking, manifests and their tree, the worker pool, the part file
+│   ├── names.{h,cpp}       # The namespace: name -> manifest key, written once, with a self-checking log
+│   ├── sha1.h              # Header-only wrapper over OpenSSL SHA1(), hex-encoded
+│   ├── node.cpp            # `node`: a ring process -- members (virtual nodes), a chunk store, maintenance and repair
+│   ├── tracker.cpp         # `tracker`: the namespace on a socket
+│   ├── client.cpp          # `client`: put, get, ls, info, resolve -- files through the ring, names through the tracker
+│   ├── chunk_main.cpp      # `chunk`: put and get single chunks through a ring
+│   ├── lookup_main.cpp     # `lookup`: one lookup per identifier on stdin; prints owner, hops and path
+│   ├── sim_hops.cpp        # `sim-hops`: the same routing code and loop with the whole ring in one process
+│   └── sim_balance.cpp     # `sim-balance`: chunk placement with the node's own code, for load-balance curves
+├── tests/                  # Seven unit-test programs (`make check`): hand-built rings, constructed hostile input,
+│                           #   independent oracles
+├── scripts/                # End-to-end suites (e2e-*.sh) on real processes, the local cluster launcher
+│                           #   (cluster.sh), benchmark harnesses (bench-*.py), plotters (plot-*.py) and oracles
+├── docs/                   # The failure log; figures/ holds the benchmark plots and their summary data
+├── Makefile                # Hand-written. Objects go to build/, programs to the repository root
 ├── Dockerfile, compose.yaml # A tracker and five nodes in containers -- written, not yet run
 ├── .github/workflows/ci.yml # Build, unit tests and the fast end-to-end suites on x86-64 and arm64 -- not yet run
-├── Makefile               # Hand-written; `make` builds the binaries, `make check` runs the unit tests
-├── scripts/
-│   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
-│   ├── e2e-chord.sh       # The C++ originator on a real ring: paths vs a model, killed and frozen nodes
-│   ├── e2e-churn.sh       # Joins, kills, freezes and restarts on real processes, judged by an oracle
-│   ├── ringcheck.py       # The oracle and probes shared by the churn suite and its benchmark
-│   ├── bench-hops.py      # Hop count vs ring size: real processes and in-process replay, with oracles
-│   ├── plot-hops.py       # Draws docs/figures/hops-vs-n.png from the benchmark summary
-│   ├── bench-reconverge.py # Time for the ring to repair itself after kills, judged by the oracle
-│   ├── run-reconverge.py  # Runs that benchmark end to end, choosing the period and deadline by stated rules
-│   ├── plot-reconverge.py # Summarises that benchmark into docs/figures/reconverge.{csv,png}
-│   ├── e2e-chunk.sh       # Chunks on real processes: placement, sizes, hostile requests, corruption, kills, repair
-│   ├── chunkcheck.py      # The placement oracle and a raw chunk client, independent of the C++ code
-│   ├── bench-chunks.py    # Load balance vs virtual nodes, the W sweep, coordinator crashes, re-replication
-│   ├── plot-chunks.py     # Summarises those into docs/figures/chunks*.{csv,png}
-│   ├── cluster.sh         # A tracker and a ring of nodes on this machine: up, status, down, wipe
-│   ├── e2e-transfer.sh    # Files through a real ring: kills mid-download, corruption, lost chunks, signals
-│   ├── e2e-deadline.sh    # A peer sending slowly or not at all is cut off, and frees what it held
-│   ├── e2e-smoke.sh       # Happy path: a cluster from cluster.sh, one file round-tripped, SHA-1 compared
-│   ├── e2e-edge.sh        # Chunk-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-chunk
-│   ├── e2e-persistence.sh # Registers names, kills and restarts the tracker, damages its log, asks again
-│   ├── e2e-framing.sh     # One request, one reply, one line -- on a raw socket
-│   ├── e2e-hangup.sh      # A client that vanishes must not take the tracker with it
-│   ├── bench-transfer.py  # Throughput against workers, ring size and chunk size; latency; dedup; the tracker
-│   ├── plot-transfer.py   # Summarises those into docs/figures/transfer*.{csv,png}
-│   ├── bench-baseline.sh  # The single-peer baseline of the coursework system (runs at its own commit)
-│   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
-├── docs/
-│   ├── failures.md        # Every defect: how it was found, root cause, why the fix works
-│   └── figures/           # Benchmark plots and the summary data each is drawn from
-├── ARCHITECTURE.md        # Design and decision log: every decision, every rejected alternative
-├── BENCHMARKS.md          # Every number, its method, its commit fingerprint
-├── SCALE_NOTES.md         # Where the design breaks at 10x, captured while building
-└── testdata/              # Gitignored; regenerate with scripts/make-testdata.sh
+├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-068)
+├── BENCHMARKS.md           # Every number, its method and its commit
+└── SCALE_NOTES.md          # Where the design breaks at 10x, recorded while building
 ```
 
 ---

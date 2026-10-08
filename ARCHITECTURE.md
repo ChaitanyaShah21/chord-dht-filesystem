@@ -228,6 +228,7 @@ none was decided by habit.
 | **F56** | **What does continuous integration run?** The build, the unit tests and the fast end-to-end suites on every push, with the timing-sensitive suites on demand; unit tests only; everything on every push; or none. | Decides what a green check means, and whether a flaky check teaches everyone to ignore it. | **RESOLVED** — D-065 |
 | **F57** | **How is the transfer path measured against the Phase 0 baseline?** Against a same-day re-run of the baseline at its own commit, with the clean single-variable comparison (one worker against many) beside it; or against the number recorded in September alone. And what are the curves? | The before/after is the phase's headline; moving several variables at once, or comparing across machine changes, would make it unattributable. | **RESOLVED** — D-066 |
 | **F58** | **An orphaned ring member is named as successor by its own sibling, which never evicts it, so it can never rejoin. What breaks the cycle?** An `ERR orphaned` reply evicts that member at once, siblings included; the orphan copies its predecessor's list in place; wired nodes wait for every peer before their first round; or fall back to a sibling instead of orphaning. Found by the Phase 5 benchmark, not foreseen. | A ring started all at once, or a process that loses every other process it knew, can stay wrong for good — every lookup through that sibling ends at a member that refuses to route. | **RESOLVED** — D-067 |
+| **F59** | **Where do sources, tests, objects and programs live?** Sources in `src/` and unit tests in `tests/`, or the flat layout kept; and where the build puts objects and programs. | Decides whether the repository reads at a glance, and whether every script, the container files and the documentation keep their paths. | **RESOLVED** — D-068 |
 
 ---
 
@@ -3686,3 +3687,35 @@ That is the same trust the ring already gives a refused connection, and a member
 
 **Evidence (8 Oct):** `test-chunk` — the scenario under 20 round orders: 0 of 20 heal without this rule, 20 of 20 with
 it. On real processes, every suite and every fresh ring of the Phase 5 benchmark (`BENCHMARKS.md` §5) came up correct.
+
+---
+
+### D-068 — Sources in `src/`, unit tests in `tests/`, objects in `build/`, programs at the root
+
+**Fork:** F59. **Date:** 8 Oct 2026. **Gates:** the repository layout and the `Makefile`. No behaviour changes.
+
+**The decision.**
+- The 26 source and header files move to `src/` and the seven unit-test files to `tests/`, with `git mv`, so
+  `git log --follow` keeps each file's history. Benchmark fingerprints are commits, so every one stays valid.
+- Object files and the compiler's dependency files go to `build/`. **The programs stay at the repository root**
+  (`./node`, `./client`, `./tracker`, …), where every script, the CI workflow, the container files and the
+  documentation already run them.
+- The `Makefile` now generates header dependencies with `-MMD -MP` instead of hand-written lists, and every object
+  depends on `build/flags`, a file holding the compiler flags, rewritten only when they change — so a build with
+  `CHUNK_LIMIT` (D-063) after a default build recompiles everything rather than linking objects built with the other
+  limit. The `run-tracker` and `run-client` targets, which still used the retired coursework command lines (D-060),
+  are removed; `scripts/cluster.sh` is how a cluster is started.
+
+**Rejected: leave the tree flat.** No moves, no path changes — and 33 source files mixed with documents, scripts and
+build output at the top level, which is the first thing a reader of the repository sees.
+
+**Rejected: programs in `build/` or `bin/` too.** The cleanest root, at the price of changing every script's
+`$ROOT/node`, the CI workflow, the Dockerfile and every command line in the documentation, for no change in what
+anything does.
+
+**Cost accepted.** Old links to root-level source files (for example from issue trackers or earlier documents) now
+point one directory up from where the file is. The programs are still written to the root, so it holds build output
+(ignored by git).
+
+**Evidence:** `make clean && make`, `make check` and all eleven end-to-end suites pass unchanged after the move; touching
+`src/store.h` rebuilds exactly the nine objects that include it.

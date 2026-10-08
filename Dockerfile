@@ -13,7 +13,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends g++ make libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY Makefile *.h *.cpp ./
+COPY Makefile ./
+COPY src ./src
 RUN make tracker node client
 
 FROM ubuntu:24.04
