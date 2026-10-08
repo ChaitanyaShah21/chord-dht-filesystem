@@ -221,6 +221,7 @@ decided before the paper is one that cannot be defended in December.
 | **F37** | **How and where is a chunk kept on disk?** One file per chunk with a temporary name and an atomic rename; an append-only log; or memory only — and whether a write is flushed before it counts. | Decides what a crash mid-write leaves behind, what an acknowledged write promises, and whether a peer's key can name a path. | **RESOLVED** — D-045 |
 | **F38** | **Who replicates a write, and where does W live?** The owner sending in parallel; the client writing every replica; or a chain — and W per node or per request. | Decides write latency (the slower of two parallel sends or the sum of a chain), who uploads the chunk how many times, and whether W values can be compared on one ring. | **RESOLVED** — D-046 |
 | **F39** | **How do virtual nodes share a process?** One listening port per member; one port with requests addressed by identifier; one shared routing table per process; or full membership. | Decides whether the wire can say which members share a process (replica placement needs it), what a refused connection proves, and the background traffic per process. | **RESOLVED** — D-047 |
+| **F40** | **Which members hold a chunk's replicas when one process has several members?** The next members regardless of process; the first distinct processes clockwise; a separate replica list; or a longer successor list. | With virtual nodes, adjacent members often share a process, so the naive rule puts two copies where one crash destroys both. | **RESOLVED** — D-048 |
 
 ---
 
@@ -2817,3 +2818,41 @@ routes in one hop). It is the O(N) membership per node that D-020 and the scale 
 
 **Evidence:** none yet — design time. In-process tests of a ring with several members per process, the
 existing Phase 3 suites unchanged with one member per process, and a real-process ring with `--vnodes`.
+
+---
+
+### D-048 — A chunk's replicas are the first three distinct processes clockwise from its key
+
+**Fork:** F40. **Date:** 8 Oct 2026. **Depends on:** D-015, D-047. **Gates:** what `RF = 3` means.
+
+**The decision.** The replica set of a key `k` is built by walking the ring clockwise from the owner of `k`
+(the first member at or after `k`) and taking each member whose **process** has not been taken yet, until
+three processes are found. The owner computes it from its own successor list (D-032, eight entries): itself,
+then each entry whose address differs from every process already chosen. If the list holds fewer than three
+distinct processes, the set is smaller — degraded, and logged — but never contains one process twice.
+
+**Why distinct processes.** With virtual nodes, two adjacent members often belong to one process: with `V`
+members per process and `P` processes, a given member's successor belongs to the same process with
+probability about `1/P`. Taking "the next two members" would then put two copies in one process, and one
+crash would destroy two of the three. `RF = 3` is a claim about failures survived, so it has to count failure
+domains — here processes, the only failure the system can tell apart. On a real deployment the same rule
+would count machines or racks, which is the reason the comparison is by address rather than by identifier.
+
+**Rejected: the next `RF − 1` members, whatever process.** The Chord paper's successor-list replication,
+correct without virtual nodes and silently wrong with them.
+
+**Rejected: a separate replica list maintained by stabilise,** with same-process members filtered out of the
+successor list itself. Then the successor list would no longer list the next members of the ring, which is
+what routing correctness and repair after a death depend on (D-035).
+
+**Rejected: a longer successor list when virtual nodes are on.** Makes a shortfall rarer at small `P`, at the
+cost of a longer `NEIGHBOURS` reply every round. The shortfall is measured first (D-051's simulation counts
+how often eight members hold fewer than three processes) and the list stays at eight unless it shows up.
+
+**Cost accepted.** On a ring of fewer than three processes, `RF = 3` cannot be met and is not pretended: the
+set is as large as the ring allows and the write's `W` decides whether that is acceptable. The rule needs
+every node to agree on the ring locally, which they do only after stabilisation — during repair, two nodes can
+compute different sets for one key, and repair (D-050) settles it.
+
+**Evidence:** none yet — design time. An in-process test builds rings where the next members belong to the
+owner's own process, and checks every replica set holds distinct processes.

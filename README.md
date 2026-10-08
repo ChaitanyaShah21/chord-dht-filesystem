@@ -846,6 +846,17 @@ member (no message changes, but nothing would say which members share a process)
 process (fewer hops, but it changes the routing rule underneath the hop-count results), and full membership as
 in Dynamo (the O(N) per-node state this design avoids). **Cost:** `V` times the maintenance traffic per process.
 
+### Replicas go on three different processes, not three different identifiers
+
+With virtual nodes, a member's successor often belongs to the same process. The Chord paper replicates on
+the next members of the ring, which would then put two of a chunk's three copies in one process, and a single
+crash would destroy both. The replica set here is built by walking clockwise from the key's owner and taking
+each member whose **process** is not already in the set, until there are three. Processes are compared by
+address, which is what makes the rule transfer to a real deployment, where it would count machines.
+**Rejected:** the next two members regardless of process (correct without virtual nodes, silently wrong with
+them), and filtering the successor list itself (the list must name the actual next members for routing and
+repair). **Cost:** a ring of fewer than three processes cannot hold three copies, and says so.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
