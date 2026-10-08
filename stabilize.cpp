@@ -1,6 +1,7 @@
 #include "stabilize.h"
 #include "net.h"
 
+#include <chrono>
 #include <cstddef>
 #include <sstream>
 #include <utility>
@@ -109,7 +110,11 @@ void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events
 // the second in a row evicts. Fingers matter as much as neighbours here: a
 // finger lookup routes through the node's own fingers, so a frozen finger
 // target would otherwise make its own repair time out for ever.
-void strike_locked(NodeState &s, const Peer &p, const std::string &why, Events &events) {
+//
+// `detail` is appended to the strike's log line only (not to the eviction's), for
+// evidence such as how long the failed call actually took.
+void strike_locked(NodeState &s, const Peer &p, const std::string &why, Events &events,
+                   const std::string &detail = "") {
     if (same_node(p, s.self)) return;
     bool held = s.has_pred && same_node(p, s.pred);
     for (const Peer &q : s.succs) held = held || same_node(p, q);
@@ -118,7 +123,7 @@ void strike_locked(NodeState &s, const Peer &p, const std::string &why, Events &
 
     const std::string who = address(p);
     const int n = ++s.strikes[who];
-    events.push_back("strike " + std::to_string(n) + " against " + who + " (" + why + ")");
+    events.push_back("strike " + std::to_string(n) + " against " + who + " (" + why + ")" + detail);
     if (n >= STRIKES_TO_EVICT) evict_locked(s, p, why + ", second strike", events);
 }
 
@@ -136,7 +141,14 @@ enum class Call { Good, Refused, Failed };
 // Good clears strikes, a refusal evicts, anything else is a strike.
 Call call_peer(NodeState &s, const Transport &transport, const Peer &to, const std::string &request,
                std::string &reply, const std::function<bool(const std::string &)> &valid) {
+    // How long the call took, by the monotonic clock. A timeout that took far longer
+    // than the deadline means this process was not running when the timer fired, which
+    // is evidence about this process rather than about the peer; it is logged so that
+    // a false eviction can be explained afterwards.
+    const auto t0 = std::chrono::steady_clock::now();
     const Delivery d = transport(to, request, reply);        // no lock held: this may take a while
+    const long long took_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
     const bool good = d == Delivery::Ok && reply.compare(0, 3, "ERR") != 0 && valid(reply);
 
     Events events;
@@ -145,7 +157,8 @@ Call call_peer(NodeState &s, const Transport &transport, const Peer &to, const s
         if (good)                          clear_strikes_locked(s, to);
         else if (d == Delivery::Refused)   evict_locked(s, to, "refused", events);
         else strike_locked(s, to, d == Delivery::Ok ? "bad reply to " + request.substr(0, request.find(' '))
-                                                    : delivery_name(d), events);
+                                                    : delivery_name(d), events,
+                           " after " + std::to_string(took_ms) + " ms");
     }
     emit(s, events);
     if (good) return Call::Good;
