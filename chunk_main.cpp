@@ -15,6 +15,7 @@
 //   put <w> <file>                  -> put <key> ok <copies> <microseconds> <coordinator> attempts <a>
 //   putrand <w> <bytes> <seed>      -> the same, for <bytes> pseudo-random bytes made from <seed>
 //   get <key>                       -> get <key> ok <microseconds> <served-by> tried <n>
+//   keyrand <bytes> <seed>          -> keyrand <key> ok -   (the key putrand would write; nothing is sent)
 //   any failure                     -> <verb> <key or -> fail <microseconds> : <message>
 //
 // The microseconds are the whole operation as the client sees it: the lookup, the
@@ -154,6 +155,11 @@ int main(int argc, char **argv) {
                 if (in >> w >> bytes >> seed && w >= 1 && w <= 3 && bytes <= MAX_CHUNK)
                     out = put_line(generated(bytes, seed), w, start[0]);
                 else out = "putrand - fail 0 : bad command";
+            } else if (verb == "keyrand") {
+                std::size_t bytes;
+                unsigned long long seed;
+                if (in >> bytes >> seed && bytes <= MAX_CHUNK) out = "keyrand " + chunk_key(generated(bytes, seed)) + " ok -";
+                else out = "keyrand - fail 0 : bad command";
             } else if (verb == "get") {
                 std::string key;
                 if (in >> key) out = get_line(key, start[0]);
