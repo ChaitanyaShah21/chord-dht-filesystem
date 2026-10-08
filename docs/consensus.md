@@ -192,3 +192,13 @@ next; after a round with no answer wait 100 ms and go again, for up to 10 s (`--
 | **Discovery from one address** | a member list the client must trust from whoever answered |
 | **Followers forward to the leader** | a follower holding a connection for someone else's request |
 | **DNS** | a resolver, and the same retry logic anyway |
+
+### Flushes — [D-082](../ARCHITECTURE.md#d-082--one-flush-per-proposal-on-the-leader-measured-before-any-batching-is-built)
+
+The leader flushes each proposal; a follower flushes once per `APPEND`, which batches whatever is pending. Measured
+first — on disk and on `tmpfs`, where a flush costs nothing — and batching decided from the numbers.
+
+| Alternative | Why not, yet |
+|---|---|
+| **Group commit on the leader** | the known fix; built only if the numbers say the leader's flush is the limit |
+| **Leader flushes in parallel with replicating** | the most intricate option |

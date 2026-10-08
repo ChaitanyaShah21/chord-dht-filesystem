@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-081: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-082: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-081 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-082 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 73 recorded here (F1–F72 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 74 recorded here (F1–F73 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -310,6 +310,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F70** | **How does the group's membership change?** Fixed, with a fingerprint; joint consensus; or single-server changes. | Decides whether a replica can be replaced live, and what a configuration mistake breaks. | **RESOLVED** — D-079 |
 | **F71** | **What happens to the single tracker?** Kept as a mode beside the group; a one-replica group; or its log kept under Raft. | Decides whether the existing suites test the replicated code, and how many persistence formats exist. | **RESOLVED** — D-080 |
 | **F72** | **How does a client find the leader?** Every address on its command line with redirects; discovery from one address; followers forwarding; or DNS. | Decides what a client must be told, and what it does during an election. | **RESOLVED** — D-081 |
+| **F73** | **Flush per proposal, or batch?** Measure the direct path first; group commit on the leader; or the leader flushing in parallel with replicating. | Decides write throughput, and whether the optimisation is chosen from a number. | **RESOLVED** — D-082: measure first |
 
 ---
 
@@ -4271,3 +4272,31 @@ open on someone else's behalf, the pattern iterative routing was chosen to avoid
 leader between runs: the first request of every run starts at the first address.
 
 **Evidence:** pending — `test-raft` (the group client), `e2e-raft.sh`.
+
+---
+
+### D-082 — One flush per proposal on the leader, measured before any batching is built
+
+**Fork:** F73. **Date:** 8 Oct 2026. **Depends on:** D-058, D-072, D-074. **Gates:** write throughput.
+
+**The decision.** Build the direct path first: the leader appends and flushes each proposal under the lock (D-072);
+a follower flushes once per `APPEND`, which carries every entry pending for it, so followers batch by themselves.
+**Then measure** — write latency and throughput at one client and at many, for one, three and five replicas, with
+the logs on disk and on `tmpfs`, where a flush costs nothing — and decide on batching from the numbers.
+
+**Why measure first.** The single tracker's ceiling was its flush, about 200–250 registrations a second (D-058). A
+group adds a round trip and a follower's flush to each write, but a follower's flush covers a whole batch, so where
+the ceiling moves to is not obvious. The `tmpfs` comparison isolates exactly what the flushes cost with no change to
+the code.
+
+**Rejected, for now: group commit on the leader** (proposals collect in memory; one flush covers all of them; each
+counts once flushed). The known fix, and more state between proposing and counting.
+
+**Rejected, for now: flushing in parallel with replicating** (thesis §10.2.1: the leader may send entries before its
+own flush, counting itself only once flushed). Removes the leader's flush from the critical path; the most intricate
+of the three.
+
+**Cost accepted.** Until measured, throughput under concurrent clients is bounded by one flush per registration on
+the leader.
+
+**Evidence:** pending — `BENCHMARKS.md` §7.
