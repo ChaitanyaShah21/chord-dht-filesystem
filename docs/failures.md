@@ -4,7 +4,8 @@
 written while the detail was fresh: what was wrong, how it was found, and why the fix works.
 Most of these defects were in the coursework system this repository began as; that code was
 retired in Phase 5 (decision D-060 in `ARCHITECTURE.md`), and the regression suites written for
-these defects now run against the programs that replaced it.
+these defects now run against the programs that replaced it. The story of the rebuild as a whole is in
+[`postmortem-resurrection.md`](postmortem-resurrection.md).
 
 **The rule that keeps it honest:** nothing goes in this file that was not reproduced. Reading
 code and forming a theory is a *hypothesis*; it is written down as a hypothesis and marked
