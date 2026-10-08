@@ -160,8 +160,8 @@ class Bench:
         size = os.path.getsize(src)
         work = os.path.join(self.scratch, f"ring-{mode}-{rep}")
         c = Cluster(bin_dir, work, procs, vnodes)
-        c.start()
         try:
+            c.start()
             config = f"{mode},{file},{procs},{workers},{chunk},{os.path.basename(bin_dir)}"
             up_stats, down_stats = os.path.join(work, "up.csv"), os.path.join(work, "down.csv")
             ok_u, fu, wall_u = c.client(["--workers", str(workers), "--chunk-size", str(chunk), "put", src, "f"], up_stats)
@@ -243,9 +243,9 @@ class Bench:
             tar = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", h], capture_output=True).stdout
             variants.append((f"git-{i:02d}-{h}", tar))
         c = Cluster(ROOT, work, 16)
-        c.start()
         out = []
         try:
+            c.start()
             for name, data in variants:
                 p = os.path.join(files, name)
                 open(p, "wb").write(data)

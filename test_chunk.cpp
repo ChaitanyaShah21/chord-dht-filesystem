@@ -611,6 +611,59 @@ void test_vnode_siblings() {
     }
 }
 
+void test_vnode_orphan_sibling() {
+    std::printf("virtual nodes: an orphaned member that its own sibling names as successor rejoins\n");
+    // Found by the Phase 5 benchmark: 16 processes x 8 members started at once, one
+    // process's first round running before the others listened. Every other process
+    // was refused, so evicted. One member (O) was left with nobody: an orphan (D-040).
+    // Its sibling S, whose real successor P had just been evicted too, fell back onto
+    // O -- and a member never strikes or evicts its own process (D-047), so S kept O
+    // for ever. S could not rediscover P either: it asks its successor, O, for its
+    // predecessor, and an orphan answers ERR. Every rejoin lookup of O's ended at S,
+    // naming O itself, and join() waited "for it to be evicted". Minutes later the ring
+    // was still wrong. Identifiers are spread as SHA-1 spreads them, so that O's
+    // fingers, successors and predecessor are all in the other process:
+    //   S = 1/16 (process 1)   P = just after S (process 2)   O = 3/16 (process 1)
+    //   6/16, 10/16, 13/16 (process 2)
+    // P sits just after S, as P sat close to S on the real ring: a lookup could only
+    // skip S and land on P through a finger starting inside that tiny arc, so every
+    // rejoin lookup ends at S.
+    const Id u = Id(1) << 60;
+    // The round order decides who notices what first, so the scenario runs under 20
+    // orders; every one must heal.
+    int orphaned = 0, healed = 0, correct = 0;
+    for (unsigned seed = 11; seed < 31; ++seed) {
+        std::mt19937_64 rng(seed);
+        Cluster c(3);
+        c.add(1, {1 * u, 3 * u}, false);
+        c.add(2, {1 * u + 1000, 6 * u, 10 * u, 13 * u}, false);
+        c.wire();
+        NodeState &O = *c.at("10.0.0.1:9000").members[1];
+        c.dead.insert("10.0.0.2:9000");             // not listening yet, as at a slow start
+        c.round(rng);
+        c.dead.clear();                             // and now it is
+        {
+            std::lock_guard<std::mutex> lock(O.mu);
+            orphaned += O.orphaned;
+        }
+        // Before D-067 the sibling S had by now fallen back onto O as its successor,
+        // and kept it for ever. Now S evicts O as soon as O answers that it is
+        // orphaned -- within this round or the next, depending on the order -- so
+        // that intermediate state is not checked; the outcome is.
+        for (int i = 0; i < 12; ++i) c.round(rng);
+        if (std::getenv("SHOW_EVENTS") && seed == 11)
+            for (const std::string &e : c.events) std::printf("    %s\n", e.c_str());
+        {
+            std::lock_guard<std::mutex> lock(O.mu);
+            healed += !O.orphaned;
+        }
+        correct += ring_correct(c);
+    }
+    check(orphaned == 20, "in all 20 round orders, O is orphaned by the slow start (" + std::to_string(orphaned) + ")");
+    check(healed == 20, "and rejoins within 12 rounds (" + std::to_string(healed) + " of 20)");
+    check(correct == 20, "and the ring is correct again, P back between S and O (" + std::to_string(correct) + " of 20)");
+}
+
 void test_vnode_frozen_member_vs_dead_process() {
     std::printf("virtual nodes: a refusal evicts a whole process; a timeout strikes one member\n");
     std::mt19937_64 rng(8);
@@ -1008,6 +1061,7 @@ int main() {
     test_short_reads();
     test_vnode_ring();
     test_vnode_siblings();
+    test_vnode_orphan_sibling();
     test_vnode_frozen_member_vs_dead_process();
     test_replica_sets();
     test_writes();

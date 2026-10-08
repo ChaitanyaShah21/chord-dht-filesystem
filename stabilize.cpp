@@ -62,9 +62,13 @@ void remember_locked(NodeState &s, const Peer &p) {
 // With `whole_process`, every member at dead's ADDRESS goes: a refused connection
 // proves nothing is listening there, which is true of all its members at once
 // (D-047). Otherwise only the member itself, the subject of a timeout or a bad reply.
+// A sibling is never evicted on evidence about the process -- if a sibling looks
+// dead, so are we -- except with `sibling_said_so`: the sibling itself answered that
+// it is orphaned, out of the ring (D-067).
 void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events &events,
-                  bool whole_process) {
-    if (same_process(dead, s.self)) return;            // never evict ourselves, or our siblings
+                  bool whole_process, bool sibling_said_so = false) {
+    if (same_node(dead, s.self)) return;               // never evict ourselves
+    if (same_process(dead, s.self) && !sibling_said_so) return;   // nor our siblings, on suspicion
     auto gone = [&](const Peer &p) { return whole_process ? same_process(p, dead) : same_node(p, dead); };
 
     // The entry after `dead` in our list now owns everything `dead` owned, so it
@@ -170,11 +174,18 @@ Call call_peer(NodeState &s, const Transport &transport, const Peer &to, const s
     const long long took_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
     const bool good = d == Delivery::Ok && reply.compare(0, 3, "ERR") != 0 && valid(reply);
+    // An orphan says so (D-040). That is the member's own word that it is out of the
+    // ring -- proof, like a refusal, not suspicion -- so it is evicted at once, by any
+    // node, its own siblings included (D-067). Without this, a sibling that had fallen
+    // back onto an orphan kept it as successor for ever, and the orphan's every rejoin
+    // lookup ended at that sibling, naming the orphan itself.
+    const bool orphan = d == Delivery::Ok && reply.compare(0, 12, "ERR orphaned") == 0;
 
     Events events;
     {
         std::lock_guard<std::mutex> lock(s.mu);
         if (good)                          clear_strikes_locked(s, to);
+        else if (orphan)                   evict_locked(s, to, "it says it is orphaned", events, false, true);
         else if (d == Delivery::Refused)   evict_locked(s, to, "refused", events, true);
         else strike_locked(s, to, d == Delivery::Ok ? "bad reply to " + request.substr(0, request.find(' '))
                                                     : delivery_name(d), events,
