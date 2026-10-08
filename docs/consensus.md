@@ -92,3 +92,22 @@ is measured at every candidate.
 | **The paper's 150–300 ms by precedent** | chosen for a dedicated network, not this host's flushes and stalls |
 | **A large constant** (1–2 s) | no spurious elections, and every failover costs over a second |
 | **Separate knobs** | three values that must keep a fixed relationship, offered as if independent |
+
+### Persistence — [D-074](../ARCHITECTURE.md#d-074--each-replicas-state-is-one-append-only-file-of-self-checking-records-flushed-before-anything-leaves-a-damaged-tail-is-cut-damage-further-back-refuses-to-start)
+
+```
+TERM <term> <voted-for | -> <check>
+ENTRY <index> <term> <command> <check>
+CUT <index> <check>
+```
+
+`raft_<port>.log`, each record checked as the single tracker's were (D-058). Everything a step changes is written as
+one batch and flushed once before anything leaves. Replay stops at the first torn, damaged or out-of-sequence record:
+within the last 256 KiB (one batch at most) it is a crash's tail, cut and reported; further back it is a damaged
+disk, and the replica refuses to start.
+
+| Alternative | Why not |
+|---|---|
+| **Term and vote in their own file, renamed into place** | three flushes per vote, and two files whose order after a crash must be reasoned about |
+| **Refuse to start on any damage** | an ordinary crash mid-batch can leave intact records after a torn one |
+| **Skip damaged records** (the single tracker's rule) | a hole in a Raft log breaks Log Matching |

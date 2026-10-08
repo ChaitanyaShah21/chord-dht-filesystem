@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-073: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-074: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-073 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-074 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 65 recorded here (F1–F64 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 66 recorded here (F1–F65 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -302,6 +302,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F62** | **How do replicas talk?** A fresh connection per call; a persistent connection per pair; UDP; and on which port, with how many calls in flight. | Decides what a lost message is, whether a reply can be mistaken for another's, and how replication batches. | **RESOLVED** — D-071 |
 | **F63** | **The replica's concurrency.** One lock held across the flush but never a network call; the lock released during the flush; or an event loop. And who sends to each peer. | Decides whether "flush before replying" holds by construction, and what a slow disk or a frozen peer delays. | **RESOLVED** — D-072 |
 | **F64** | **Election timeout, heartbeat and call deadline.** The paper's example values; a large constant; or one base swept, with the default chosen by a rule fixed before measuring. | Sets failover time and whether a healthy group elects for no reason. | **RESOLVED** — D-073 (rule); value from `BENCHMARKS.md` §7 |
+| **F65** | **How does a replica persist its term, vote and log?** One file of self-checking records; a separate file for term and vote; and what replay does with damage. | Decides what survives a crash, how many flushes a step costs, and whether damage is cut, skipped or refused. | **RESOLVED** — D-074 |
 
 ---
 
@@ -3979,3 +3980,52 @@ relationship to be correct, offered as if they were independent.
 replicas can still collide; the next round redraws.
 
 **Evidence:** pending — `BENCHMARKS.md` §7.
+
+---
+
+### D-074 — Each replica's state is one append-only file of self-checking records, flushed before anything leaves; a damaged tail is cut, damage further back refuses to start
+
+**Fork:** F65. **Date:** 8 Oct 2026. **Depends on:** D-045, D-058, D-072. **Gates:** what a replica remembers
+through a crash.
+
+**The decision.** `<dir>/raft_<port>.log`, one record per line, each ending in 8 hexadecimal characters of SHA-1 of
+the rest of its line (D-058's check):
+
+```
+TERM <term> <voted-for | ->        the current term and this term's vote
+ENTRY <index> <term> <command>     a log entry
+CUT <index>                        entries from <index> on are discarded
+```
+
+- **Persist before replying.** Everything one step changes — a new term, a vote, a cut, new entries — is appended as
+  one batch and flushed with one `fdatasync` before the core releases any output: a vote, an append's reply, a call
+  to another replica, or a leader counting its own entry. The paper's rule, made structural (D-070, D-072).
+- **What is persisted:** the current term, the vote in it, and the log — exactly the paper's persistent state. The
+  commit index is not: it is relearned from the leader, or, for a single replica, by committing its first entry.
+- **Replay** rebuilds term, vote and log. It stops at the first record that is torn (no newline), fails its check,
+  or is out of sequence. A crash can damage only what was written after the last completed flush — none of it
+  acknowledged — but it may damage it in any order, so valid-looking records can follow a torn one. One batch is at
+  most 256 KiB, so **damage that starts within the last 256 KiB of the file is a crash's tail**: it is cut off and
+  reported. **Damage further back is not a crash** — something changed flushed data — and the replica refuses to
+  start rather than forget a vote or an acknowledged entry.
+
+**Why one file of records.** One flush per step whatever it changed, and term, vote and entries cannot disagree with
+each other after a crash, because they are one ordered stream. Every record is self-checking for the reason D-058
+gave: a record torn inside its last word is still a well-formed line, and only the check tells.
+
+**Rejected: term and vote in their own small file**, replaced by write-to-temporary, flush, rename, flush the
+directory (D-045's method). Three flushes per vote, and two files whose relative order after a crash must be
+reasoned about.
+
+**Rejected: refuse to start on any damage.** Safe against a bad disk, but an ordinary crash mid-batch can leave
+intact records after a torn one, and every power cut would need an operator.
+
+**Rejected: skip damaged records and continue** — the single tracker's rule (D-058). Safe there, where each record is
+independent; in a Raft log a hole breaks the Log Matching property every other guarantee rests on.
+
+**Cost accepted.** The file only grows: replaced entries and `CUT` records stay (no compaction, D-078). Damage to
+flushed data within the last 256 KiB is indistinguishable from a crash's tail and is cut — outside the failure
+model, as in the paper, which assumes stable storage. A replica that refuses to start needs replacing, which needs a
+membership change (D-079).
+
+**Evidence:** pending — `test-raft` (the file), `e2e-persistence.sh`.
