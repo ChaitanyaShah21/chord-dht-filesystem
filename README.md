@@ -797,6 +797,18 @@ through the join path, whose lookup for a node's own identifier comes back to th
 still lists it. **Cost:** up to 64 extra round trips in a round that needs them, none in a round that does
 not.
 
+### A chunk travels as a header line, then exactly the bytes it names
+
+Control messages are one line each. A chunk is binary and may contain any byte, newlines included, so it
+cannot be a line. A message carrying a chunk puts the body's length as the last word of its header —
+`PUT <key> <w> <length>`, `STORE <key> <length>`, `CHUNK <length>` — and then sends exactly that many raw
+bytes. The length is compared against the 512 KiB maximum **before** a byte is allocated, so a peer cannot
+choose how much memory a node allocates; the body is read in a loop until every byte has arrived, so a
+short read is not a short chunk; and the header reader never reads past its own newline, so the body's
+first byte is still in the socket when the header has been parsed. **Rejected:** encoding the chunk inside
+the line, which doubles every transfer and removes the line-length limit; and a second data connection,
+which doubles the failures to match up. **Cost:** two framing schemes on one socket, chosen by the verb.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

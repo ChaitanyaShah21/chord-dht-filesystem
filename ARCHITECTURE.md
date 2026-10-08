@@ -217,6 +217,7 @@ decided before the paper is one that cannot be defended in December.
 | **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
 | **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
 | **F35** | **How fast does stabilise walk back after a distant fallback?** One step per round (the paper); run to the fixed point within a round; rejoin as an orphan; or a longer list. Surfaced by a 256-node ring that took minutes to converge. | Sets recovery after more than r adjacent deaths, and how long a wired ring takes to start. | **RESOLVED** — D-043 |
+| **F36** | **How does a chunk travel on the wire?** A length-prefixed body after a control line; the chunk encoded inside the line; or a separate data connection. | Decides whether a peer can size an allocation, how a short read is handled, and whether one socket carries two framing schemes. | **RESOLVED** — D-044 |
 
 ---
 
@@ -2591,3 +2592,55 @@ its neighbours, and leaves the walk as slow as it was.
 rings of 64: ring correct after at most **5 rounds before, 1 after**. A ring of 128 in which half the nodes
 start three rounds late: fully correct after at most **64 rounds before, 12 after**. The real-process
 before and after are in `BENCHMARKS.md` §4.
+
+---
+
+### D-044 — Chunks travel as a header line followed by exactly the number of bytes it names
+
+**Fork:** F36. **Date:** 8 Oct 2026. **Gates:** every chunk message in Phase 4, and Phase 5's transfer path.
+
+**The decision.** The chunk plane uses the node's existing line protocol for every header and reply, and
+a message that carries a chunk names the body's length as the **last word of its header line**, followed by
+exactly that many raw bytes:
+
+```
+PUT <key> <w> <length>\n<length bytes>     ->  OK <copies>        | ERR <reason>
+STORE <key> <length>\n<length bytes>       ->  OK                 | ERR <reason>
+GET <key>                                  ->  CHUNK <length>\n<length bytes> | MISSING | ERR <reason>
+HAVE <key> [<key> ...]   (1 to 20 keys)    ->  HAVE <one 0/1 digit per key>
+```
+
+`<key>` is the chunk's full SHA-1 as 40 lowercase hexadecimal characters (D-014, I7). `PUT` asks the
+receiving node to coordinate a replicated write (D-046); `STORE` asks it to keep one copy and forward
+nothing, so a replica can never start a second round of forwarding. Which verbs carry a body, and where
+the length sits, is defined in one function shared by the sender and the receiver.
+
+**Three rules the framing enforces.**
+1. **The length is checked before anything is allocated.** A body longer than `MAX_CHUNK` (512 KiB, D-016)
+   is refused on the header alone, so a peer cannot choose how much memory this node allocates — defect
+   R7's lesson from the legacy transfer path, applied from the start.
+2. **The body is read until exactly `length` bytes have arrived.** `recv` may return fewer bytes than
+   asked; a short read is a loop, and a peer that closes mid-body is a failed transfer, never a short chunk.
+3. **The header reader never reads past its newline.** `recv_line` takes one byte per call (D-021), so
+   the body's first byte is still in the socket when the header has been parsed. A buffering line reader
+   would have swallowed the start of the body.
+
+**Rejected: the chunk inside the line, hex- or base64-encoded.** One framing scheme instead of two. It
+doubles (hex) or adds a third (base64) to every transfer, and a 512 KiB chunk becomes a 700 KiB to 1 MiB
+line, so `MAX_LINE` — which exists to stop an unbounded line from exhausting memory — would have to go.
+
+**Rejected: a separate data connection, announced on the control connection.** Keeps control lines
+small and lets a body stream to disk. It needs a second listening socket or port negotiation per
+transfer, and two connections whose failures have to be matched up, for no gain at 512 KiB.
+
+**Cost accepted.**
+- Two framing schemes now coexist on one socket, chosen by the verb. Every new body-carrying verb has to
+  be added to the one function that knows which verbs carry bodies.
+- A chunk is at most 512 KiB. D-017 stores a file's manifest as a chunk, so one manifest holds at most
+  12,800 chunk hashes — a 6.25 GiB file. A larger file needs a manifest split across chunks; that belongs
+  to Phase 5, where manifests are built.
+- A peer that sends the body slowly holds a thread until each `recv` times out; there is a deadline per
+  system call, not per body.
+
+**Evidence:** none yet — design time. The framing tests (exactly 512 KiB, 512 KiB + 1, zero bytes, a peer
+that closes mid-body, a short read) are written with the code.
