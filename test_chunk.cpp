@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -103,6 +104,8 @@ struct Process {
 struct Cluster {
     std::map<std::string, std::unique_ptr<Process>> procs;   // by address
     std::set<std::string> dead, frozen;                      // by address: a process fails as a whole
+    std::set<std::string> slow;                              // chunk requests answered after 300 ms
+    std::set<std::string> frozen_members;                    // "ip:port/<id>": one member times out
     std::vector<std::string> events;
     int r;
     Transport route;          // ring requests, to a member
@@ -126,6 +129,7 @@ struct Cluster {
         auto it = procs.find(a);
         if (it == procs.end() || dead.count(a)) return Delivery::Refused;
         if (frozen.count(a)) return Delivery::Timeout;
+        if (frozen_members.count(a + "/" + id_to_hex(to.id))) return Delivery::Timeout;
         for (auto &m : it->second->members) {
             if (m->self.id != to.id) continue;
             Handled h = handle_request(*m, request, route);
@@ -142,6 +146,7 @@ struct Cluster {
         auto it = procs.find(a);
         if (it == procs.end() || dead.count(a)) return Delivery::Refused;
         if (frozen.count(a)) return Delivery::Timeout;
+        if (slow.count(a)) std::this_thread::sleep_for(std::chrono::milliseconds(300));
         ChunkHandled h = handle_chunk_request(*it->second->chunks, Frame{line, body});
         reply.line = h.reply;
         reply.body = h.body;
@@ -285,9 +290,17 @@ void test_keys() {
     std::string report, err;
     const std::string dir = make_tmpdir();
     check(store_open(s, dir, report, err), "a store opens in an empty directory");
-    check(store_put(s, "../../etc/passwd", "x") == PutResult::BadKey, "a traversal key is refused by put");
+    // Exactly 40 characters, so only the character check stands between this key and
+    // <dir>/../../../../../../../../../../etc/passwd. (A shorter traversal key would be
+    // refused by its length alone and prove nothing about the character check -- the
+    // first version of this test used one, and a mutant accepting any 40 characters
+    // survived it.)
+    const std::string traversal = "../../../../../../../../../../etc/passwd";
+    check(traversal.size() == 40, "the traversal key is exactly 40 characters");
+    check(store_put(s, traversal, "x") == PutResult::BadKey, "a 40-character traversal key is refused by put");
     std::string out;
-    check(store_get(s, "../../etc/passwd", out) == GetResult::BadKey, "a traversal key is refused by get");
+    check(store_get(s, traversal, out) == GetResult::BadKey && out.empty(),
+          "a 40-character traversal key is refused by get, and nothing is read");
     check(count_files(dir) == 0, "and nothing was written anywhere under the store");
 }
 
@@ -439,6 +452,16 @@ void test_split_target() {
     for (const std::string &l : bad) refused += split_target(l, id, rest) == Target::Malformed ? 1 : 0;
     check(refused == static_cast<int>(bad.size()), "every malformed prefix is refused (" + std::to_string(refused) +
                                                    "/" + std::to_string(bad.size()) + ")");
+    // A finger that is another member of this same process is a real next hop: same
+    // address, different identifier (D-047). Treating it as "self" would fall back to the
+    // successor -- still correct, only slower, which is why only a direct check sees it.
+    {
+        const Peer self{1000, "10.0.0.1", 9000}, succ{2000, "10.0.0.2", 9000}, sibling{5000, "10.0.0.1", 9000};
+        std::vector<Peer> fingers(ID_BITS, sibling);            // the farthest fingers name the sibling
+        for (int i = 0; i < 12; ++i) fingers[i] = succ;
+        const RouteStep step = route_step(self, succ, fingers, 9000);
+        check(!step.owner && step.peer.id == 5000, "route_step jumps to a sibling member, not back to the successor");
+    }
     const Peer p{42, "10.0.0.1", 9000};
     check(addressed(p, "NEIGHBOURS") == "TO 000000000000002a NEIGHBOURS", "addressed() writes the prefix");
     check(id_of_member("127.0.0.1", 7000, 0) == id_of_address("127.0.0.1", 7000), "member 0 keeps its old identifier");
@@ -571,6 +594,21 @@ void test_vnode_siblings() {
     check(strikes_on_self == 0, "no strike was ever counted against our own process");
     for (int i = 0; i < 6; ++i) c.round(rng);
     check(ring_correct(c), "after the thaw the frozen process's members re-insert themselves");
+
+    // A call to our own sibling that times out -- our own process is overloaded -- is
+    // evidence against ourselves, not the sibling: no strike, and never an eviction.
+    c.frozen_members.insert("10.0.0.1:9000/" + id_to_hex(200));
+    c.events.clear();
+    for (int i = 0; i < 4; ++i) c.round(rng);
+    c.frozen_members.clear();
+    int own = 0;
+    for (const std::string &e : c.events)
+        if (e.compare(0, 13, "10.0.0.1:9000") == 0 && e.find("against 10.0.0.1:9000") != std::string::npos) ++own;
+    {
+        std::lock_guard<std::mutex> lock(m100.mu);
+        check(own == 0 && m100.succs[0].id == 200,
+              "a sibling that times out is neither struck nor evicted (" + std::to_string(own) + " strikes)");
+    }
 }
 
 void test_vnode_frozen_member_vs_dead_process() {
@@ -716,6 +754,8 @@ void test_writes() {
     // The owner answers as soon as three copies can no longer be reached, so it may
     // report one or two confirmed: the third copy can still be in flight.
     const PutOutcome w3 = put_chunk(c.live_start(), c2, 3, c.route, c.send);
+    check(w3.attempts == 1, "a live owner's ERR is final: no other coordinator is tried (" +
+                            std::to_string(w3.attempts) + ")");
     check(!w3.ok && w3.message.find("ERR only") != std::string::npos && w3.message.find("of 3 copies") != std::string::npos &&
           w3.message.find(set2[2] + " refused") != std::string::npos,
           "W = 3 with a replica dead fails, naming the dead replica: " + w3.message);
@@ -735,15 +775,52 @@ void test_writes() {
                                    " copies " + std::to_string(w1.copies));
     c.dead.clear();
 
-    // The owner itself is dead and not yet evicted: the write falls through.
-    const std::string c4 = random_bytes(rng, 1000);
-    Id k4;
-    id_from_key(chunk_key(c4), k4);
-    const std::vector<std::string> set4 = expected_holders(c.all_members(), k4, RF);
+    // One replica slow: W = 2 must answer on the faster copy, not wait for the slow one
+    // (D-015's arithmetic: the minimum of two round trips, not the maximum).
+    const std::string c5 = random_bytes(rng, 1000);
+    Id k5;
+    id_from_key(chunk_key(c5), k5);
+    const std::vector<std::string> set5 = expected_holders(c.all_members(), k5, RF);
+    c.slow.insert(set5[2]);
+    const auto t5 = std::chrono::steady_clock::now();
+    const PutOutcome s5 = put_chunk(c.live_start(), c5, 2, c.route, c.send);
+    const long long ms5 = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t5).count();
+    c.slow.clear();
+    check(s5.ok && s5.copies == 2, "W = 2 with one slow replica is acknowledged on 2 copies, not 3 (" +
+                                   std::to_string(s5.copies) + ")");
+    (void)ms5;     // in this harness the reply returns only after `after` has run, so no timing claim
+
+    // The owner itself is dead and not yet evicted: the write falls through. Start at the
+    // member just before the key: it answers OWNER <dead owner> itself, so routing never
+    // meets the dead process and the PUT to it is what fails. Draw chunks until that
+    // member belongs to a different process from the owner.
+    std::string c4;
+    Id k4 = 0;
+    std::vector<std::string> set4;
+    Peer before;
+    const std::vector<Peer> all = c.all_members();
+    for (int tries = 0; tries < 100; ++tries) {
+        c4 = random_bytes(rng, 1000);
+        id_from_key(chunk_key(c4), k4);
+        set4 = expected_holders(all, k4, RF);
+        before = all.back();
+        for (const Peer &p : all) if (cw(p.id, k4) != 0 && cw(p.id, k4) < cw(before.id, k4)) before = p;
+        if (addr(before) != set4[0]) break;
+    }
     {
         c.dead.insert(set4[0]);
-        const PutOutcome f = put_chunk(c.live_start(), c4, 2, c.route, c.send);
-        check(f.ok && f.attempts >= 2, "with the owner dead, the write is coordinated by the next replica: " + f.message);
+        const Peer from = before;
+        const PutOutcome f = put_chunk(from, c4, 2, c.route, c.send);
+        // Either the lookup itself met the dead owner and recovered (D-036), or the PUT to it
+        // was refused and the client fell through (D-046); either way two live copies exist.
+        int live_copies = 0;
+        for (auto &kv : c.procs)
+            if (!c.dead.count(kv.first) && store_has(*kv.second->store, chunk_key(c4))) ++live_copies;
+        check(f.attempts >= 2, "a PUT refused by the dead owner falls through to the next replica (" +
+                                   std::to_string(f.attempts) + " coordinators tried)");
+        check(f.ok && live_copies >= 2, "with the owner dead, the write still lands on two live processes (" +
+                                        std::to_string(live_copies) + ", " + std::to_string(f.attempts) +
+                                        " coordinator(s) tried): " + f.message);
         c.dead.clear();
     }
 }
@@ -810,22 +887,26 @@ void test_body_cap() {
     check(hold_body(n) != nullptr, "and it can be taken again");
     held.clear();
 
-    // Many threads racing for the slots: the count may never exceed the cap.
-    std::atomic<int> granted{0}, peak{0};
+    // Many threads racing for the slots: no more than 32 may ever be HELD at once. The
+    // counter itself may briefly read above 32 -- a refused thread increments it before it
+    // sees it is over, then gives the increment back -- so what is checked is the number of
+    // slots granted and not yet released, counted by the test itself.
+    std::atomic<int> holding{0}, peak{0};
     std::vector<std::thread> threads;
-    for (int t = 0; t < 16; ++t) {
+    for (int t = 0; t < 64; ++t) {
         threads.emplace_back([&] {
-            for (int i = 0; i < 2000; ++i) {
+            for (int i = 0; i < 20000; ++i) {
                 auto h = hold_body(n);
                 if (!h) continue;
-                ++granted;
-                int now = n.bodies.load(), p = peak.load();
+                const int now = ++holding;
+                int p = peak.load();
                 while (now > p && !peak.compare_exchange_weak(p, now)) {}
+                --holding;                       // before `h` is released at the end of the iteration
             }
         });
     }
     for (auto &t : threads) t.join();
-    check(peak <= MAX_BODIES && n.bodies == 0, "16 racing threads never exceed 32 and leave 0 held (peak " +
+    check(peak <= MAX_BODIES && n.bodies == 0, "64 racing threads never hold more than 32 and leave 0 held (peak " +
                                                std::to_string(peak.load()) + ")");
 }
 
