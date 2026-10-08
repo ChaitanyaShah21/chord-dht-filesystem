@@ -137,6 +137,99 @@ Delivery classify_io_error(int err) {
 
 }  // namespace
 
+Body body_length(const std::string &line, std::size_t &length) {
+    const std::size_t first_space = line.find(' ');
+    const std::string verb = line.substr(0, first_space);
+    if (verb != "PUT" && verb != "STORE" && verb != "CHUNK") return Body::None;
+    if (first_space == std::string::npos) return Body::Malformed;      // "CHUNK" alone
+
+    const std::string word = line.substr(line.rfind(' ') + 1);        // the last word
+    if (word.empty() || word.size() > 7) return Body::Malformed;
+    if (word.size() > 1 && word[0] == '0') return Body::Malformed;     // "007" is not canonical
+    std::size_t value = 0;
+    for (char c : word) {
+        if (c < '0' || c > '9') return Body::Malformed;
+        value = value * 10 + static_cast<std::size_t>(c - '0');
+    }
+    if (value > MAX_BODY) return Body::TooLarge;
+    length = value;
+    return Body::Present;
+}
+
+bool send_all(int fd, const char *data, std::size_t len) {
+    std::size_t sent = 0;
+    while (sent < len) {
+        const ssize_t n = send(fd, data + sent, len - sent, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        sent += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+bool recv_exact(int fd, std::size_t n, std::string &out) {
+    out.resize(n);
+    std::size_t got = 0;
+    while (got < n) {
+        // recv may return fewer bytes than asked -- a short read -- and on a real
+        // network it routinely does. Ask again for exactly what is still missing.
+        const ssize_t r = recv(fd, &out[got], n - got, 0);
+        if (r < 0 && errno == EINTR) continue;
+        if (r == 0) { errno = 0; return false; }      // closed mid-body: a failed transfer
+        if (r < 0) return false;
+        got += static_cast<std::size_t>(r);
+    }
+    return true;
+}
+
+bool recv_discard(int fd, std::size_t n) {
+    char scratch[4096];
+    while (n > 0) {
+        const ssize_t r = recv(fd, scratch, n < sizeof scratch ? n : sizeof scratch, 0);
+        if (r < 0 && errno == EINTR) continue;
+        if (r == 0) { errno = 0; return false; }
+        if (r < 0) return false;
+        n -= static_cast<std::size_t>(r);
+    }
+    return true;
+}
+
+Delivery exchange_frame(const std::string &ip, int port, const std::string &line,
+                        const std::string &body, std::string &reply, std::string &reply_body,
+                        int timeout_ms) {
+    reply.clear();
+    reply_body.clear();
+
+    // A request that declares a different length than it carries is a bug in the
+    // caller; sending it would desynchronise the stream, so it is never sent.
+    std::size_t declared = 0;
+    const Body b = body_length(line, declared);
+    if ((b == Body::Present && declared != body.size()) || b == Body::Malformed ||
+        b == Body::TooLarge || (b == Body::None && !body.empty()))
+        return Delivery::Failed;
+
+    const int fd = connect_to(ip, port, timeout_ms);
+    if (fd < 0) {
+        if (errno == ECONNREFUSED) return Delivery::Refused;
+        if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT)
+            return Delivery::Timeout;
+        return Delivery::Failed;
+    }
+
+    Delivery result = Delivery::Ok;
+    if (!send_line(fd, line) || !send_all(fd, body.data(), body.size()) || !recv_line(fd, reply)) {
+        result = classify_io_error(errno);
+    } else {
+        std::size_t n = 0;
+        const Body rb = body_length(reply, n);
+        if (rb == Body::Malformed || rb == Body::TooLarge) result = Delivery::Failed;
+        else if (rb == Body::Present && !recv_exact(fd, n, reply_body)) result = classify_io_error(errno);
+    }
+    if (result != Delivery::Ok) { reply.clear(); reply_body.clear(); }
+    close(fd);
+    return result;
+}
+
 Delivery exchange_line(const std::string &ip, int port, const std::string &request,
                        std::string &reply, int timeout_ms) {
     reply.clear();

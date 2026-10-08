@@ -66,4 +66,57 @@ Delivery exchange_line(const std::string &ip, int port, const std::string &reque
 // listening socket, or -1 with errno describing the failure.
 int listen_on(const std::string &ip, int port);
 
+// ---------------------------------------------------------------------------
+// Bodies: binary data after a header line (decision D-044).
+//
+// A chunk can contain any byte, newlines included, so it cannot travel as a
+// line. A header line whose first word is PUT, STORE or CHUNK is followed by a
+// body, and the header's LAST word is the body's length in bytes:
+//
+//     PUT <key> <w> <length>\n<length bytes>
+//
+// recv_line reads one byte per call and never past its newline, so after it
+// returns the body's first byte is still waiting in the socket for recv_exact.
+// ---------------------------------------------------------------------------
+
+// The longest body either side will send or accept: one chunk, 512 KiB (D-016).
+// Equal to MAX_CHUNK in store.h; chunk.cpp checks the two agree at compile time.
+constexpr std::size_t MAX_BODY = 512 * 1024;
+
+enum class Body {
+    None,        // this line carries no body
+    Present,     // a body of `length` bytes follows
+    Malformed,   // the verb says a body follows, but the length is not a clean number
+    TooLarge,    // the length is a clean number above MAX_BODY
+};
+
+// The one place that knows which lines carry a body. Used by sender and
+// receiver alike, so they cannot disagree. The length must be digits only, with
+// no sign and no leading zero (a lone "0" is a zero-byte body), at most 7 digits.
+// `length` is written only when Present is returned.
+Body body_length(const std::string &line, std::size_t &length);
+
+// Send all `len` bytes, looping over short writes. False if the peer has gone.
+bool send_all(int fd, const char *data, std::size_t len);
+
+// Receive exactly `n` bytes into `out`, looping over short reads. Returns false
+// if the peer closed first (errno set to 0) or the socket failed (errno from
+// recv; EAGAIN means the receive timeout fired). `out` is meaningful only on true.
+bool recv_exact(int fd, std::size_t n, std::string &out);
+
+// Read and throw away exactly `n` bytes, through a small buffer: a body that is
+// refused (D-052) is consumed without being held, so the stream stays in step.
+// False as recv_exact.
+bool recv_discard(int fd, std::size_t n);
+
+// One exchange on a fresh connection, with bodies: send `line` and, if the line
+// declares one, `body` (whose size must equal the declared length); then read
+// one reply line and, if it declares one, its body into `reply_body`. Every step
+// is bounded by timeout_ms, applied to each system call. Classified as
+// exchange_line classifies; a reply declaring a malformed or oversized body is
+// Failed. The outputs are meaningful only when Ok is returned.
+Delivery exchange_frame(const std::string &ip, int port, const std::string &line,
+                        const std::string &body, std::string &reply, std::string &reply_body,
+                        int timeout_ms);
+
 #endif
