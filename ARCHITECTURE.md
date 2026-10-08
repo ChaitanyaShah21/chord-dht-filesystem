@@ -235,6 +235,7 @@ decided before the paper is one that cannot be defended in December.
 | **F49** | **What does the tracker become?** The name-to-manifest map alone, with an effect log; the legacy commands kept beside it; or a new program beside the legacy tracker. And what happens to users, groups, `update_seeder` and the persistence log format (D-009)? | Decides the size of the mutable state that consensus will later replicate, what recovery replays, and how much legacy machinery stays alive. | **RESOLVED** — D-058 |
 | **F50** | **What happens when a name is registered twice?** Refuse a different key and accept the same one again; the last writer wins; keep versions; or overwrite on request. | With no access control and no deletion, decides whether one user can replace another's file, and whether a retried upload succeeds. | **RESOLVED** — D-059 |
 | **F51** | **What happens to the legacy client and tracker code, their framing copies, and the suites that test them?** Rebuild both programs on the node's framing and remove the legacy path, re-pointing its suites; bolt the ring path onto the legacy client; or keep the legacy pair beside the new one. | Decides whether the framing rules exist once or three times (D-021), whether the legacy suites still test anything, and whether the Phase 0 baseline can be re-run. | **RESOLVED** — D-060 |
+| **F52** | **How long may a peer take to send what it announced?** A deadline per request line and per body, enforced before every receive; a per-system-call timeout; an event loop with timers; or nothing. | A peer that announces a chunk and never sends it holds a memory slot and a thread; with the chunk path user-facing, any client can do it. | **RESOLVED** — D-061 |
 
 ---
 
@@ -3418,5 +3419,45 @@ re-run from its own commit instead (D-066), which is the stronger reproduction: 
 
 **Cost accepted.** The legacy suites no longer test legacy code — it is gone; they test the same properties of the new
 programs. The baseline can be re-measured only from `e381179`.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-061 — A server gives a request line, and a body, a fixed time to arrive in full
+
+**Fork:** F52. **Date:** 8 Oct 2026. **Depends on:** D-044, D-052. **Gates:** every receive a node or the tracker
+makes on a connection it accepted.
+
+**The decision.** A node and the tracker take `--read-deadline <ms>` (default **10,000 ms**). On a connection they
+accepted:
+- a **request line** must arrive in full within the deadline of the server starting to wait for it;
+- a **body** must arrive in full within the deadline of its header having been read — and so must a refused body
+  that is being drained (D-052).
+
+The deadline is enforced in `net.cpp`: before every `recv`, the server waits with `poll()` for **the time remaining**,
+not a fixed interval. A peer that trickles one byte at a time therefore cannot stretch it: a line or a body that is
+not complete by the deadline closes the connection, which releases its body slot (D-052) and its thread. Clients
+(the node calling another node, the `client`, the `chunk` tool) keep their own 5 s per-call deadline (D-024).
+
+**The value.** 10 s is about the time to send a 512 KiB body at 0.4 Mbit/s; on loopback a body takes milliseconds, and
+a legitimate sender writes its request as soon as it has connected — no exchange in this system leaves a connection
+idle. Reasoned, not measured.
+
+**Rejected: `SO_RCVTIMEO` alone.** A timeout per system call: one byte every 9.9 s keeps a 1,024-byte line alive for
+nearly three hours and a 512 KiB body for two months, and that is the slow-loris attack itself.
+
+**Rejected: an event loop with a timer per connection.** The scalable shape — no thread per idle connection at all —
+and a rewrite of the node's request handling.
+
+**Rejected: no deadline.** With the chunk path user-facing, any client could hold a node's 32 body slots for as long
+as it keeps 32 sockets open.
+
+**Cost accepted.**
+- It bounds how long a connection holds a slot, not how many connections there are: thread-per-connection is still
+  unbounded, and an attacker who reconnects every 10 s keeps 32 slots full. Per-source limits or authentication are
+  the real defence; neither exists.
+- Two system calls instead of one for every received byte of a request line on the server side (`recv_line` reads
+  one byte per call, D-021).
 
 **Evidence:** none yet — design time.

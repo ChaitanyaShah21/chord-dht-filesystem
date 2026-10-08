@@ -1023,6 +1023,16 @@ tracker reply carries a payload any more. **Rejected:** adding the ring path to 
 framing copies in one program), and keeping the old pair alive just to re-run the baseline (it is re-run from its own
 commit). **Cost:** the baseline cannot be re-run from the current tree.
 
+### A peer gets a fixed time to send what it announced
+
+On every connection a node or the tracker accepts, a request line must arrive in full within a deadline (10 s by
+default), and so must a body once its header has been read. Before every `recv` the server waits with `poll` for the
+time *remaining*, so a peer trickling a byte at a time cannot stretch it; a peer that misses it is disconnected, freeing
+its memory slot and thread. **Rejected:** `SO_RCVTIMEO` alone (a per-call timeout, which one byte every few seconds
+defeats indefinitely), an event loop with timers (the scalable design, and a rewrite), and no deadline (any client
+could hold a node's body slots for as long as it keeps sockets open). **Cost:** it bounds how long each connection holds
+a slot, not how many connections an attacker opens.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
