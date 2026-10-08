@@ -41,6 +41,7 @@ TEST_LOOKUP = test-lookup
 TEST_STABILIZE = test-stabilize
 TEST_CHUNK     = test-chunk
 TEST_TRANSFER  = test-transfer
+TEST_NAMES     = test-names
 
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
@@ -91,6 +92,11 @@ TEST_CHUNK_SRC = test_chunk.cpp
 TRANSFER_SRC      = transfer.cpp
 TEST_TRANSFER_SRC = test_transfer.cpp
 
+# The tracker's namespace (decision D-058): name -> manifest key and its log, with
+# no sockets, so test_names.cpp drives it with request lines and real log files.
+NAMES_SRC      = names.cpp
+TEST_NAMES_SRC = test_names.cpp
+
 # The load-balance simulation (decision D-051): placement computed with the node's
 # own identifier and replica-set code, for rings far larger than fit as processes.
 SIM_BALANCE_SRC = sim_balance.cpp
@@ -121,6 +127,8 @@ TEST_CHUNK_OBJ     = $(TEST_CHUNK_SRC:.cpp=.o)
 SIM_BALANCE_OBJ    = $(SIM_BALANCE_SRC:.cpp=.o)
 TRANSFER_OBJ       = $(TRANSFER_SRC:.cpp=.o)
 TEST_TRANSFER_OBJ  = $(TEST_TRANSFER_SRC:.cpp=.o)
+NAMES_OBJ          = $(NAMES_SRC:.cpp=.o)
+TEST_NAMES_OBJ     = $(TEST_NAMES_SRC:.cpp=.o)
 
 # Default target
 all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE)
@@ -172,6 +180,11 @@ $(SIM_BALANCE): $(SIM_BALANCE_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(
 $(TEST_TRANSFER): $(TEST_TRANSFER_OBJ) $(TRANSFER_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+# names.o checks keys with store.o's valid_key and splits words with lookup.o's
+# split_single_spaces, so it links them (and what they need).
+$(TEST_NAMES): $(TEST_NAMES_OBJ) $(NAMES_OBJ) $(STORE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 $(TEST_CHUNK): $(TEST_CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
@@ -199,6 +212,8 @@ $(CHUNK_MAIN_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(TEST_CHUNK_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(TRANSFER_OBJ): transfer.h chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(TEST_TRANSFER_OBJ): transfer.h chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(NAMES_OBJ): names.h lookup.h chord.h net.h store.h sha1.h
+$(TEST_NAMES_OBJ): names.h net.h store.h chord.h
 $(SIM_BALANCE_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h sha1.h
 
 # A ThreadSanitizer build of the node, for looking for data races between the
@@ -222,7 +237,7 @@ clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
 	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) $(STABILIZE_OBJ) $(TEST_STABILIZE_OBJ) \
 	      $(STORE_OBJ) $(CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_MAIN_OBJ) $(TEST_CHUNK_OBJ) $(SIM_BALANCE_OBJ) \
-	      $(TRANSFER_OBJ) $(TEST_TRANSFER_OBJ) $(TEST_TRANSFER) \
+	      $(TRANSFER_OBJ) $(TEST_TRANSFER_OBJ) $(TEST_TRANSFER) $(NAMES_OBJ) $(TEST_NAMES_OBJ) $(TEST_NAMES) \
 	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) \
 	      $(TEST_STABILIZE) $(TEST_CHUNK) $(NODE_TSAN)
 
@@ -237,12 +252,13 @@ run-client:
 
 # Build and run the in-process arithmetic tests. Exits non-zero on failure, so
 # it can be used as a gate.
-check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(TEST_CHUNK) $(TEST_TRANSFER)
+check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(TEST_CHUNK) $(TEST_TRANSFER) $(TEST_NAMES)
 	./$(TEST_CHORD)
 	./$(TEST_NET)
 	./$(TEST_LOOKUP)
 	./$(TEST_STABILIZE)
 	./$(TEST_CHUNK)
 	./$(TEST_TRANSFER)
+	./$(TEST_NAMES)
 
 .PHONY: all clean run-tracker run-client check tsan
