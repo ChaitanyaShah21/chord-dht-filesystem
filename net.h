@@ -1,6 +1,7 @@
 #ifndef NET_H
 #define NET_H
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 
@@ -111,6 +112,26 @@ bool recv_exact(int fd, std::size_t n, std::string &out);
 // refused (D-052) is consumed without being held, so the stream stays in step.
 // False as recv_exact.
 bool recv_discard(int fd, std::size_t n);
+
+// ---------------------------------------------------------------------------
+// Deadlines on a server's receives (decision D-061).
+//
+// A server must not wait for ever for a peer that announced a line or a body and
+// then trickles it, or sends nothing. These are recv_line, recv_exact and
+// recv_discard with a DEADLINE: the whole line or body must have arrived by it.
+// Before every recv they wait with poll() for the time REMAINING, so a peer that
+// sends one byte at a time cannot stretch the deadline the way it can stretch a
+// per-call timeout such as SO_RCVTIMEO. A missed deadline returns false with
+// errno = EAGAIN, the same value a fired receive timeout leaves.
+// ---------------------------------------------------------------------------
+using Deadline = std::chrono::steady_clock::time_point;
+
+// `ms` milliseconds from now.
+Deadline deadline_in(int ms);
+
+bool recv_line_by(int fd, std::string &out, Deadline deadline);
+bool recv_exact_by(int fd, std::size_t n, std::string &out, Deadline deadline);
+bool recv_discard_by(int fd, std::size_t n, Deadline deadline);
 
 // One exchange on a fresh connection, with bodies: send `line` and, if the line
 // declares one, `body` (whose size must equal the declared length); then read

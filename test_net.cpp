@@ -267,6 +267,73 @@ void test_exchange_line() {
 
 }  // namespace
 
+// D-061: a server's receives must finish by a deadline, however the bytes are paced.
+// The trickle cases are the point: one byte every 40 ms would satisfy a per-call
+// timeout of 200 ms for ever, and must still fail at the 200 ms deadline.
+long long ms_since_start(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Write `bytes` one at a time, `gap_ms` apart, on a thread of its own.
+std::thread trickle(int fd, std::string bytes, int gap_ms) {
+    return std::thread([fd, bytes, gap_ms] {
+        for (char c : bytes) {
+            if (send(fd, &c, 1, MSG_NOSIGNAL) != 1) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(gap_ms));
+        }
+    });
+}
+
+void test_deadlines() {
+    std::string out;
+    { Pair p; write_raw(p.a, "PING\n");
+      check(recv_line_by(p.b, out, deadline_in(200)) && out == "PING", "a line that is there arrives before its deadline"); }
+
+    { Pair p; const auto t0 = std::chrono::steady_clock::now();
+      const bool got = recv_line_by(p.b, out, deadline_in(200));
+      const int e = errno; const long long ms = ms_since_start(t0);
+      check(!got && e == EAGAIN && ms >= 190 && ms < 1000,
+            "nothing sent: the line read gives up at the deadline with EAGAIN (" + std::to_string(ms) + " ms)"); }
+
+    { Pair p; std::thread t = trickle(p.a, "abcdefghijklmnopqrstuvwxyz\n", 40);       // ~1,080 ms in all
+      const auto t0 = std::chrono::steady_clock::now();
+      const bool got = recv_line_by(p.b, out, deadline_in(200));
+      const long long ms = ms_since_start(t0);
+      check(!got && errno == EAGAIN && ms < 500,
+            "a line trickled a byte every 40 ms still fails at the 200 ms deadline (" + std::to_string(ms) + " ms)");
+      shutdown(p.b, SHUT_RDWR); t.join(); }
+
+    { Pair p; std::thread t = trickle(p.a, "abc\n", 20);
+      check(recv_line_by(p.b, out, deadline_in(1000)) && out == "abc", "a slow line that finishes in time is read whole");
+      t.join(); }
+
+    { Pair p; std::thread t = trickle(p.a, std::string(100, 'x'), 20);                  // ~2 s for 100 bytes
+      std::string body; const auto t0 = std::chrono::steady_clock::now();
+      const bool got = recv_exact_by(p.b, 100, body, deadline_in(200));
+      const long long ms = ms_since_start(t0);
+      check(!got && errno == EAGAIN && ms < 500, "a body trickled past its deadline fails at the deadline (" + std::to_string(ms) + " ms)");
+      shutdown(p.b, SHUT_RDWR); t.join(); }
+
+    { Pair p; const int fd = p.a;
+      // 300 KB is more than a socketpair buffers, so the writer needs its own thread.
+      std::thread w([fd] { write_raw(fd, std::string(300000, 'y')); });
+      std::string body;
+      check(recv_exact_by(p.b, 300000, body, deadline_in(2000)) && body == std::string(300000, 'y'),
+            "a 300 KB body arriving in many pieces is read whole within the deadline");
+      w.join(); }
+
+    { Pair p; std::thread t = trickle(p.a, std::string(100, 'z'), 20);
+      const auto t0 = std::chrono::steady_clock::now();
+      const bool got = recv_discard_by(p.b, 100, deadline_in(200));
+      check(!got && ms_since_start(t0) < 500, "draining a refused body has the same deadline");
+      shutdown(p.b, SHUT_RDWR); t.join(); }
+
+    { Pair p; write_raw(p.a, "half"); close(p.a); p.a = -1;
+      check(!recv_line_by(p.b, out, deadline_in(1000)) && errno == 0, "a peer that closes mid-line is a close (errno 0), not a timeout"); }
+
+    { Pair p; check(!recv_line_by(p.b, out, deadline_in(-5)) && errno == EAGAIN, "a deadline already past fails at once"); }
+}
+
 int main() {
     std::signal(SIGPIPE, SIG_IGN);      // exactly as node.cpp does (D-011)
     std::printf("test-net: line framing and the lookup transport\n");
@@ -276,6 +343,7 @@ int main() {
     test_connect_errno();
     test_recv_line_errno();
     test_exchange_line();
+    test_deadlines();
 
     std::printf("%s  %d/%d checks passed\n",
                 failures == 0 ? "PASS" : "FAIL", checks - failures, checks);

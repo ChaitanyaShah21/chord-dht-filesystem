@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -36,10 +37,33 @@ bool send_line(int fd, const std::string &line) {
     return true;
 }
 
-bool recv_line(int fd, std::string &out) {
+namespace {
+
+// Wait until fd has something to read (data, or the peer's close), or until the
+// deadline. poll() is given the time remaining, rounded UP to whole milliseconds
+// -- rounded down, the last fraction of a millisecond would make poll return at
+// once and this loop spin until the deadline passed.
+bool wait_readable(int fd, Deadline deadline) {
+    while (true) {
+        const auto left = deadline - std::chrono::steady_clock::now();
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 left + std::chrono::microseconds(999)).count();
+        if (ms <= 0) { errno = EAGAIN; return false; }               // the deadline has passed
+        pollfd p{fd, POLLIN, 0};
+        const int r = poll(&p, 1, ms > 600000 ? 600000 : static_cast<int>(ms));
+        if (r < 0 && errno == EINTR) continue;                        // a signal: wait again
+        if (r < 0) return false;
+        if (r > 0) return true;                                        // readable, closed or failed:
+    }                                                                  // the recv that follows says which
+}
+
+// The single copy of the line reader. `deadline` null: wait as long as the socket's
+// own timeout allows (clients, D-024); otherwise the whole line by then (D-061).
+bool recv_line_impl(int fd, std::string &out, const Deadline *deadline) {
     out.clear();
     char c;
     while (true) {
+        if (deadline && !wait_readable(fd, *deadline)) return false;
         // One byte per recv: simple and never reads past the newline, at the cost
         // of one system call per byte -- a latency cost, not a correctness one,
         // and it does not affect hop counts.
@@ -57,6 +81,13 @@ bool recv_line(int fd, std::string &out) {
     if (!out.empty() && out.back() == '\r') out.pop_back();   // tolerate "\r\n"
     return true;
 }
+
+}  // namespace
+
+Deadline deadline_in(int ms) { return std::chrono::steady_clock::now() + std::chrono::milliseconds(ms); }
+
+bool recv_line(int fd, std::string &out) { return recv_line_impl(fd, out, nullptr); }
+bool recv_line_by(int fd, std::string &out, Deadline deadline) { return recv_line_impl(fd, out, &deadline); }
 
 int connect_to(const std::string &ip, int port, int timeout_ms) {
     sockaddr_in addr{};
@@ -167,10 +198,13 @@ bool send_all(int fd, const char *data, std::size_t len) {
     return true;
 }
 
-bool recv_exact(int fd, std::size_t n, std::string &out) {
+namespace {
+
+bool recv_exact_impl(int fd, std::size_t n, std::string &out, const Deadline *deadline) {
     out.resize(n);
     std::size_t got = 0;
     while (got < n) {
+        if (deadline && !wait_readable(fd, *deadline)) return false;
         // recv may return fewer bytes than asked -- a short read -- and on a real
         // network it routinely does. Ask again for exactly what is still missing.
         const ssize_t r = recv(fd, &out[got], n - got, 0);
@@ -182,9 +216,10 @@ bool recv_exact(int fd, std::size_t n, std::string &out) {
     return true;
 }
 
-bool recv_discard(int fd, std::size_t n) {
+bool recv_discard_impl(int fd, std::size_t n, const Deadline *deadline) {
     char scratch[4096];
     while (n > 0) {
+        if (deadline && !wait_readable(fd, *deadline)) return false;
         const ssize_t r = recv(fd, scratch, n < sizeof scratch ? n : sizeof scratch, 0);
         if (r < 0 && errno == EINTR) continue;
         if (r == 0) { errno = 0; return false; }
@@ -193,6 +228,13 @@ bool recv_discard(int fd, std::size_t n) {
     }
     return true;
 }
+
+}  // namespace
+
+bool recv_exact(int fd, std::size_t n, std::string &out) { return recv_exact_impl(fd, n, out, nullptr); }
+bool recv_exact_by(int fd, std::size_t n, std::string &out, Deadline deadline) { return recv_exact_impl(fd, n, out, &deadline); }
+bool recv_discard(int fd, std::size_t n) { return recv_discard_impl(fd, n, nullptr); }
+bool recv_discard_by(int fd, std::size_t n, Deadline deadline) { return recv_discard_impl(fd, n, &deadline); }
 
 Delivery exchange_frame(const std::string &ip, int port, const std::string &line,
                         const std::string &body, std::string &reply, std::string &reply_body,

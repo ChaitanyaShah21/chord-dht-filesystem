@@ -12,6 +12,8 @@
 //   --vnodes <v>     ring members in this process, 1..64          (default DEFAULT_VNODES = 8)
 //   --store <dir>    keep chunks in <dir>; without it, chunk requests are refused
 //   --scan <rounds>  rounds between full repair scans, 0 = never  (default DEFAULT_SCAN_ROUNDS)
+//   --read-deadline <ms>  a request line, or a body, must arrive whole within this (D-061)
+//                         (default DEFAULT_READ_DEADLINE_MS)
 //
 // Ring requests are answered by handle_request() in stabilize.cpp and chunk
 // requests by handle_chunk_request() in chunk.cpp, both shared with the
@@ -62,10 +64,15 @@ constexpr int MAX_VNODES         = 64;
 // Rounds between full repair scans (D-050): once a minute at the default period.
 constexpr int DEFAULT_SCAN_ROUNDS = 60;
 
+// How long a peer may take to send a whole request line, or a whole body (D-061):
+// about a 512 KiB body at 0.4 Mbit/s. A legitimate sender writes at once.
+constexpr int DEFAULT_READ_DEADLINE_MS = 10000;
+
 // Set once in main() before any thread starts, and only read afterwards. That
 // ordering -- all writes before the first reader exists -- is what makes them
 // safe to read without a lock.
 int g_timeout_ms = DEFAULT_TIMEOUT_MS;
+int g_read_deadline_ms = DEFAULT_READ_DEADLINE_MS;
 std::vector<std::unique_ptr<NodeState>> g_members;     // this process's ring members (D-047)
 ChunkStore g_store;
 ChunkNode  g_chunks;
@@ -105,6 +112,7 @@ bool serve_chunk(int fd, const std::string &line) {
     // allocate more than MAX_BODIES chunks at once (D-052).
     std::shared_ptr<void> hold;
     std::string body;
+    const Deadline body_due = deadline_in(g_read_deadline_ms);       // the whole body by then (D-061)
     if (b == Body::Present) {
         hold = hold_body(g_chunks);
         if (!hold) {
@@ -112,9 +120,9 @@ bool serve_chunk(int fd, const std::string &line) {
             // drop it, so the answer is not lost. Closing with the body unread would
             // make the kernel reset the connection, which can destroy "ERR busy"
             // before the sender reads it.
-            return recv_discard(fd, length) && send_line(fd, "ERR busy");
+            return recv_discard_by(fd, length, body_due) && send_line(fd, "ERR busy");
         }
-        if (!recv_exact(fd, length, body)) return false;        // closed or timed out mid-body
+        if (!recv_exact_by(fd, length, body, body_due)) return false;   // closed, or not whole in time
     }
 
     ChunkHandled h = handle_chunk_request(g_chunks, Frame{line, std::move(body)});
@@ -128,7 +136,9 @@ bool serve_chunk(int fd, const std::string &line) {
 // after its reply (Handled::after) runs once the reply has been sent.
 void serve(int fd) {
     std::string line;
-    while (recv_line(fd, line)) {
+    // Each request line must arrive whole within the deadline of starting to wait
+    // for it (D-061): a peer that sends nothing, or a byte at a time, is cut off.
+    while (recv_line_by(fd, line, deadline_in(g_read_deadline_ms))) {
         // Chunk requests, and any line that announces a body: the body must be read
         // (or the connection closed) before the next line, or its bytes would be
         // taken for requests.
@@ -228,7 +238,7 @@ int usage(const char *argv0) {
                  "usage: %s <ip> <port> <membership-file>\n"
                  "       %s <ip> <port> (--create | --join <ip:port> | --wired <file>)\n"
                  "                      [--period <ms>] [--timeout <ms>] [--succ <1..%d>]\n"
-                 "                      [--vnodes <1..%d>] [--store <dir>] [--scan <rounds>]\n",
+                 "                      [--vnodes <1..%d>] [--store <dir>] [--scan <rounds>] [--read-deadline <ms>]\n",
                  argv0, argv0, MAX_SUCCESSORS, MAX_VNODES);
     return 2;
 }
@@ -265,6 +275,7 @@ int main(int argc, char **argv) {
             else if (a == "--timeout" && has_value) { if (!parse_int(argv[++i], 10, 600000, g_timeout_ms)) return usage(argv[0]); }
             else if (a == "--succ" && has_value)    { if (!parse_int(argv[++i], 1, MAX_SUCCESSORS, successors)) return usage(argv[0]); }
             else if (a == "--vnodes" && has_value)  { if (!parse_int(argv[++i], 1, MAX_VNODES, vnodes)) return usage(argv[0]); }
+            else if (a == "--read-deadline" && has_value) { if (!parse_int(argv[++i], 10, 600000, g_read_deadline_ms)) return usage(argv[0]); }
             else if (a == "--scan" && has_value)    { if (!parse_int(argv[++i], 0, 1000000, scan_rounds)) return usage(argv[0]); }
             else if (a == "--store" && has_value && store_dir.empty()) { store_dir = argv[++i]; if (store_dir.empty()) return usage(argv[0]); }
             else return usage(argv[0]);
