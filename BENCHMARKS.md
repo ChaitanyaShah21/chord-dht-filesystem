@@ -7,9 +7,12 @@ checked.
 **Estimates are allowed and are labelled `ESTIMATE`.** An estimate is never presented as a
 measurement.
 
-> **Status:** §1, the single-peer transfer baseline, §2, lookup hop count versus ring size,
-> §4, time to reconverge after nodes are killed, §5, parallel chunked transfer, and §6, chunk placement, replication and repair, are measured. §1 was taken deliberately *before* any optimisation, because a "before" number
-> cannot be recovered afterwards. Further entries land as each phase is measured.
+> **Status:** every entry is measured — §1, the single-peer transfer baseline; §2, lookup hop count
+> versus ring size; §4, time to reconverge after nodes are killed, and §4a, the 256-node false
+> evictions explained; §5, parallel chunked transfer, deduplication and the tracker; §6, chunk
+> placement, replication and repair. §1 was taken deliberately *before* any optimisation, because a
+> "before" number cannot be recovered afterwards. (There is no §3; section numbers are kept stable
+> because other documents cite them.)
 
 ---
 

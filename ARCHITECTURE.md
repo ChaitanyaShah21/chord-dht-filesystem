@@ -238,7 +238,7 @@ and its cost — an entry without one is not finished, because a decision is onl
 the alternatives and their costs are.
 
 ### D-001 — Repository named `chord-dht-filesystem`
-**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** pending rename
+**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** none — the repository was renamed when it moved to its own remote, 6 Sep 2026
 
 **The fork:** the repository was called `os-assignment3`, a name that describes the course it came
 from rather than the system it was becoming.
@@ -330,7 +330,7 @@ and the history would then record something that did not happen.
 ---
 
 ### D-004 — Users, groups and authentication are dropped
-**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** pending — **after** the baseline is measured
+**Date:** 23 Aug 2026 · **Phase:** 0 · **Executed:** Phase 5, `83d2a3b` (D-058, D-060) — **after** the baseline was measured at `e381179`
 
 **The fork:** the inherited system has user accounts, passwords, groups with owners, join
 requests and an approval workflow. Does that survive the pivot to Chord?
@@ -430,25 +430,37 @@ acknowledged, so a kill loses nothing acknowledged. Worker threads are joined.
 | A client dies mid-download | — | — | a `.part-` file is left (SIGKILL) or removed (SIGINT, SIGTERM) | `e2e-transfer.sh` |
 | A peer sends slowly or not at all | the server's read deadline (D-061) | the deadline (10 s by default) | the connection is closed; its body slot and thread freed | `e2e-deadline.sh` |
 
-**What this system does not survive:** the tracker's loss (a single point of failure — the Raft group is
-for that); losing every replica of a chunk at once; and, on one host, a machine-wide stall longer than
+**What this system does not survive:** the tracker's loss (a single point of failure — replicating it with
+Raft is the planned fix, not built); losing every replica of a chunk at once; and, on one host, a machine-wide stall longer than
 the failure detector's patience (`BENCHMARKS.md` §4a).
 
 ---
 
 ## Where it sits on the consistency/availability trade-off
 
-**Currently: neither, honestly.** There is one tracker, so there is nothing to be consistent
-*between*; and it is a single point of failure, so it is not available under its own failure
-either. A single-node system does not have a CAP (Consistency, Availability, Partition
-tolerance) position — CAP only says something once there is more than one replica and a
-partition is possible.
+**In two different places, on purpose** (D-014, D-015, D-040). CAP (Consistency, Availability,
+Partition tolerance) only says something where there is more than one replica and a partition is
+possible, so each plane is described separately.
 
-Saying that plainly is a stronger answer than claiming a position the architecture does not
-earn. **The real answer comes from F3**, which is where this system actually chooses, and it is
-written here the moment F3 resolves.
+- **Data plane — available, and conflict-free by construction.** Chunks are immutable and named by
+  their own hash, so two replicas cannot disagree and there is no "latest version" for a read to
+  miss; the quorum rule `W + R > RF` does not apply (D-014). `W` buys durability and `R` availability,
+  independently: `W = 2` by default, so an acknowledged chunk is on two flushed disks; `R = 1`,
+  because the reader verifies the hash itself. With one replica dead, `W = 2` acknowledged every write
+  and `W = 3` refused 56 of 300 until the ring evicted it (`BENCHMARKS.md` §6).
+- **Ring membership — consistency over availability for a node that has lost contact.** A node that
+  loses every node it knew refuses to route rather than claim the whole ring (D-040): it cannot tell
+  "everyone else died" from "I am cut off", and claiming the ring under a partition would build a
+  second, disjoint ring.
+- **Control plane — one tracker.** One process holds the namespace, so there is nothing to be
+  consistent *between*, and it is not available under its own failure. The namespace is write-once
+  (D-059) and its log is a list of effects (D-058), which is what a Raft group would replicate. Not
+  built.
 
-**To flip it:** — pending F3.
+**To move it:** `W` is per request (1, 2 or 3), so the data plane's durability/availability point is a
+measured curve rather than a constant (D-046, D-053). Hinted handoff would raise write availability
+without lowering `W` (named in D-015, not built). A Raft group behind the tracker would keep the
+namespace available while a majority of its replicas is up, and linearizable.
 
 ---
 
@@ -2641,7 +2653,8 @@ transfer, and two connections whose failures have to be matched up, for no gain 
   be added to the one function that knows which verbs carry bodies.
 - A chunk is at most 512 KiB. D-017 stores a file's manifest as a chunk, so one manifest holds at most
   12,800 chunk hashes — a 6.25 GiB file. A larger file needs a manifest split across chunks; that belongs
-  to Phase 5, where manifests are built.
+  to Phase 5, where manifests are built. *(Settled by D-054: a text manifest holds at most 8,192 entries,
+  and a larger file gets a tree of manifests.)*
 - A peer that sends the body slowly holds a thread until each `recv` times out; there is a deadline per
   system call, not per body.
 
