@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-071: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-072: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-071 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-072 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 63 recorded here (F1–F62 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 64 recorded here (F1–F63 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -300,6 +300,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F60** | **How many tracker replicas?** Two; three; five; or primary–backup without consensus. | Sets how many failures the namespace survives, what each write waits for, and on one host how much of the cost is contention. | **RESOLVED** — D-069 |
 | **F61** | **Where does the Raft protocol live?** In the server, among threads and sockets; in a socket-free core with time, storage and messages passed in; or in an external library. | Decides whether message loss, reordering and a crash between any two steps can be constructed and replayed in a test. | **RESOLVED** — D-070 |
 | **F62** | **How do replicas talk?** A fresh connection per call; a persistent connection per pair; UDP; and on which port, with how many calls in flight. | Decides what a lost message is, whether a reply can be mistaken for another's, and how replication batches. | **RESOLVED** — D-071 |
+| **F63** | **The replica's concurrency.** One lock held across the flush but never a network call; the lock released during the flush; or an event loop. And who sends to each peer. | Decides whether "flush before replying" holds by construction, and what a slow disk or a frozen peer delays. | **RESOLVED** — D-072 |
 
 ---
 
@@ -3886,3 +3887,47 @@ is bounded by round trips, not by the write rate. No authentication: anyone who 
 `VOTE` or `APPEND` (as for every message in this system).
 
 **Evidence:** pending.
+
+---
+
+### D-072 — One lock over the Raft state and the namespace, never held across a network call, held across the flush; one sender thread per peer
+
+**Fork:** F63. **Date:** 8 Oct 2026. **Depends on:** D-030, D-070. **Gates:** the replica's concurrency model.
+
+**The decision.** A replica's Raft core and its namespace sit behind **one `std::mutex`**. Every call into the core
+happens under it; **no thread holds it during a network call**. The flush (`fdatasync`) that makes a step durable
+**does** happen under it.
+
+Threads: the `accept` loop and one per connection (as before, D-061's read deadline applies); a **ticker** that
+calls the core every 5 ms, which starts elections and schedules heartbeats; and **one sender per peer**, which
+takes the newest call pending for that peer, sends it without the lock, and feeds the reply back under it. Client
+requests wait on a condition variable until their entry is applied or their read can be answered (D-075, D-076).
+
+**Why the flush is inside the lock.** Raft's rule is that a replica updates stable storage *before* responding
+— a vote, an append's success, or a leader counting its own entry. With the flush inside the lock, no other
+thread can observe, and no reply can carry, state that is not yet durable: the rule holds by construction rather
+than by every code path remembering it. It is the same reasoning that put the single tracker's append under its
+lock (D-058).
+
+**Why one sender per peer.** A follower that is slow or frozen blocks only its own sender for at most the call
+deadline; the leader keeps replicating to the others and committing with them. A peer has **one pending slot**,
+and a newer call replaces an unsent older one: safe, because every `APPEND` carries everything the follower needs
+from its next index on, and a vote request is replaced only by a newer term's.
+
+**Rejected: release the lock during the flush.** More concurrency — other threads could run while the disk works
+— and from then on every reader must distinguish what is durable from what is only in memory. That is exactly where
+implementations acknowledge entries that a crash then loses, or forget a vote.
+
+**Rejected: an event loop owning all state** (one thread; others pass it messages). No lock at all, but a
+blocking flush blocks the loop just as it blocks the lock holder, and the server would be rebuilt around an event
+loop that nothing else in the project uses.
+
+**Rejected: a thread per call** instead of a sender per peer. Unbounded threads when a peer is slow, and two
+calls to one follower in flight at once, arriving in either order.
+
+**Cost accepted.** While a flush runs — milliseconds — nothing else on that replica proceeds: heartbeats wait, so
+a slow disk can delay them past a follower's timeout (D-073's rule tests for exactly this), and on the leader,
+proposals are serialised at the flush rate (D-082 measures it). One lock means the namespace's own mutex is gone:
+the namespace is protected by the replica's lock.
+
+**Evidence:** pending — ThreadSanitizer through `test-replica` and the end-to-end suites.

@@ -67,3 +67,15 @@ came after it arrived (D-076).
 | **A persistent connection per pair** | reconnect logic, and a reply that may belong to an earlier call that timed out |
 | **UDP** | batches larger than a datagram need a second framing scheme |
 | **A separate port for replicas** | two addresses per replica for an isolation nothing measured needs |
+
+### Concurrency — [D-072](../ARCHITECTURE.md#d-072--one-lock-over-the-raft-state-and-the-namespace-never-held-across-a-network-call-held-across-the-flush-one-sender-thread-per-peer)
+
+One mutex over the core and the namespace. Network calls happen only outside it; the flush happens inside it, so no
+thread can see — and no reply can carry — state that is not yet on disk. Threads: one per connection, a ticker every
+5 ms, and one sender per peer, whose single pending slot always holds the newest call for that peer.
+
+| Alternative | Why not |
+|---|---|
+| **Release the lock during the flush** | every reader must then tell durable state from state in memory — where votes get forgotten |
+| **An event loop owning all state** | a blocking flush blocks the loop just the same, and nothing else in the project uses one |
+| **A thread per call** | unbounded threads behind a slow peer, and two calls to one follower arriving in either order |

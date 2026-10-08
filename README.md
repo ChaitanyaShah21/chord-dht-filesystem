@@ -142,6 +142,7 @@ has every alternative considered and what it would have cost.
 | **Three tracker replicas** (D-069) | the smallest group that survives a failure, like the chunk plane's three copies | two (a majority of two is two: it survives nothing); five by default (measured, not chosen) |
 | **Raft as a socket-free core** (D-070) | time, storage and messages are passed in, so tests replay lost, reordered and duplicated messages and crashes from a seed | Raft written among the server's threads and sockets |
 | **A fresh connection per Raft call** (D-071) | a lost connection is a lost message; every reply is the reply to the request just sent | persistent connections, whose replies can belong to an earlier, timed-out call |
+| **One lock, held across the flush, never across a call** (D-072) | no reply can carry state that is not yet on disk | releasing the lock during the flush |
 
 ## Project structure
 
