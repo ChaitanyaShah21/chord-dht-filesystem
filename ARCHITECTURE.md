@@ -234,6 +234,7 @@ decided before the paper is one that cannot be defended in December.
 | **F48** | **How does a client find the ring?** Addresses on its command line, tried in order; addresses handed out by the tracker; a seed file; or learning the membership from a first contact. | Decides whether the tracker carries liveness state about nodes, whether a client can read a file with the tracker down, and where every lookup's first request lands. | **RESOLVED** — D-057 |
 | **F49** | **What does the tracker become?** The name-to-manifest map alone, with an effect log; the legacy commands kept beside it; or a new program beside the legacy tracker. And what happens to users, groups, `update_seeder` and the persistence log format (D-009)? | Decides the size of the mutable state that consensus will later replicate, what recovery replays, and how much legacy machinery stays alive. | **RESOLVED** — D-058 |
 | **F50** | **What happens when a name is registered twice?** Refuse a different key and accept the same one again; the last writer wins; keep versions; or overwrite on request. | With no access control and no deletion, decides whether one user can replace another's file, and whether a retried upload succeeds. | **RESOLVED** — D-059 |
+| **F51** | **What happens to the legacy client and tracker code, their framing copies, and the suites that test them?** Rebuild both programs on the node's framing and remove the legacy path, re-pointing its suites; bolt the ring path onto the legacy client; or keep the legacy pair beside the new one. | Decides whether the framing rules exist once or three times (D-021), whether the legacy suites still test anything, and whether the Phase 0 baseline can be re-run. | **RESOLVED** — D-060 |
 
 ---
 
@@ -3374,5 +3375,48 @@ until ownership exists.
 
 **Cost accepted.** A mistaken upload holds its name until deletion with an owner token is built (D-023, Block 2).
 Changing a file means uploading it under a new name.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-060 — The client and tracker are rebuilt on the node's framing; the legacy transfer path is removed, and its suites re-pointed
+
+**Fork:** F51. **Date:** 8 Oct 2026. **Depends on:** D-010, D-011, D-021, D-024. **Closes:** the duplication
+recorded in D-021.
+
+**The decision.**
+- **One framing copy.** `client.cpp` and `tracker.cpp` are rewritten on `net.cpp`, as the node and the `chunk` tool
+  already are: one `send_line` enforcing one-reply-one-line (D-010), one `recv_line`, one body framing (D-044), one
+  connect with its deadline set before the handshake (D-025). Both ignore `SIGPIPE` (D-011).
+- **Logic without sockets, as everywhere else.** The client's work — chunking, manifests (D-054), the worker pool
+  (D-056), the part file (D-055) — lives in `transfer.{h,cpp}`, and the tracker's in `names.{h,cpp}` (D-058), each
+  with its network calls passed in, so both are tested in process. The client moves chunks with the same
+  `put_chunk` and `get_chunk` the `chunk` tool uses (D-046, D-049).
+- **The legacy BitTorrent-style code is removed from the tree:** the peer server and `GET_PIECE`, the download
+  workers, the heartbeat, users and groups. It stays in history — `pre-resurrection` tags the coursework, and the
+  Phase 0 baseline is reproducible at `e381179`.
+- **The five legacy suites keep their names and their purpose, re-pointed at the new programs:** `e2e-smoke` (a file
+  round trip compared by SHA-1 — the R2 regression), `e2e-edge` (the size sweep across the chunk boundary — R3 and
+  R4; all seven cases are now expected to pass, because a zero-byte file is a manifest with zero entries),
+  `e2e-persistence` (names survive a restart — R1), `e2e-framing` (malformed requests answer in exactly one line —
+  R6), `e2e-hangup` (an abrupt disconnect does not kill the tracker — R9). Each script's header records the change.
+- **D-010's plan for length-prefixed tracker replies is withdrawn.** It was scheduled for this phase because a reply
+  might one day carry structured output. Under D-017 no tracker reply carries a payload — the largest is a page of
+  names, bounded by the line limit — and length prefixes are used where payloads are, in the chunk plane (D-044).
+
+**Defects this closes structurally:** R7 (a peer sized an allocation: `body_length` refuses an oversized length before
+anything is allocated), R8 (no timeouts on the peer path: every client socket carries the 5 s deadline, D-024), D3
+(a peer-chosen path reached `open`: the only peer-supplied part of any path is a validated key, D-045), and D1, D6,
+D7 and D8, whose code is gone.
+
+**Rejected: add the ring path to the legacy client.** Three framing copies remain, and one program carries two
+transfer designs and a peer server nothing uses.
+
+**Rejected: keep the legacy pair as separate programs** so the baseline can be re-run from the current tree. It is
+re-run from its own commit instead (D-066), which is the stronger reproduction: the exact code that produced it.
+
+**Cost accepted.** The legacy suites no longer test legacy code — it is gone; they test the same properties of the new
+programs. The baseline can be re-measured only from `e381179`.
 
 **Evidence:** none yet — design time.

@@ -1010,6 +1010,19 @@ be garbage nothing collects. **Rejected:** last writer wins, keeping versions, a
 three let any client replace any file until names have owners. **Cost:** a mistaken upload holds its name until
 deletion with ownership exists; to change a file, upload it under a new name.
 
+### One framing layer for every program, and the legacy path retired
+
+The client and the tracker are rebuilt on the same framing code as the node, so the one-reply-one-line rule, the body
+framing and the connect deadline each exist once instead of three times. Their logic — chunking, manifests, the worker
+pool, the namespace — sits in socket-free modules tested in process, like the node's. The BitTorrent-style peer server,
+piece protocol, heartbeat, users and groups are removed; they remain in the history, and the transfer baseline is
+reproducible at its own commit. The five suites written against the old programs keep their names and purpose — a
+hashed round trip, the chunk-boundary sweep, persistence across a restart, framing under malformed input, and surviving
+an abrupt disconnect — and now run against the new ones. The plan to length-prefix tracker replies is withdrawn: no
+tracker reply carries a payload any more. **Rejected:** adding the ring path to the old client (two designs and three
+framing copies in one program), and keeping the old pair alive just to re-run the baseline (it is re-run from its own
+commit). **Cost:** the baseline cannot be re-run from the current tree.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
