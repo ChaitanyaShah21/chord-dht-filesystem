@@ -1044,6 +1044,15 @@ protocol change, and the component measuring itself), a real corpus alone (one n
 content-defined chunking to fix insertions (it changes what a chunk is, and the chunk-size comparison with it).
 **Cost:** four of the five cases are arithmetic the measurement confirms.
 
+### The chunk-size sweep runs on a build with one constant changed
+
+The comparison with the old system is pinned at 512 KiB; the sweep across 64 KiB to 8 MiB needs chunks larger than the
+framing accepts. The limit is one compile-time constant, so the sweep builds a second copy of the tree with it raised to
+8 MiB and runs all five sizes on that build; the 512 KiB point is run on both builds to show the raised limit alone
+changes nothing. **Rejected:** a run-time limit on every program (one value threaded everywhere, and two programs could
+disagree on what a valid message is), stopping the sweep at 512 KiB (no large-chunk side), and raising the default (the
+per-process memory cap was sized for 512 KiB). **Cost:** two builds to keep straight; both fingerprints are recorded.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

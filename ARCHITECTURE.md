@@ -237,6 +237,7 @@ decided before the paper is one that cannot be defended in December.
 | **F51** | **What happens to the legacy client and tracker code, their framing copies, and the suites that test them?** Rebuild both programs on the node's framing and remove the legacy path, re-pointing its suites; bolt the ring path onto the legacy client; or keep the legacy pair beside the new one. | Decides whether the framing rules exist once or three times (D-021), whether the legacy suites still test anything, and whether the Phase 0 baseline can be re-run. | **RESOLVED** — D-060 |
 | **F52** | **How long may a peer take to send what it announced?** A deadline per request line and per body, enforced before every receive; a per-system-call timeout; an event loop with timers; or nothing. | A peer that announces a chunk and never sends it holds a memory slot and a thread; with the chunk path user-facing, any client can do it. | **RESOLVED** — D-061 |
 | **F53** | **How is deduplication measured, and on what?** Counted at the stores, on stated synthetic edits plus one real corpus; reported by the client; a real corpus only; or not measured. | D-014 claims deduplication for free; the number decides whether that claim survives, and the workload decides whether the number means anything. | **RESOLVED** — D-062 |
+| **F54** | **How is the chunk-size sweep run above the 512 KiB framing limit?** A second build with a raised limit, used for every point; a run-time limit on every program; a sweep only up to 512 KiB; or a raised default. | D-016 promised five sizes up to 8 MiB, and the framing and stores refuse anything above 512 KiB (D-044). | **RESOLVED** — D-063 |
 
 ---
 
@@ -3497,5 +3498,36 @@ content survive an insertion, which is why backup systems use them. It changes w
 
 **Cost accepted.** Cases 1 to 4 are arithmetic; measuring them checks that the implementation achieves the arithmetic,
 not that deduplication is useful. Case 5 is one corpus.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-063 — The chunk-size sweep runs on a second build whose only change is the largest chunk it accepts
+
+**Fork:** F54. **Date:** 8 Oct 2026. **Depends on:** D-016, D-044, D-052. **Gates:** the chunk-size curve.
+
+**The decision.**
+- The largest chunk is a compile-time constant, `CHORDFS_MAX_CHUNK` (default 524,288), from which the framing limit
+  (D-044) and the store limit (D-045) both derive. The benchmark builds a second copy of the tree in a scratch
+  directory with `make CHUNK_LIMIT=8388608`, and runs **all five points** — 64 KiB, 256 KiB, 512 KiB, 2 MiB,
+  8 MiB — on that one build, so the points differ only in the chunk size the client chooses (`--chunk-size`).
+- The 512 KiB point is also run on the default build. The two should agree; if they do not, the raised limit itself
+  changed something, and that is reported.
+- The default build is unchanged: 512 KiB, everywhere.
+
+**Rejected: a run-time limit flag on every program.** The limit is a constant in the framing, the store, the node and
+the client; a flag threads one value through all of them, and two programs started with different values would
+disagree about what a valid message is.
+
+**Rejected: sweep only up to the limit** (32 to 512 KiB). Five honest points, but none on the large-chunk side whose
+cost D-016 predicted (one slow peer holding a whole transfer).
+
+**Rejected: raise the default to 8 MiB.** The body cap (D-052) was sized for 512 KiB: 32 bodies of 8 MiB is 256 MiB per
+process under load.
+
+**Cost accepted.** At 2 and 8 MiB each body slot holds 16 times the memory; the harness runs the sweep on a 16-process
+ring with the default worker count, which stays well under this machine's memory (`ESTIMATE`: at most workers × 3 bodies
+in flight). Two builds to keep straight: the harness records the limit and both fingerprints with every row.
 
 **Evidence:** none yet — design time.
