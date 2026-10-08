@@ -967,6 +967,18 @@ and deleting on failure (a crash leaves a full-size partial file under the real 
 fixed part-file name for resuming (needs a record of finished chunks; not built). **Cost:** a whole-file `fsync` per
 download, measured separately.
 
+### A transfer is a fixed pool of workers, and its size comes off a curve
+
+A transfer runs `--workers N` threads that take chunk numbers from one atomic counter; each does its own chunk end to
+end — lookup, transfer, verification, write — so memory is one chunk per worker and no two workers share a chunk.
+Because content addressing gives every chunk an unrelated owner, there is no locality to exploit and no reason to
+order the work. A chunk is retried twice, roughly half and one stabilisation period apart, so a freshly dead node can
+be evicted in between; a chunk that still fails stops every worker and fails the whole transfer. The default `N` is
+chosen from the measured throughput curve by a rule fixed before measuring. **Rejected:** a thread per chunk
+(thousands of threads, and every node's body cap hit at once), an `epoll` event loop (the scalable design, and a
+rewrite of every tested exchange), and batching by owner (one slow node stalls a whole batch). **Cost:** a small file
+cannot use more workers than it has chunks.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

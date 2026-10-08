@@ -230,6 +230,7 @@ decided before the paper is one that cannot be defended in December.
 | **F44** | **How much of a chunk is in memory, and is it bounded?** The whole body, shared between parallel sends, capped per process; streamed to disk while hashing; uncapped; or a waiting queue. | Sets memory per node under write load, whether a client can make a node allocate without limit, and how many processes fit on this machine. | **RESOLVED** — D-052 |
 | **F45** | **How are W, durability and re-replication measured?** A fresh ring per W, or all W on one ring under one failure; durability from copy counts, or by killing the coordinator at acknowledgement; and who judges that RF = 3 is restored. | Decides whether the W comparison is between settings or between rings, and whether a durability claim was tested or inferred. | **RESOLVED** — D-053 |
 | **F46** | **What is a file's manifest, and what happens when it does not fit in one chunk?** A text manifest, split into a tree of manifests when large; a binary manifest; one flat manifest and a file-size limit; or a chain of manifests. | Decides the largest file the system can hold, how many round trips a download makes before its chunks can be fetched in parallel, and whether a manifest can be read and checked by hand. | **RESOLVED** — D-054 |
+| **F47** | **How is a transfer parallelised?** A fixed pool of workers taking chunk numbers from one counter, sized at run time; a thread per chunk; an event loop; or chunks batched by owner. And what does a transfer do when one chunk fails? | Sets throughput, the memory a transfer uses, how many connections land on a node at once, and whether throughput against parallelism can be measured as a curve. | **RESOLVED** — D-056 |
 
 ---
 
@@ -3216,3 +3217,43 @@ share one part file. Named as the way to add resume later, not built.
 - A `SIGKILL`ed client leaves a `.part-` file that nothing deletes.
 
 **Evidence:** none yet — design time.
+
+---
+
+### D-056 — A transfer runs a fixed pool of workers, sized at run time; one chunk that cannot be moved fails the whole transfer
+
+**Fork:** F47. **Date:** 8 Oct 2026. **Depends on:** D-016 (all chunk keys are known up front, so every lookup can
+run at once). **Gates:** throughput, and the throughput-against-parallelism curve.
+
+**The decision.**
+- A transfer starts `--workers N` threads (1 to 64). Each takes the next chunk number from **one atomic counter**
+  with `fetch_add` — the inherited client's work queue, kept because it is correct: `fetch_add` returns the old
+  value and increments in one indivisible step, so no two workers take the same chunk and none is skipped.
+- A worker does all of its chunk's work: for an upload, read the chunk with `pread` and write it through the ring
+  (`put_chunk`, D-046); for a download, look up the owner, read through the replicas (`get_chunk`, D-049) and write
+  it with `pwrite`. Memory is one chunk per worker.
+- **A failed chunk is retried twice**, after 250 ms and then 500 ms — about half and one stabilisation period
+  (D-039), so a node that has just died can be evicted between attempts. A chunk that fails three times sets a shared
+  `stop` flag (an `std::atomic<bool>`); every worker finishes the chunk in hand and stops; the transfer fails as a
+  whole (D-055 deletes the part file). A file with one missing chunk is not a file.
+- **The default `N` comes off a measured curve, by a rule fixed before measuring:** the smallest power of two whose
+  median 100 MB download throughput, on 16 processes, is within 10 % of the best median measured over
+  `N ∈ {1, 2, 4, 8, 16, 32}`. Until it is measured the default is 8, the number of cores.
+
+**Rejected: a thread per chunk.** No pool to size; a 4 GiB file starts 8,192 threads, and every node's 32-body cap
+(D-052) is hit at once.
+
+**Rejected: an event loop (`epoll`) with non-blocking sockets.** One thread drives hundreds of transfers and is how
+a production client is built. It means rewriting every blocking exchange in `net.cpp`, `lookup.cpp` and `chunk.cpp`
+as a resumable state machine — the routing and chunk code the earlier phases tested and measured.
+
+**Rejected: chunks batched by owner, one connection per node.** Fewer connections, but every chunk still needs a lookup
+to find its owner, and one slow owner then stalls its whole batch instead of one chunk.
+
+**Cost accepted.**
+- Parallelism is capped by the chunk count: a 1 MB file is two chunks, so two workers are all it can use.
+- `N` workers put up to `N × RF` bodies in flight across the ring; on a three-process ring 32 workers can reach a
+  node's 32-body cap, and `ERR busy` is then retried.
+- Blocking threads: each worker spends most of its time waiting on a socket.
+
+**Evidence:** none yet — design time. The curve is D-066 item 2.
