@@ -147,3 +147,14 @@ forces one election.
 |---|---|
 | **Neither** | a cut-off leader's clients each wait their whole deadline |
 | **Pre-vote as well** | a second call type and election state, to save one election per healed partition |
+
+### No snapshots — [D-078](../ARCHITECTURE.md#d-078--no-snapshots-the-namespace-is-write-once-so-a-snapshot-would-be-as-large-as-the-log)
+
+Names are never overwritten or deleted, so the state is the set of successful registrations and a snapshot would
+remove only no-ops, term records and repeated attempts. Restart replays the file; a lagging follower catches up by
+ordinary `APPEND` calls.
+
+| Alternative | Why not |
+|---|---|
+| **Snapshots and `InstallSnapshot`** | a second replication path, to save almost nothing |
+| **Local compaction** | a snapshot format and recovery, bounding the file but not catch-up |

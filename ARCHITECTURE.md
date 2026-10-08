@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-077: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-078: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-077 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-078 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 69 recorded here (F1–F68 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 70 recorded here (F1–F69 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -306,6 +306,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F66** | **When is a registration acknowledged, and what makes a retry safe?** After its own entry is applied, with no sessions; client sessions; at commit; or from local state. | Decides what `OK` promises across a leader change, and whether a retried registration can apply twice. | **RESOLVED** — D-075 |
 | **F67** | **How are reads made linearizable?** Through the log; ReadIndex; leader leases; or follower reads of found names. | Decides what a read costs and whether a deposed or paused leader can answer stale. | **RESOLVED** — D-076 |
 | **F68** | **Does a leader notice it is cut off, and does a returning replica disrupt the group?** Neither; check-quorum; check-quorum and pre-vote. | Decides what clients of a cut-off leader see, and whether a healed partition costs an election. | **RESOLVED** — D-077 |
+| **F69** | **Snapshots and log compaction?** Snapshots with `InstallSnapshot`; local compaction; or none. | Decides restart and catch-up time, and whether there is a second replication path. | **RESOLVED** — D-078 |
 
 ---
 
@@ -4142,3 +4143,30 @@ unavailability (D-073's measurement). A leader that steps down while a majority 
 past 2E — causes an election that nothing needed.
 
 **Evidence:** pending — `test-raft`, `e2e-raft.sh` (the minority leader).
+
+---
+
+### D-078 — No snapshots: the namespace is write-once, so a snapshot would be as large as the log
+
+**Fork:** F69. **Date:** 8 Oct 2026. **Depends on:** D-023, D-059, D-074. **Gates:** restart time and catch-up.
+
+**The decision.** No snapshots and no log compaction. A replica replays its whole file at start; a follower that is
+behind, or new, catches up through ordinary `APPEND` calls of up to 64 KiB of entries each.
+
+**Why.** Snapshots exist because a state machine's state is usually much smaller than its history — keys are
+overwritten and deleted, so most of the log no longer matters. Here every name that is registered stays, with its
+first key, for ever (D-059; no deletion, D-023): the state *is* the set of successful registrations. A snapshot
+would remove only the no-ops, the term records, and repeated or conflicting attempts. The single tracker's numbers
+bound the cost of not having one: 77 bytes per name, and 100,000 names replayed in 0.39 s (`BENCHMARKS.md` §5).
+
+**Rejected: snapshots with `InstallSnapshot`** (Raft paper §7). The general answer, and a second replication path
+(chunked snapshot transfer, a follower switching from entries to a snapshot and back), with its own failure cases,
+to save almost nothing.
+
+**Rejected: local compaction only** (each replica snapshots for itself and keeps entries until every follower has
+them). Bounds the file, not catch-up, and still adds a snapshot format and its recovery.
+
+**Cost accepted.** Restart and catch-up are proportional to the whole history, not to the state. If deletion is ever
+built, names leave the state but not the log, and snapshots become worth having.
+
+**Evidence:** pending — replay time against log size, `BENCHMARKS.md` §7.
