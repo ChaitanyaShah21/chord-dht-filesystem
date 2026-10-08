@@ -531,7 +531,7 @@ thought about it, and a tracker that links OpenSSL without using it has no reaso
 **Date:** 1 Sep 2026 · **Phase:** 0 · **Commit:** this session
 
 **The fork:** `scripts/e2e-edge.sh` sweeps file sizes across the piece boundary and currently
-fails five of seven cases, because it found defects R3 and R4 which are not yet fixed. Does a
+fails six of seven cases (only the 1-byte file passes, re-checked by running the suite at `24bdf2d`), because it found defects R3 and R4 which are not yet fixed. Does a
 failing test get committed?
 
 | Option | What it means in practice | Cost |
