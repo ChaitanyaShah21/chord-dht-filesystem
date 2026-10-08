@@ -193,7 +193,7 @@ decided before the paper is one that cannot be defended in December.
 | **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Block 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
 | **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
 | **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
-| **F7** | **What is on disk after a failed transfer?** Today: a full-size, zero-filled file, indistinguishable from a real one by size. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. Atomic rename is the standard answer and costs a story about the leftover `.part` file. | OPEN — decide before Phase 5 |
+| **F7** | **What is on disk after a failed transfer?** Before Phase 5: a full-size, zero-filled file, indistinguishable from a real one by size. A temporary part file renamed into place; writing to the final name and deleting on failure; or holding the file in memory. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. | **RESOLVED** — D-055 |
 | **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
 | **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
 | **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
@@ -3168,5 +3168,51 @@ be fetched in parallel; a tree waits for its depth.
   roughly 200 KiB per GiB of file (`ESTIMATE`).
 - The per-entry byte count is redundant in a data manifest (it follows from `size` and `chunk`); it is kept so that
   every level has one format and one checker, and so that a wrong count is detected rather than trusted.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-055 — A download writes a part file, flushes it, and renames it into place; a failure leaves nothing named like the file
+
+**Fork:** F7 (open since the Phase 0 audit, defect R2b). **Date:** 8 Oct 2026. **Depends on:** D-054.
+**Gates:** what a user can trust about a file that exists.
+
+**The decision.** A download never writes to its destination name until the file is complete and flushed:
+1. The whole manifest tree is fetched and checked first (D-054). Nothing touches the disk before that.
+2. A part file is created **in the destination's own directory** — `rename(2)` is atomic only within one
+   filesystem — named `<dest>.part-<pid>-<n>`, opened with `O_CREAT | O_EXCL` so it can never clobber anything,
+   and sized to the file's length with `ftruncate` (a sparse file: no blocks are written).
+3. Each chunk, once its bytes hash to its key and its length equals the manifest's count, is written at its offset
+   with `pwrite`, looping over short writes.
+4. When every chunk is written: `fsync` the part file, `rename` it over the destination, `fsync` the directory.
+   Only then does the client report success. A file already at the destination is replaced in one step: a reader
+   sees the old file or the new one, never a mixture.
+5. **On any failure** the part file is unlinked and the destination is untouched — an older file there survives.
+6. **On `SIGINT` or `SIGTERM`** a handler unlinks the part file and exits. `unlink` is on POSIX's list of
+   async-signal-safe functions, so it may be called from a handler; the path it unlinks is written into a fixed
+   buffer before the file is created, and a flag of type `volatile sig_atomic_t` says whether it is live.
+   A signal that lands after the rename unlinks a name that no longer exists, which is harmless — so no ordering
+   between the rename and clearing the flag is needed.
+7. Only `SIGKILL` or a machine crash can leave a part file behind, and its name says it is partial. Nothing
+   resumes from it.
+
+**Rejected: preallocate the destination and write into it** — the legacy client's design, and defect R2b: a failed
+download left a full-size file of zeros under the real name. Size is not evidence of completeness.
+
+**Rejected: write to the destination and delete it on failure.** A crash or `SIGKILL` leaves a full-size partial file
+under the real name, and a file that was already there is destroyed before its replacement is complete.
+
+**Rejected: hold the whole file in memory and write it at the end.** Memory equal to the file size.
+
+**Rejected: a fixed name, `<dest>.part`, so an interrupted download can be resumed.** Resuming needs a record of which
+chunks are done, kept beside the part file and flushed as chunks land; and two downloads to one destination would
+share one part file. Named as the way to add resume later, not built.
+
+**Cost accepted.**
+- An `fsync` of the whole file before success is reported — its time is measured and reported separately in the
+  benchmarks (D-066).
+- Disk space for the part file during a download, on the destination's filesystem.
+- A `SIGKILL`ed client leaves a `.part-` file that nothing deletes.
 
 **Evidence:** none yet — design time.

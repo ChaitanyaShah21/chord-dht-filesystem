@@ -955,6 +955,18 @@ format (more entries per chunk, unreadable by eye — and capacity stops matteri
 manifest with a 4 GiB limit, and a chain of manifests (a 40 GiB file would wait for ten sequential fetches before its
 download could go parallel). **Cost:** a fetch per level, and about 100 bytes of client memory per chunk.
 
+### A failed download leaves nothing that looks like the file
+
+A download first fetches and checks the whole manifest, then writes verified chunks into a part file in the
+destination's directory, flushes it, and renames it over the destination — one atomic step, so an existing file is
+replaced whole or not at all. On any failure the part file is deleted and the destination is untouched; `SIGINT` and
+`SIGTERM` delete it too, from a signal handler, since `unlink` is async-signal-safe. Only `SIGKILL` or a crash can
+leave a partial file, and its name ends in `.part-`. The inherited client preallocated the destination at full size
+before fetching a byte, so a failed transfer left a full-size file of zeros. **Rejected:** writing to the destination
+and deleting on failure (a crash leaves a full-size partial file under the real name), buffering in memory, and a
+fixed part-file name for resuming (needs a record of finished chunks; not built). **Cost:** a whole-file `fsync` per
+download, measured separately.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
