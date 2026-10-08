@@ -10,7 +10,7 @@ defended.
 measurement.
 
 > **Status:** §1, the single-peer transfer baseline, §2, lookup hop count versus ring size,
-> §4, time to reconverge after nodes are killed, and §6, chunk placement, replication and repair, are measured. §1 was taken deliberately *before* any optimisation, because a "before" number
+> §4, time to reconverge after nodes are killed, §5, parallel chunked transfer, and §6, chunk placement, replication and repair, are measured. §1 was taken deliberately *before* any optimisation, because a "before" number
 > cannot be recovered afterwards. Further entries land as each phase is measured.
 
 ---
@@ -58,7 +58,8 @@ The headline results. Each links to its full entry below.
 |---|---|---|---|---|
 | *Single-peer transfer baseline, 100 MB* | **71.2 MB/s** (median of 3) | — this **is** the before | `e381179` | §1 |
 | *Ring reconverges after node failure* | **0.63 s median** to every successor and predecessor correct, one of 64 nodes killed, 1 s stabilisation period (9 of 10 runs under 1 s) | 8 adjacent deaths, the whole successor list: 1.49 s, worst 4.14 s → **0.36 s**, worst 0.81 s (D-043) | `b171554` (before: `5b6830d`) | §4 |
-| *Sustained transfer throughput across N peers* | — | — | — | §5 pending |
+| *Parallel chunked transfer, 100 MB* | **378 MB/s** download (median of 5; 16 processes × 8, 8 workers, 512 KiB chunks, every chunk hash-verified) — 293 MB/s including the final flush; uploads 77 MB/s with W = 2 flushed | **70.1 MB/s**, the single-seeder system re-run the same day at `e381179` (5.4×); and 103 MB/s for the same ring at 1 worker (3.7×, parallelism alone) | `2e7c445` | §5 |
+| *Deduplication* | identical content: 100 % shared; an in-place edit: 199 of 201 chunks shared; **20 real commits of this repository as tar files: 1 of 97** | — measured against predictions stated first | `2e7c445` | §5 |
 | *Virtual nodes even out storage* | busiest of 64 processes stores **1.52×** the mean with 8 virtual nodes per process; CV of copies per process **0.20** (median of 20 address sets; the real ring matched the simulation file for file) | **2.80×**, CV 0.57 with one member per process | `7d99fc0` | §6 |
 | *Three copies restored after a process dies* | **2.2 s median** (1.8–2.9 s, 5 runs) from the kill until every chunk the dead process held is back on three correct live processes (16 processes × 8, 300 chunks of 512 KiB) | — | `7d99fc0` | §6 |
 | *W: what it buys* | with one replica dead, W = 2 acknowledged **300/300** writes and W = 3 **244/300**; W = 1 answers in 14 ms against 31 ms but each acknowledged chunk is on one disk for ~18 ms | — a trade-off curve, not an optimisation | `7d99fc0` | §6 |
@@ -452,6 +453,153 @@ not carry it.
 
 ---
 
+### §5 · Files through the ring: parallel chunked transfer — **MEASURED 8 Oct 2026**
+
+**Questions this answers:** how much faster is the new transfer path than the single-seeder system it replaced,
+and how much of that is parallelism? How does throughput move with the number of workers, the size of the ring and
+the chunk size? What does a chunk cost, at the median and in the tail? How much does content addressing
+deduplicate, and where does it fail? What does the tracker cost per name?
+
+![Throughput and per-chunk latency against workers and ring size](docs/figures/transfer-workers.png)
+![Throughput and per-chunk latency against chunk size](docs/figures/transfer-chunks.png)
+
+**Commit:** `2e7c445`, clean working tree, binaries rebuilt with `make clean && make` immediately before the run
+(16:37–16:59 UTC, 8 Oct). **Harness:** `scripts/bench-transfer.py` (committed at `c878ede`; the commit after it,
+`2e7c445`, fixed a ring livelock the first attempt at this run exposed — D-067 — and changed the harness only to
+clean up a ring that fails to start). Summaries: `scripts/plot-transfer.py` → `docs/figures/transfer.csv` and the two
+figures. Raw rows: `bench/raw/transfer-2e7c445.csv`, per-chunk times `bench/raw/latency-2e7c445.csv` (not committed).
+Timer sanity before the run: a 1 s sleep measured 1.000 s on both the monotonic and the wall clock.
+
+**Method (decision D-066).** Every repetition starts a fresh `tracker` and a fresh ring of `node --wired` processes
+(8 members each, T = 1 s, D = 200 ms, each with its own chunk store), waits until an oracle in the harness confirms
+every successor and predecessor, uploads a file from `testdata/` with the real `client` (W = 2), downloads it, and
+compares SHA-1 with the source. **Every one of the 116 transfers came back identical.** Five repetitions per point;
+the median is reported with the slowest and fastest. Throughput is bytes ÷ 2^20 ÷ seconds, as the baseline computed
+it. Download time is the client's own **ready** time — from its start to every chunk verified and written — which is
+where the baseline's clock stopped ("every piece verified"; its client never flushed). The flush and rename that
+follow (D-055) are reported separately, and so is the wall time to the client's exit. The source files and the
+nodes' chunk files are in the page cache, as the baseline's seeder file was.
+
+#### Before and after (512 KiB chunks throughout)
+
+The baseline was **re-run the same day at its own commit**, `e381179`, with its own harness, five repetitions, as a
+control: the machine now has more free memory than in September, and a same-day run separates machine drift from the
+change. (A first control earlier the same day gave 19.1 / 49.4 / 72.0 MB/s.)
+
+| File | Single seeder, Sept (`e381179`) | **Single seeder, re-run 8 Oct** | Ring, 1 worker | **Ring, 8 workers** | Ring, 8 workers, wall incl. start, flush, rename |
+|---|---:|---:|---:|---:|---:|
+| 1 MB | 20.9 MB/s | **17.9** | 73.3 (43.0–80.6) | **101.8** (48.0–108.2) | 49.1 |
+| 10 MB | 46.2 | **54.7** | 123.9 (93.8–130.7) | **313.2** (216.3–336.9) | 173.3 |
+| 100 MB | 71.2 | **70.1** | 103.2 (99.4–111.2) | **378.2** (311.2–391.9) | 293.2 |
+
+- **Against the system it replaced: 5.4× at 100 MB** (378.2 against 70.1 MB/s), 5.7× at 1 and 10 MB. That comparison
+  moves several things at once — a ring instead of one seeder, three replicas, per-chunk hashing, a different client —
+  so it is the system-level result, not a claim about parallelism.
+- **The single-variable comparison is parallelism alone: 3.7× at 100 MB** (103.2 → 378.2 MB/s), same ring, same files,
+  same code, one worker against eight. At 1 MB there are only two chunks, and eight workers buy 1.4×.
+- **The flush is real:** `fsync` and rename of a 100 MB file took a median of 67 ms; with process start-up, the wall
+  figure is 293 MB/s — still 4.2× the baseline, whose client never flushed at all.
+- **Uploads** (no baseline exists: the old upload only hashed the file and sent a manifest): 100 MB in a median
+  1.30 s at 8 workers, **77 MB/s with every chunk's two acknowledged copies flushed** (W = 2; the third follows), and
+  20 MB/s at 1 worker.
+
+#### Workers (decision D-056's rule)
+
+100 MB, 16 processes. **The rule, fixed before measuring:** the smallest power of two whose median download
+throughput is within 10 % of the best.
+
+| Workers | 1 | 2 | 4 | **8** | 16 | 32 |
+|---|---:|---:|---:|---:|---:|---:|
+| Download, median MB/s | 102.4 | 183.4 | 298.6 | **376.7** | 362.6 | 323.7 |
+| slowest – fastest | 89–111 | 160–204 | 221–344 | 328–395 | 321–370 | 309–355 |
+| Per-chunk download p50 / p99, ms | 4.3 / 21.8 | 4.6 / 45.8 | 5.8 / 21.0 | **9.7 / 23.4** | 24.4 / 47.8 | 50.8 / 94.5 |
+| Upload, median MB/s (W = 2) | 19.0 | 31.5 | 52.4 | 70.0 | 85.1 | 90.3 |
+
+**Result: 8 workers**, the best median — the number of cores, which was already the default; the default is
+unchanged. Past 8, downloads get slower: the client's workers, 16 node processes and the kernel share eight cores,
+and each chunk waits longer (its p50 doubles from 8 to 16 workers and again to 32) without the ring delivering more.
+Uploads keep improving to 32, because each upload chunk spends most of its time waiting on two `fsync`s rather than on
+a CPU; more requests in flight overlap more flushes.
+
+#### Per-chunk latency
+
+A chunk's time is from the start of its lookup to its bytes verified and, for a download, written; retries included.
+At the headline setting (100 MB, 8 workers, 1,000 chunks): **p50 9.4 ms, p99 31.4 ms**; at 1 worker 4.2 / 13.1 ms. The
+tail is contention, not distance: at one worker a chunk's p99 is three times its p50, and parallelism raises both.
+An upload chunk at 8 workers: p50 47.9 ms, p99 101 ms — two flushed copies on the critical path (§6).
+
+#### Ring size
+
+100 MB at 8 workers: **3 processes 402.5 MB/s · 4 422.5 · 8 397.8 · 16 370.9 · 32 332.2** (medians). More processes
+mean more members (8 each), so slightly longer lookups (about ½ log₂ members hops, §2), and more processes sharing
+the same cores. On one host, adding nodes adds no disks, NICs or cores, so the curve cannot show a scaling benefit; it
+shows the cost, which is mild — 21 % from 4 to 32 processes.
+
+#### Chunk size (decision D-016, on the sweep build of D-063)
+
+100 MB, 16 processes, 8 workers. All five points on one build with the chunk limit raised to 8 MiB; the 512 KiB point
+also on the default build, where it gave 373.0 MB/s against 384.1 on the sweep build — within each other's spread, so
+the raised limit itself changes nothing.
+
+| Chunk | 64 KiB | 256 KiB | **512 KiB** | 2 MiB | 8 MiB |
+|---|---:|---:|---:|---:|---:|
+| Chunks in 100 MB | 1,600 | 400 | 200 | 50 | 13 |
+| Download, median MB/s | 100.4 | 284.5 | **384.1** | 424.4 | 536.0 |
+| Upload, median MB/s | 12.9 | 41.4 | 65.4 | 132.4 | 186.2 |
+| Per-chunk download p50 / p99, ms | 4.5 / 14.0 | 6.3 / 14.8 | 9.0 / 20.9 | 33.6 / 73.5 | 91.0 / 159.5 |
+
+**A failed prediction, recorded as one.** D-016 expected this curve might be nearly flat on loopback. It is not:
+throughput rises fivefold from 64 KiB to 8 MiB. Each chunk pays a fixed cost — a lookup of several hops, each a fresh
+TCP connection, and for an upload two flushes — and on loopback a large chunk costs almost nothing extra to move, so
+fewer, larger chunks win. A real network changes both sides: per-hop round trips make the fixed cost larger (favouring
+large chunks even more), while one slow peer holding an 8 MiB chunk stalls 8 % of a 100 MB file instead of 0.5 %, and a
+failed chunk costs 16 times as much to re-fetch — none of which loopback can show. **512 KiB stays the default:** it is
+the size the before/after was pinned to, its deduplication granularity is 16 times finer than 8 MiB's, and the gain
+beyond it on this host is 40 % at the price of 16 times the memory per in-flight chunk (D-052).
+
+#### Deduplication (decision D-062)
+
+One 16-process ring; each variant uploaded under its own name; new unique chunks counted from the files added to
+every store, divided by three. Predictions were written in D-062 before the run.
+
+| Upload | Chunks + manifests | New unique | Shared | Predicted |
+|---|---:|---:|---:|---|
+| `huge.iso`, 100 MB (200 chunks) | 201 | 201 | 0 | — |
+| the same bytes, another name | 201 | **0** | 201 | nothing new, manifest included |
+| 1 KiB overwritten at 50 MB | 201 | **2** | 199 | one chunk and the manifest |
+| 1 byte inserted at 1 MiB | 202 | **200** | 2 | every chunk after the insertion new |
+| 10 MB appended | 221 | **21** | 200 | 20 chunks and the manifest |
+| this repository at 20 consecutive commits, `git archive` tar files (1.5–1.7 MB each) | 97 | **96** | **1** | close to nothing shared |
+
+**Every synthetic case matched its prediction exactly**, which checks the implementation, not the idea. The real
+history is the useful number: **1 chunk of 97 shared.** A tar file lists the tree in sorted order, so files that change in
+most commits (`ARCHITECTURE.md`, `README.md`) sit in the first or second chunk, and any change in length shifts every
+byte after it; fixed-size chunks then never line up again. Content-defined chunking (Rabin fingerprints, FastCDC) is the known fix and is not built.
+
+#### The tracker (decision D-058; the evidence D-017 owed)
+
+One tracker, one client connection sending `REGISTER` one at a time, each acknowledged after its record is flushed.
+
+| Names | Log size | Bytes per name | Resident memory | Registrations per second |
+|---:|---:|---:|---:|---:|
+| 10,000 | 770,000 B | 77.0 | 8.1 MiB (+3.7 MiB) | 254 |
+| 100,000 | 7,700,000 B | 77.0 | 26.4 MiB (+22.0 MiB) | 197 (over the whole run) |
+
+**State is O(files):** 77 bytes of log and about 230 bytes of memory per name, whatever the file's size — a 100 MB
+file and a 1 KB file cost the tracker the same. **The ceiling is the flush:** about 200–250 registrations a second, one
+`fdatasync` each under one lock (D-058's stated cost; group commit is the fix). A restart with 100,000 names replayed
+the log and was listening again in 0.39 s.
+
+**Limits of these numbers.**
+- **One host.** No propagation delay, every replica equally fast, the page cache shared — the before/after compares
+  two designs on one machine, not network throughput.
+- **Warm caches.** Each chunk was written moments before it was read; a cold read would hit disk.
+- **The baseline is one seeder and this ring is 16 processes.** The 1-worker figure is the comparison that holds the
+  topology fixed.
+- **Above 8 workers the host saturates**, so the right half of the workers curve measures the scheduler.
+
+---
+
 ### §6 · Chunk placement, replication and repair — **MEASURED 8 Oct 2026**
 
 **Questions this answers:** how evenly do chunks spread over processes, with and without virtual nodes, and what
@@ -595,8 +743,8 @@ argue with. Prefer a plot wherever the parameter can be varied.
 | Lookup hops vs ring size, plotted against log₂N | Shows the O(log N) claim **empirically** instead of asserting it. This is the plot that proves Chord was actually implemented and not just described. | 2 |
 | Key distribution (keys per node) with and without virtual nodes | Justifies virtual nodes existing at all. Without them the spread is wide; the point is the *shape* of the histogram, not a single evenness figure. **Measured, §6.** | 4 |
 | Reconvergence time vs number of nodes killed simultaneously | Turns "it recovers" into a bounded claim, and exposes where the successor list runs out. **Measured, §4.** | 3 |
-| Throughput vs peer count, **with p50 and p99 chunk latency** | The tail is what gets asked about. A mean hides the one slow peer that dominates a chunked transfer. | 5 |
-| **Throughput vs chunk size, swept across at least three values** | Justifies the 512 KB chunk size with a curve rather than a precedent. The headline before/after comparison stays pinned at 512 KB, so the improvement is attributable to one variable (decision D-016). | 5 |
+| Throughput vs peer count, **with p50 and p99 chunk latency** | The tail is what gets asked about. A mean hides the one slow peer that dominates a chunked transfer. **Measured, §5.** | 5 |
+| **Throughput vs chunk size, swept across at least three values** | Justifies the 512 KB chunk size with a curve rather than a precedent. The headline before/after comparison stays pinned at 512 KB, so the improvement is attributable to one variable (decision D-016). **Measured, §5.** | 5 |
 | Before/after for every optimisation | An optimisation with no "before" number is a claim, not a result. | all |
 
 A curve justifies a parameter; a precedent from another system does not.

@@ -980,7 +980,8 @@ already uses `N` for **ring size**. All documents use **`RF`** for replication f
 `N`, because two similar-looking values meaning different things is the R10 hazard that has
 already bitten this codebase.
 
-**Evidence:** none yet — design time (R11). Phase 5 measures the deduplication rate.
+**Evidence (`BENCHMARKS.md` §5, `2e7c445`):** identical content shares every chunk, an in-place edit all but
+one; an insertion near the start shares almost nothing, and so did 20 real commits of this repository (1 chunk of 97).
 **Defence entry:** `DEFENCE.md` D-014
 
 ---
@@ -1107,8 +1108,10 @@ interesting.
 `scripts/e2e-edge.sh`. A 0-byte file is 0 chunks, and under D-014 the empty chunk has a perfectly
 well-defined hash. F5 and R4 meet in Phase 5, where the transfer layer is rewritten anyway.
 
-**Evidence:** the Phase 0 baseline at 512 KB already exists (`BENCHMARKS.md` §1). The sweep is
-Phase 5.
+**Evidence (`BENCHMARKS.md` §5, `2e7c445`):** at 512 KiB the new path is 5.4× the baseline re-run the same
+day, 3.7× from parallelism alone. The sweep is **not** flat, against the prediction above: 100 MB/s at 64 KiB to
+536 MB/s at 8 MiB, because each chunk pays a lookup and fresh connections whatever its size. 512 KiB stays, for the
+reasons in §5: the comparison is pinned to it, and the costs of large chunks are the ones loopback cannot show.
 **Defence entry:** `DEFENCE.md` D-016
 
 ---
@@ -1175,8 +1178,8 @@ payload-sized responses.
 immutable store. Human names change; content does not. The only thing that needs consensus is the
 mapping between them."*
 
-**Evidence:** none yet — design time (R11). Tracker state size versus file count is a Phase 5
-measurement and is the direct evidence for the `O(files)` claim.
+**Evidence (`BENCHMARKS.md` §5, `2e7c445`):** 77 bytes of log and about 230 bytes of memory per name at 10,000
+and 100,000 names, independent of file size — the `O(files)` claim, measured.
 **Defence entry:** `DEFENCE.md` D-017
 
 ---
@@ -3173,7 +3176,7 @@ be fetched in parallel; a tree waits for its depth.
 - The per-entry byte count is redundant in a data manifest (it follows from `size` and `chunk`); it is kept so that
   every level has one format and one checker, and so that a wrong count is detected rather than trusted.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct, `9a3d03d`, `83d2a3b`):** `test-transfer` checks the format exactly, refuses 26 malformed manifests one rule at a time (a size of 2^64, counts that wrap past 2^64, 8,193 entries — refused before the lines are split — a carriage return, a data chunk short in the middle, an empty index), shows the largest possible manifest is 507,987 bytes, builds 8,193 chunks into two data manifests and an index and exactly 8,192 into one, and resolves trees of two and four levels while refusing five, a child smaller than its parent says and a child with another chunk size. On real processes (`e2e-transfer.sh`) a ten-chunk file at fan-out 4 is four manifests in two levels and a nine-chunk file at fan-out 2 eleven in four, both round-tripped; a file that would need five levels is refused before its name is registered. Five planted bugs in the manifest checks are each caught in process; the real-process suites never build a hostile manifest, by design.
 
 ---
 
@@ -3219,7 +3222,7 @@ share one part file. Named as the way to add resume later, not built.
 - Disk space for the part file during a download, on the destination's filesystem.
 - A `SIGKILL`ed client leaves a `.part-` file that nothing deletes.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct):** in process — a chunk lost from every replica fails the download naming it, with no file and no part file left; an older file at the destination survives; a manifest lying about a chunk's length is caught; the handler's cleanup run mid-download removes the part file. On real processes (`e2e-transfer.sh`) the same with a chunk deleted from all three stores; `SIGKILL` mid-download leaves exactly one `.part-` file and no destination, and `SIGTERM` leaves nothing and exits 143. `e2e-edge.sh`, which pinned R4 since September, passes 7/7. Mutants that write straight to the destination or keep the part file are caught by both layers; one that drops the `fsync` survives every test, as it must — only a power cut shows it. The flush and rename cost 67 ms for 100 MB (`BENCHMARKS.md` §5, `2e7c445`).
 
 ---
 
@@ -3259,7 +3262,7 @@ to find its owner, and one slow owner then stalls its whole batch instead of one
   node's 32-body cap, and `ERR busy` is then retried.
 - Blocking threads: each worker spends most of its time waiting on a socket.
 
-**Evidence:** none yet — design time. The curve is D-066 item 2.
+**Evidence (`BENCHMARKS.md` §5, `2e7c445`):** median 100 MB download 102 / 183 / 299 / **377** / 363 / 324 MB/s at 1 / 2 / 4 / 8 / 16 / 32 workers on 16 processes; the rule chose **8**, equal to the default, which stands. Per-chunk p50 rises from 9.7 ms at 8 workers to 24 and 51 ms at 16 and 32 — the host's eight cores, not the ring. In process: 1,000 jobs on 8 workers each run exactly once; a failed job stops new work; a chunk that fails twice succeeds on its third attempt. A planted load-then-store in place of `fetch_add` was caught by the pool test.
 
 ---
 
@@ -3287,7 +3290,7 @@ chunk.
 **Cost accepted.** The user must name at least one live process. Every lookup's first request lands on the same
 process.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct):** `e2e-transfer.sh` gives the client two entry points and kills only other processes; a download by manifest key with no tracker succeeds. The entry node's share of lookup load was not measured separately.
 
 ---
 
@@ -3345,7 +3348,7 @@ newline.
 - The log only grows: no deletion (D-023), no compaction.
 - `LIST` is a full scan in pages; there is no search.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct, `BENCHMARKS.md` §5 at `2e7c445`):** 77 bytes of log and about 230 bytes of memory per name at 10,000 and 100,000 names; 197–254 registrations a second, the flush-bound ceiling stated above; 100,000 names replayed and listening in 0.39 s. `test-names`: torn final records cut off, records with a changed key character or a wrong check skipped, an old-format line skipped, a disk that refuses writes (`/dev/full`) answered `ERR` with nothing applied and later registrations refused, eight threads racing for one name with exactly one winner. `e2e-persistence.sh` repeats the damage cases after `SIGKILL` on a real tracker. A planted mutant that skips the record check was caught in process and, after the suite gained a same-length altered record, on real processes too; one that drops the flush survives every test, as expected.
 
 ---
 
@@ -3375,7 +3378,7 @@ until ownership exists.
 **Cost accepted.** A mistaken upload holds its name until deletion with an owner token is built (D-023, Block 2).
 Changing a file means uploading it under a new name.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct):** `test-names` and `e2e-transfer.sh`: the same file under the same name again is `OK`, a different one is refused naming the first key, eight concurrent registrants of one name produce one winner and seven `EXISTS` naming it. A finding from the first run: the same bytes uploaded with a different fan-out are a different manifest, and so a different key — idempotence holds for the same parameters only.
 
 ---
 
@@ -3418,7 +3421,7 @@ re-run from its own commit instead (D-066), which is the stronger reproduction: 
 **Cost accepted.** The legacy suites no longer test legacy code — it is gone; they test the same properties of the new
 programs. The baseline can be re-measured only from `e381179`.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct, `83d2a3b`):** the five re-pointed suites pass, `e2e-edge.sh` 7/7. One property was lost and is recorded in the suite: the hangup test can no longer show the `SIGPIPE` ignore, because the new tracker stops at the first failed send and Linux raises the signal only on the second (a tracker built without the ignore passes). The baseline was re-run from its own commit on 8 Oct (`BENCHMARKS.md` §5).
 
 ---
 
@@ -3458,7 +3461,7 @@ as it keeps 32 sockets open.
 - Two system calls instead of one for every received byte of a request line on the server side (`recv_line` reads
   one byte per call, D-021).
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct, `b4463e7`):** `test-net` — a line or body trickled a byte every 40 ms fails at a 200 ms deadline in under 500 ms; `e2e-deadline.sh` against a node and the tracker at a 1 s deadline — an idle connection closed at 1.00 s, a trickled line at 1.06 s, a trickled body at 1.02 s with nothing stored, and 32 withheld bodies freed after the deadline while the attacker's sockets stayed open. Planted mutants removing the deadline in `net.cpp` or in the node's read loop are caught.
 
 ---
 
@@ -3495,7 +3498,7 @@ content survive an insertion, which is why backup systems use them. It changes w
 **Cost accepted.** Cases 1 to 4 are arithmetic; measuring them checks that the implementation achieves the arithmetic,
 not that deduplication is useful. Case 5 is one corpus.
 
-**Evidence:** none yet — design time.
+**Evidence (`BENCHMARKS.md` §5, `2e7c445`):** every synthetic case matched its prediction exactly (0, 2, 200 and 21 new unique chunks); the real history of 20 commits shared 1 chunk of 97.
 
 ---
 
@@ -3526,7 +3529,7 @@ process under load.
 ring with the default worker count, which stays well under this machine's memory (`ESTIMATE`: at most workers × 3 bodies
 in flight). Two builds to keep straight: the harness records the limit and both fingerprints with every row.
 
-**Evidence:** none yet — design time.
+**Evidence (`BENCHMARKS.md` §5, `2e7c445`):** 100.4 / 284.5 / 384.1 / 424.4 / 536.0 MB/s at 64 KiB / 256 KiB / 512 KiB / 2 MiB / 8 MiB; the 512 KiB point on the default build gave 373.0 MB/s, within the sweep build's spread.
 
 ---
 
@@ -3557,7 +3560,7 @@ belongs to its owner; Docker Desktop with WSL integration is the planned route.
 **Cost accepted.** The container files are unverified until someone runs them, and a fixed subnet can collide with an
 existing Docker network on the host that runs it.
 
-**Evidence:** none yet — design time.
+**Evidence (8 Oct):** `scripts/cluster.sh` brings up the cluster for `e2e-smoke.sh` and its `down` leaves no port listening. The container files have not been run.
 
 ---
 
@@ -3592,7 +3595,7 @@ re-run and then to ignore.
 newer offering whose availability is checked by the first run, not assumed. The timing-sensitive suites only run when
 someone asks.
 
-**Evidence:** none yet — not run.
+**Evidence:** none — not run; it runs once the repository is pushed.
 
 ---
 
@@ -3638,7 +3641,7 @@ once, so the improvement could not be attributed to parallelism — the one-vari
 **Cost accepted.** The baseline's single seeder and this ring's 16 processes are different topologies; a fresh ring per
 repetition makes the benchmark slower to run.
 
-**Evidence:** none yet — design time.
+**Evidence:** `BENCHMARKS.md` §5, at `2e7c445`: the same-day control re-measured the baseline at 17.9 / 54.7 / 70.1 MB/s (September: 20.9 / 46.2 / 71.2); the new path is 5.4× it at 100 MB, and 3.7× its own one-worker figure.
 
 ---
 

@@ -84,7 +84,7 @@ The first `MEASURED` entry lands with `BENCHMARKS.md` §1.
 Kept current. The order in which things fall over as load rises — the strongest possible answer
 to the 10x question, because it shows the system was thought about rather than just built.
 
-**Current system (legacy). All `REASONED` until the baseline exists.**
+**The coursework system (retired in Phase 5). All `REASONED`; kept as the record of what was predicted.**
 
 | Order | What saturates first | At roughly | Symptom | Fix |
 |---|---|---|---|---|
@@ -104,6 +104,8 @@ precisely so they can be checked.**
 | 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers. **Measured 7 Oct (`b171554`): 0.44 % of a core per idle node at a 1 s period, 5.0 % at 50 ms; 256 nodes at 50 ms saturates this 8-core machine (load average 66)** | back off the period adaptively |
 | 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2. **Measured 8 Oct (`7d99fc0`): with healthy replicas W = 2 and W = 3 cost the same on loopback (31 vs 32 ms per 512 KiB write, both flushed); with one replica dead W = 3 failed 56 of 300 writes until eviction, W = 2 none** |
 | 3a | **Virtual-node maintenance** | V × N members | every member stabilises on its own, so background CPU grows with V. **Measured 8 Oct: about 0.5 % of a core per member at T = 1 s (3.75 % per process at V = 8)** | a shared routing table per process (D-047's rejected option) |
+| 3b | **The client's worker pool on one host's cores** | 8 workers | **Measured 8 Oct (`2e7c445`): 377 MB/s at 8, falling to 324 at 32 while per-chunk p50 rises 9.7 → 51 ms** | size the pool per deployment; more hosts |
+| 3c | **Tracker registration flush** | ~200–250 names/s | **Measured 8 Oct: one `fdatasync` per name under one lock** | group commit |
 | 4 | **Free RAM on this host** | **2048 node processes** within a 3.4 GiB budget (measured 7 Oct: about 1 MiB per node at that size, growing with N — see the 7 Oct entry) | cannot start more nodes; **this is a measurement artefact, not a system property, and is labelled as such on the plot** | in-process replay past the ceiling (D-027); cloud VMs — cut-order item 3 |
 
 ---
@@ -474,4 +476,50 @@ of reserved stack per thread (virtual, not resident), 1,000 connections a second
 **Would do:** an `epoll` event loop with a timer per connection, or a fixed worker pool with a bounded accept queue;
 and per-source connection limits, which need some notion of who a source is. **Confidence:** `MEASURED` for the
 deadline, `REASONED` for the thread count.
+
+---
+
+### 8 Oct 2026 — a transfer saturates this host at 8 workers, and the tail grows with the queue
+
+**Observed:** `MEASURED` at `2e7c445` (`BENCHMARKS.md` §5). 100 MB through 16 processes: 377 MB/s at 8 workers, 363 at
+16, 324 at 32; the per-chunk p50 goes 9.7 → 24 → 51 ms. Uploads keep rising to 32 workers (70 → 85 → 90 MB/s), because
+an upload chunk mostly waits on flushes, not CPU.
+
+**At 10x:** ten clients transferring at once on this host would share the same eight cores: each would get about an
+eighth of the single-client figure, and every chunk's latency would grow with the queue. On separate machines the
+limits move to each node's disk (two flushes per stored copy) and network link, and to the client's own CPU for hashing.
+
+**Would do:** size the worker pool from the measured knee per deployment rather than the core count; for many clients,
+the per-node limits that matter are the body cap (D-052) and connection threads (D-061's entry). **Confidence:**
+`MEASURED` for one client on one host; the 10x figures are arithmetic.
+
+---
+
+### 8 Oct 2026 — the tracker's registrations are capped by one flush at a time
+
+**Observed:** `MEASURED` at `2e7c445`. 254 registrations a second at 10,000 names and 197 a second averaged over 100,000,
+each one appended and `fdatasync`ed under one lock before `OK`. State is 77 bytes of log and about 230 bytes of memory
+per name; 100,000 names replay in 0.39 s.
+
+**At 10x:** registrations scale with files uploaded, not bytes, so this binds only for many small files — 10,000 small
+uploads a minute would need about 170 registrations a second, close to the ceiling. Memory at 10 million names: about
+2.3 GB; replay about 40 s (`ESTIMATE`, linear from 0.39 s at 100,000).
+
+**Would do:** group commit (one flush for every registration that arrived during the previous one), and a snapshot of
+the map so replay starts from it rather than from the first record — which is also what a Raft-replicated tracker
+needs. **Confidence:** `MEASURED` at this scale; the 10x figures are arithmetic.
+
+---
+
+### 8 Oct 2026 — fixed-size chunks share almost nothing across real edits
+
+**Observed:** `MEASURED` at `2e7c445`. Identical content shares every chunk; an in-place edit all but one; but 20
+consecutive commits of this repository as tar files shared 1 chunk of 97, because an insertion shifts every later
+byte.
+
+**At 10x:** storage grows with the sum of versions, not their differences: ten versions of a 1 GB file edited by
+insertion cost about 10 GB × 3 replicas.
+
+**Would do:** content-defined chunking (FastCDC), which places boundaries by content so they resynchronise after an
+insertion; it changes what a chunk is and would need its own before/after. **Confidence:** `MEASURED`.
 

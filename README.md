@@ -26,7 +26,7 @@ suites on 7 Oct 2026, the chunk-plane suites on 8 Oct 2026, and the file-transfe
 | Component | State | Evidence |
 |---|---|---|
 | Build | **Works.** `tracker`, `node`, `client`, `chunk` and `lookup` build clean, zero warnings | `make clean && make` |
-| Files through the ring | **Works.** Upload cuts a file into 512 KiB chunks, stores each through its owner with `W` confirmed copies, stores the manifest (a tree of manifests above 4 GiB), then registers the name. Download fetches and checks the manifest, fetches every chunk in parallel with replica fall-through, writes a part file, flushes it and renames it into place | `make check` — `test-transfer`, 87 checks · `scripts/e2e-transfer.sh` — 8 processes: a node killed mid-download, a corrupt copy, a chunk lost everywhere, the client killed mid-download, two identical uploads at once · `scripts/e2e-edge.sh` — 0 bytes to 3 MB across the chunk boundary, 7/7 |
+| Files through the ring | **Works**, 378 MB/s for 100 MB at 8 workers ([`BENCHMARKS.md`](BENCHMARKS.md) §5). Upload cuts a file into 512 KiB chunks, stores each through its owner with `W` confirmed copies, stores the manifest (a tree of manifests above 4 GiB), then registers the name. Download fetches and checks the manifest, fetches every chunk in parallel with replica fall-through, writes a part file, flushes it and renames it into place | `make check` — `test-transfer`, 87 checks · `scripts/e2e-transfer.sh` — 8 processes: a node killed mid-download, a corrupt copy, a chunk lost everywhere, the client killed mid-download, two identical uploads at once · `scripts/e2e-edge.sh` — 0 bytes to 3 MB across the chunk boundary, 7/7 |
 | Tracker — the namespace | **Works.** Name → manifest key, written once; an effect log flushed before every `OK`, self-checking records, torn records detected and cut off at start-up | `make check` — `test-names`, 39 checks · `scripts/e2e-persistence.sh` · `scripts/e2e-framing.sh` · `scripts/e2e-hangup.sh` |
 | A slow or silent peer | **Handled.** A node or the tracker gives every request line and every body a deadline, enforced against the time remaining, so a peer trickling bytes cannot hold a memory slot or a thread | `make check` — `test-net`, 37 checks · `scripts/e2e-deadline.sh` |
 | One-command local cluster | **Works** | `scripts/cluster.sh up`, driven by `scripts/e2e-smoke.sh` |
@@ -35,7 +35,7 @@ suites on 7 Oct 2026, the chunk-plane suites on 8 Oct 2026, and the file-transfe
 | Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
 | Chord lookup originator (`lookup`) | **Works** on a fixed ring. Follows `NEXT` to `OWNER`, checks every reply for progress, and reports a refused, timed-out or garbled node by name | `make check` — 70 lookup checks against correct, lying and broken rings · `scripts/e2e-chord.sh` — real 16-node ring, 4000 lookups, one node killed, one frozen |
 | Chord joins, stabilisation, failure handling | **Works.** Nodes join through any member, a background thread runs stabilise, notify and finger repair, a refused node is evicted at once and a silent one after two strikes, and a node that loses everyone it knew stops routing and rejoins | `make check` — 97 in-process checks: every round order of two joins between the same pair, kills, freezes, a fast restart, collisions, 200 random churn histories · `scripts/e2e-churn.sh` — 22 checks on real processes, also run under ThreadSanitizer · repair time measured in [`BENCHMARKS.md`](BENCHMARKS.md) §4 |
-| Chunk storage, replication, virtual nodes, repair | **Works.** Chunks are files written atomically and flushed; a write is coordinated by the owner and acknowledged after `W` copies on distinct processes; reads check the hash and fall through to the next replica; a process is 8 ring members by default; a dead process's chunks are re-replicated by their new owners, and a scrub replaces copies that rot on disk | `make check` — 102 chunk-plane checks · `scripts/e2e-chunk.sh` — 6 processes × 4 members: corruption, two of three replicas killed, hostile requests, repair · also under ThreadSanitizer · [`BENCHMARKS.md`](BENCHMARKS.md) §6 |
+| Chunk storage, replication, virtual nodes, repair | **Works.** Chunks are files written atomically and flushed; a write is coordinated by the owner and acknowledged after `W` copies on distinct processes; reads check the hash and fall through to the next replica; a process is 8 ring members by default; a dead process's chunks are re-replicated by their new owners, and a scrub replaces copies that rot on disk | `make check` — 105 chunk-plane checks · `scripts/e2e-chunk.sh` — 6 processes × 4 members: corruption, two of three replicas killed, hostile requests, repair · also under ThreadSanitizer · [`BENCHMARKS.md`](BENCHMARKS.md) §6 |
 | Coursework tracker, users, groups, peer-to-peer piece transfer | **Retired in Phase 5.** In the history; its transfer baseline is reproducible at `e381179` | [`BENCHMARKS.md`](BENCHMARKS.md) §1 |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
@@ -75,6 +75,43 @@ it, and in exchange it survives every one of its uploaders going offline.
 ---
 
 ## Results
+
+### Files move through the ring 5.4× faster than the system it replaced — 3.7× from parallelism alone
+
+![Throughput and per-chunk latency against workers and ring size](docs/figures/transfer-workers.png)
+
+Measured 8 Oct 2026 at commit `2e7c445`: every repetition a fresh tracker and ring of 16 `node` processes × 8 virtual
+nodes, a file uploaded and downloaded with the real client, and compared by SHA-1 — all 116 transfers came back
+identical. Medians of 5:
+
+| 512 KiB chunks | 1 MB | 10 MB | 100 MB |
+|---|---:|---:|---:|
+| The coursework single-seeder system, **re-run the same day** at its own commit | 17.9 MB/s | 54.7 | 70.1 |
+| The ring, 1 worker | 73.3 | 123.9 | 103.2 |
+| **The ring, 8 workers** | **101.8** | **313.2** | **378.2** |
+
+- **Two comparisons, because they say different things.** Against the old system the ring is 5.4× faster at 100 MB —
+  but the ring, three replicas, per-chunk hashing and parallelism all changed at once. Holding everything else fixed,
+  **parallelism alone is 3.7×** (1 worker against 8 on the same ring).
+- **Timed the way the old system was:** to every chunk verified and written. The new client then flushes and
+  renames the file (67 ms at 100 MB); with that and process start-up, 293 MB/s.
+- **Eight workers was chosen by a rule fixed before measuring** — the smallest power of two within 10 % of the best —
+  and it is the core count: past it, workers queue for CPU and each chunk's latency more than doubles. Per chunk at
+  8 workers: **p50 9.4 ms, p99 31 ms**.
+- **Uploads: 77 MB/s** at 100 MB, every chunk on two flushed copies before it counts (W = 2).
+
+![Throughput and per-chunk latency against chunk size](docs/figures/transfer-chunks.png)
+
+- **Chunk size matters on loopback, against the prediction.** From 64 KiB to 8 MiB throughput rises from 100 to
+  536 MB/s: each chunk pays a lookup and fresh connections whatever its size. 512 KiB stays the default — it is what the
+  comparison is pinned to, and larger chunks cost memory, recovery granularity and deduplication that loopback cannot
+  show.
+- **Deduplication, measured where it fails:** an identical file shares everything, a 1 KiB edit shares 199 of 201
+  chunks — and twenty real commits of this repository, as tar files, share **1 chunk of 97**, because fixed-size chunks
+  never realign after an insertion.
+- **The tracker is O(files):** 77 bytes of log per name, ~200 registrations a second (one flush each).
+
+Method, every table and the limits: [`BENCHMARKS.md`](BENCHMARKS.md) §5.
 
 ### Lookup hop count tracks ½ log₂ N, from 2 nodes to a million
 
@@ -158,9 +195,9 @@ every placement checked by an oracle in the test harness:
 
 Method, every table, the coordinator-crash test and the limits: [`BENCHMARKS.md`](BENCHMARKS.md) §6.
 
-### Single-peer transfer baseline
+### Single-peer transfer baseline — the "before"
 
-Measured 9 Sep 2026 at commit `e381179`, 512 KB pieces, one
+Measured 9 Sep 2026 at commit `e381179` (re-run on 8 Oct at the same commit: 17.9 / 54.7 / 70.1 MB/s), 512 KB pieces, one
 seeder, all processes on one host. Median of three runs, each with fresh processes:
 
 | Transfer | Median | Throughput |
@@ -172,8 +209,8 @@ seeder, all processes on one host. Median of three runs, each with fresh process
 Throughput more than triples from 1 MB to 100 MB because the per-transfer fixed cost — a tracker
 round trip, a connection to the seeder, a manifest parse — is amortised over more bytes, not
 because the transfer speeds up. With one seeder the worker pool runs a single thread, so this is
-a **sequential** baseline; it exists to be the "before" for the parallel chunked transfer in
-Phase 5, and it cannot be recovered once that code lands.
+a **sequential** baseline; it is the "before" for the parallel chunked transfer above, and it was
+re-run from its own commit for that comparison, since the code it measured has since been retired.
 
 Method, the wide run-to-run spread, and the reasons this number flatters the system (loopback,
 warm page cache, shared cores) are in [`BENCHMARKS.md`](BENCHMARKS.md) §1 — including the first
@@ -429,6 +466,12 @@ make the deduplication claim theoretical, since a 4 MB span rarely repeats acros
 
 **Stated in advance:** on loopback this curve may come out nearly flat, because there is no
 network latency for larger chunks to amortise. If it is flat, that is the published result.
+
+**Measured, and the prediction failed:** the curve is not flat. On a 16-process ring at 8 workers, 100 MB moves at
+100 MB/s in 64 KiB chunks and 536 MB/s in 8 MiB chunks, because every chunk pays a multi-hop lookup over fresh
+connections whatever its size. 512 KiB stays: it is what the before/after is pinned to, and what larger chunks cost —
+memory per in-flight chunk, the size of a re-fetch, deduplication granularity, one slow holder stalling more of a file —
+is what loopback cannot show (`BENCHMARKS.md` §5).
 
 ### The ring is 64 bits wide; keys stay 160 bits wide
 
