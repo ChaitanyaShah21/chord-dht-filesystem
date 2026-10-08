@@ -218,6 +218,7 @@ decided before the paper is one that cannot be defended in December.
 | **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
 | **F35** | **How fast does stabilise walk back after a distant fallback?** One step per round (the paper); run to the fixed point within a round; rejoin as an orphan; or a longer list. Surfaced by a 256-node ring that took minutes to converge. | Sets recovery after more than r adjacent deaths, and how long a wired ring takes to start. | **RESOLVED** — D-043 |
 | **F36** | **How does a chunk travel on the wire?** A length-prefixed body after a control line; the chunk encoded inside the line; or a separate data connection. | Decides whether a peer can size an allocation, how a short read is handled, and whether one socket carries two framing schemes. | **RESOLVED** — D-044 |
+| **F37** | **How and where is a chunk kept on disk?** One file per chunk with a temporary name and an atomic rename; an append-only log; or memory only — and whether a write is flushed before it counts. | Decides what a crash mid-write leaves behind, what an acknowledged write promises, and whether a peer's key can name a path. | **RESOLVED** — D-045 |
 
 ---
 
@@ -2644,3 +2645,58 @@ transfer, and two connections whose failures have to be matched up, for no gain 
 
 **Evidence:** none yet — design time. The framing tests (exactly 512 KiB, 512 KiB + 1, zero bytes, a peer
 that closes mid-body, a short read) are written with the code.
+
+---
+
+### D-045 — The chunk store is one file per chunk, written to a temporary name, flushed, then renamed
+
+**Fork:** F37. **Date:** 8 Oct 2026. **Gates:** every byte a node keeps.
+
+**The decision.** A node started with `--store <dir>` keeps each chunk as one file,
+`<dir>/<first two hex characters>/<40-character key>`. A write goes to `<dir>/tmp/<key>.<unique suffix>`,
+is flushed to disk with `fsync`, renamed over the final name, and the directory holding it is flushed too;
+only then is the write reported as stored. A node without `--store` answers every chunk request with an
+error and touches no disk, so every earlier mode and measurement is unchanged.
+
+**The key is validated before it reaches the filesystem.** Exactly 40 characters, each `0-9` or `a-f` —
+lowercase only, so one chunk cannot have two names. Anything else, including `../`, a slash, uppercase or
+a 39-character key, is refused before a path is built. The key is the only peer-supplied part of any path.
+
+**Why each part.**
+- **Rename is the commit point.** `rename(2)` within one filesystem replaces the destination atomically:
+  a reader sees the old file or the new one, never half of either. A node killed mid-write leaves a
+  temporary file — never a final-named file holding part of a chunk. Temporary files left by a crash are
+  deleted at start-up.
+- **`fsync` before reporting success,** because "stored" is what an acknowledged write (D-015) counts.
+  Without it the bytes sit in the page cache: they survive the process being killed, which is the failure
+  this project tests, but not a power cut — and replicas in one rack lose power together. The directory
+  is flushed as well, because the rename itself is a directory change. Measured on this machine (one
+  sample of 40 writes of 512 KiB, taken while another benchmark ran — **an estimate of the order of
+  magnitude, not a benchmark**): about 1.2 ms per write without `fsync`, 6.0 ms with the file flushed, 9.7 ms
+  with the directory too. The write-latency benchmark measures it properly.
+- **Two-character fan-out** keeps any one directory to 1/256 of the chunks. ext4 copes with large
+  directories, but a listing or a scan of one directory of a million files is slow everywhere else.
+- **An index in memory:** the set of keys held, loaded by listing the directories at start-up and updated
+  on every store. Sorted by key, which for lowercase fixed-width hexadecimal is also numeric order, so the
+  keys in one arc of the ring are a range query (repair, D-050).
+
+**Two concurrent writes of the same chunk** each write their own temporary file and each rename it. The
+last rename wins, and both wrote the same bytes — the key is the hash of the contents (D-014) — so the
+result is the same either way. A write of a chunk already held does nothing more than check that the file
+exists. A corrupt file on disk is not overwritten by this path; it is found by the scrub in D-050.
+
+**Rejected: an append-only log with an index (Bitcask's design).** One file and sequential writes. It needs
+compaction to reclaim space, a recovery scan of the log at start-up, and care that a torn final record is
+discarded — a storage engine, which the project's scope rules out.
+
+**Rejected: chunks in memory only.** Fastest, and a restart loses everything. A node holding 1,000 chunks of
+512 KiB needs 500 MiB; at three replicas the benchmarks would not fit in this machine's memory.
+
+**Rejected: no `fsync`.** Five to eight times faster per write, and "stored" would then mean "in a page
+cache". Kept as the stated alternative if write latency ever matters more than surviving a power cut.
+
+**Cost accepted.** Two flushes per stored chunk; the store keeps one directory entry per chunk; and
+nothing ever deletes a chunk (D-023), so storage only grows.
+
+**Evidence:** none yet — design time. Tests: path-traversal keys, a kill between write and rename,
+concurrent writes of one key, and the restart clean-up.

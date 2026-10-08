@@ -809,6 +809,18 @@ first byte is still in the socket when the header has been parsed. **Rejected:**
 the line, which doubles every transfer and removes the line-length limit; and a second data connection,
 which doubles the failures to match up. **Cost:** two framing schemes on one socket, chosen by the verb.
 
+### A chunk is a file, written under a temporary name, flushed, then renamed
+
+Each chunk is one file named by its 40-character key, under a two-character directory. A write goes to a
+temporary file, is flushed with `fsync`, renamed over the final name, and the directory is flushed — only
+then is it counted as stored. The rename is the commit point: a node killed mid-write leaves a temporary
+file, never a final-named file with half a chunk in it, and start-up deletes the leftovers. The key is
+checked to be exactly 40 lowercase hexadecimal characters before any path is built, so a request for
+`../../etc/passwd` never reaches the filesystem. **Rejected:** an append-only log (a storage engine, out of
+scope), memory only (a restart loses everything, and three replicas would not fit), and skipping `fsync`
+(roughly five to eight times faster per write here, but "stored" would then mean "in a page cache that a
+power cut erases"). **Cost:** two flushes per chunk.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
