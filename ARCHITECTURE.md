@@ -223,6 +223,7 @@ decided before the paper is one that cannot be defended in December.
 | **F39** | **How do virtual nodes share a process?** One listening port per member; one port with requests addressed by identifier; one shared routing table per process; or full membership. | Decides whether the wire can say which members share a process (replica placement needs it), what a refused connection proves, and the background traffic per process. | **RESOLVED** — D-047 |
 | **F40** | **Which members hold a chunk's replicas when one process has several members?** The next members regardless of process; the first distinct processes clockwise; a separate replica list; or a longer successor list. | With virtual nodes, adjacent members often share a process, so the naive rule puts two copies where one crash destroys both. | **RESOLVED** — D-048 |
 | **F41** | **How does a read find a good copy?** One replica, checked locally, falling through; two replicas compared; all replicas at once; and where the list of replicas comes from when the owner is dead. | Decides read traffic, what happens in the window after an owner dies, and whether a quorum is needed at all. | **RESOLVED** — D-049 |
+| **F42** | **How is RF = 3 restored after a death, and who is responsible?** A periodic full scan; an event when the successor list changes; both; every replica checking every chunk; or hash-tree comparison. | Decides how long a chunk stays one copy short, how much background traffic repair costs, and whether a silently lost file is ever found. | **RESOLVED** — D-050 |
 
 ---
 
@@ -2896,3 +2897,63 @@ A read does not repair what it finds wrong; repair is the scrub's and the owner'
 
 **Evidence:** none yet — design time. Tests: a corrupt replica on disk, a dead owner, a replica that closes
 mid-body, and every replica wrong.
+
+---
+
+### D-050 — Repair is driven by each chunk's owner: checked whenever its arc or replica set changes, and in a periodic full scan
+
+**Fork:** F42. **Date:** 8 Oct 2026. **Depends on:** D-046, D-048. **Gates:** whether `RF = 3` is restored after
+a death, and the re-replication benchmark.
+
+**The decision.** Each process runs a **repair thread**, separate from the maintenance thread, once per
+period:
+1. **Owner check, level-triggered.** For each of its members `v` with a known predecessor `p`, the process
+   owns the arc `(p, v]`, and `v`'s replica set is computed by D-048's rule. If `p` or the replica set differs
+   from what was last checked for `v`, every chunk it holds in that arc is checked: it asks each other replica
+   `HAVE` (up to 20 keys per request) and sends `STORE` for each one missing.
+2. **Full scan, every `--scan` rounds** (default 60): the same owner check for every arc regardless of change;
+   a **scrub** that re-hashes every local chunk and replaces any file that no longer matches its key with a copy
+   read through the ring — a read that verifies the hash itself (D-049); and a **hand-off** for every chunk the
+   process holds but does not own — it looks up the chunk's owner and, if the owner lacks it, sends it as a
+   `PUT`, so the owner replicates it to its whole replica set at once. Keys are taken in order, so one lookup
+   covers every key up to the owner it names.
+3. Nothing is ever deleted except a corrupt file found by the scrub, which is replaced. A chunk held by more
+   than three processes stays (D-023).
+
+**Two details found while writing the tests, by tracing them before running them.** A scrub that only deleted a bad file would leave that replica
+missing until the owner's next full scan, because nothing about the ring changed; so the scrubbing process
+fetches a verified copy itself. And a hand-off sent as a plain `STORE` would give the owner one copy and
+nobody else, for the same reason; sent as `PUT`, the owner's coordination places all three.
+
+**Why the owner.** One process checks each chunk, rather than all three. And after a death the new owner
+already has a copy: the replica set was the first three distinct processes from the key, so when the owner's
+process dies, the next member with a copy — the old second replica — becomes the owner, sees its arc grow
+and its replica set change, and copies the chunk to the new third process.
+
+**Why "changed since last checked", evaluated every round, and not an event.** The check compares the current
+arc and replica set with the last ones checked, so a change is never missed for having happened while the
+thread was busy — the same level-triggered shape as stabilisation. The full scan covers what no ring change
+reveals: a file lost or corrupted on a process that stayed up, and chunks left on a process that no longer
+owns them after a join.
+
+**Rejected: periodic full scan only.** Simplest, and repair after a death waits up to a whole scan period.
+
+**Rejected: every holder checks every chunk every round.** Three times the `HAVE` traffic, forever.
+
+**Rejected: hash-tree (Merkle) comparison between replicas,** Dynamo's anti-entropy: replicas compare hashes
+of key ranges and exchange only differences, so a check costs O(differences) rather than O(chunks). The right
+answer at scale; named as the way this grows, and not built for chunk counts a laptop holds.
+
+**Rejected: repair inside the maintenance round.** Moving many chunks would delay stabilisation, so a death
+would slow the repair of the ring itself.
+
+**Cost accepted.**
+- A full scan re-hashes everything the process holds (about 1 s of CPU per GiB at OpenSSL's SHA-1 speed —
+  `ESTIMATE`) and sends a `HAVE` for every owned chunk.
+- An arc check after a change sends `HAVE`s for every chunk in the arc, not just the affected ones.
+- Repair takes the owner's view of the ring; during reconvergence two processes may each think they own a key
+  and both push it. `STORE` is idempotent, so the cost is traffic, not damage.
+- Extra copies are never reclaimed.
+
+**Evidence:** none yet — design time. Measured as the time from a kill until every chunk is again on its three
+correct live processes, judged by the harness.

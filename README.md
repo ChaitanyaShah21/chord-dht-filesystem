@@ -869,6 +869,18 @@ window after an owner dies and before the ring has evicted it. **Rejected:** rea
 of every read to speed up the rare failed one), and having the owner name its replicas (useless when the owner
 is the one that died). **Cost:** a read whose owner just died pays one failed connection and two extra requests.
 
+### Repair is the owner's job, triggered by a change to its arc, with a slower full scan underneath
+
+After a process dies, every chunk it held is one copy short. Each process runs a repair thread: every period, for
+each of its members it compares the arc it owns and the processes that should hold that arc's replicas with what
+it last checked, and if either changed it asks the replicas which chunks they lack (`HAVE`, twenty keys at a
+time) and sends them. When an owner dies, the next replica becomes the owner of those keys — it already holds
+them — sees the change, and copies them to the new third process. A full scan every minute also re-hashes every
+local chunk (replacing any that rotted on disk with a copy read through the ring and checked against its key) and
+hands chunks the process no longer owns to their owner, as a write the owner replicates. **Rejected:** full scans only (repair waits a whole scan), every replica checking
+every chunk (three times the traffic forever), and hash-tree comparison as in Dynamo (the right answer at scale,
+more than a laptop's chunk counts need). **Cost:** a full scan re-hashes everything the process holds.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
