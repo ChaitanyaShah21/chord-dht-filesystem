@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-074: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-075: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-074 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-075 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 66 recorded here (F1–F65 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 67 recorded here (F1–F66 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -303,6 +303,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F63** | **The replica's concurrency.** One lock held across the flush but never a network call; the lock released during the flush; or an event loop. And who sends to each peer. | Decides whether "flush before replying" holds by construction, and what a slow disk or a frozen peer delays. | **RESOLVED** — D-072 |
 | **F64** | **Election timeout, heartbeat and call deadline.** The paper's example values; a large constant; or one base swept, with the default chosen by a rule fixed before measuring. | Sets failover time and whether a healthy group elects for no reason. | **RESOLVED** — D-073 (rule); value from `BENCHMARKS.md` §7 |
 | **F65** | **How does a replica persist its term, vote and log?** One file of self-checking records; a separate file for term and vote; and what replay does with damage. | Decides what survives a crash, how many flushes a step costs, and whether damage is cut, skipped or refused. | **RESOLVED** — D-074 |
+| **F66** | **When is a registration acknowledged, and what makes a retry safe?** After its own entry is applied, with no sessions; client sessions; at commit; or from local state. | Decides what `OK` promises across a leader change, and whether a retried registration can apply twice. | **RESOLVED** — D-075 |
 
 ---
 
@@ -4029,3 +4030,45 @@ model, as in the paper, which assumes stable storage. A replica that refuses to 
 membership change (D-079).
 
 **Evidence:** pending — `test-raft` (the file), `e2e-persistence.sh`.
+
+---
+
+### D-075 — A registration is answered once its own entry is applied; a retry is safe because a name is written once, so there are no client sessions
+
+**Fork:** F66. **Date:** 8 Oct 2026. **Depends on:** D-059, D-072. **Gates:** what `OK` means, and what a client does
+when it does not get one.
+
+**The decision.** `REGISTER <name> <key>` at the leader becomes the log entry `REGISTER <name> <key>`, at some index
+`i` in the leader's term `t`. The request waits until this replica **applies** index `i`:
+
+- if the entry applied at `i` has term `t`, it is this request's own entry, and the reply is what applying it
+  produced: `OK` (the name was free, or already had this key) or `EXISTS <key>` (an earlier entry took it). The
+  outcome is decided by **log order**: the first `REGISTER` of a name to be applied wins, on every replica alike;
+- if it has another term, this request's entry was overwritten by a later leader and never took effect:
+  `UNAVAILABLE`;
+- if nothing is applied at `i` within 2 s, the outcome is unknown: `UNAVAILABLE`.
+
+`UNAVAILABLE` always means "retrying is safe": a second `REGISTER` of the same name and key answers `OK` if the
+first took effect (D-059), and the same `EXISTS` if another key won.
+
+**Why.** Linearizability needs each operation to take effect at one instant between its request and its reply. Here
+that instant is the moment the entry is applied, in log order, and the reply is computed at that instant. Raft's
+usual problem with retries — a command applied twice when a client retries after a leader crash — is answered by the
+operation itself: applying the same registration twice changes nothing the second time.
+
+**Rejected: client sessions** (a client identifier and sequence number in each entry, and a table of each client's
+last reply in the state machine — the Raft paper §8, thesis chapter 6). The standard answer for operations that are
+*not* idempotent. Here it would replicate, persist and expire a table to deduplicate something that already is.
+
+**Rejected: answer at commit, before apply.** The outcome — `OK` or `EXISTS` — depends on every earlier entry, and is
+not known until this one is applied in order.
+
+**Rejected: answer from the leader's state when the name is already there** (no entry for a retry). Correct, because
+names never change once applied — but a second path through the code that saves an entry only on retries and
+conflicts, and would become wrong if names ever could change (D-023).
+
+**Cost accepted.** A retried or conflicting registration still adds an entry: the log records attempts, the state
+records effects. If an operation that is not idempotent is ever added — deletion (D-023) — client sessions are
+needed.
+
+**Evidence:** pending — the linearizability checker in `test-raft`, `test-replica`, `e2e-raft.sh`.

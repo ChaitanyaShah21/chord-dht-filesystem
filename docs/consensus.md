@@ -111,3 +111,16 @@ disk, and the replica refuses to start.
 | **Term and vote in their own file, renamed into place** | three flushes per vote, and two files whose order after a crash must be reasoned about |
 | **Refuse to start on any damage** | an ordinary crash mid-batch can leave intact records after a torn one |
 | **Skip damaged records** (the single tracker's rule) | a hole in a Raft log breaks Log Matching |
+
+### Writes and retries — [D-075](../ARCHITECTURE.md#d-075--a-registration-is-answered-once-its-own-entry-is-applied-a-retry-is-safe-because-a-name-is-written-once-so-there-are-no-client-sessions)
+
+A `REGISTER` becomes an entry at index `i` in term `t` and waits until index `i` is applied. Same term: the reply is
+what applying it produced — `OK` or `EXISTS <key>`. Another term: it was overwritten, `UNAVAILABLE`. Nothing within
+2 s: `UNAVAILABLE`. Every `UNAVAILABLE` may be retried, because registering the same name and key twice is `OK` the
+second time (D-059).
+
+| Alternative | Why not |
+|---|---|
+| **Client sessions** (identifier, sequence number, last reply per client) | replicates a table to deduplicate an operation that is already idempotent |
+| **Answer at commit** | `OK` or `EXISTS` is only known once applied in order |
+| **Answer retries from local state** | a second path that is right only while names can never change |
