@@ -224,6 +224,7 @@ decided before the paper is one that cannot be defended in December.
 | **F40** | **Which members hold a chunk's replicas when one process has several members?** The next members regardless of process; the first distinct processes clockwise; a separate replica list; or a longer successor list. | With virtual nodes, adjacent members often share a process, so the naive rule puts two copies where one crash destroys both. | **RESOLVED** — D-048 |
 | **F41** | **How does a read find a good copy?** One replica, checked locally, falling through; two replicas compared; all replicas at once; and where the list of replicas comes from when the owner is dead. | Decides read traffic, what happens in the window after an owner dies, and whether a quorum is needed at all. | **RESOLVED** — D-049 |
 | **F42** | **How is RF = 3 restored after a death, and who is responsible?** A periodic full scan; an event when the successor list changes; both; every replica checking every chunk; or hash-tree comparison. | Decides how long a chunk stays one copy short, how much background traffic repair costs, and whether a silently lost file is ever found. | **RESOLVED** — D-050 |
+| **F43** | **How many virtual nodes per process?** One; a large fixed number such as 256; a number read off a measured balance curve by a rule fixed first; or in proportion to capacity. | Load balance improves as 1/√V while every member adds its own stabilisation traffic. | **RESOLVED** — D-051 (rule); value in `BENCHMARKS.md` |
 
 ---
 
@@ -2957,3 +2958,48 @@ would slow the repair of the ring itself.
 
 **Evidence:** none yet — design time. Measured as the time from a kill until every chunk is again on its three
 correct live processes, judged by the harness.
+
+---
+
+### D-051 — The number of virtual nodes per process comes off a measured curve, by a rule fixed before measuring
+
+**Fork:** F43. **Date:** 8 Oct 2026. **Depends on:** D-047. **Gates:** `--vnodes`' default, and the
+load-balance result.
+
+**The decision.** `V` is the **smallest power of two for which the coefficient of variation of chunk copies
+stored per process is at most 0.25**, in the median of 20 address sets, at both 16 and 64 processes, with
+`RF = 3` placed by D-048's rule. The coefficient of variation (standard deviation divided by mean) is used
+rather than the busiest process's share because a maximum is the least repeatable statistic there is — the
+lesson of D-042. Until it is measured the code's default stays 1, and the benchmark step replaces it with the
+rule's result, as D-039's period and deadline were.
+
+**How it is measured.** Placement is a pure function of the addresses and the keys, so it is computed in
+process with the node's own identifier functions, for `V ∈ {1, 2, 4, …, 128}`, 20 address sets of the form the
+benchmarks use, and 100,000 random keys: per process, keys owned and copies stored, summarised as maximum over
+mean and coefficient of variation. A real ring then checks the simulation: chunks are written through the
+nodes, and every process's store must hold exactly the number of files the simulation predicts for those
+addresses and keys. The cost side is measured on real processes: idle CPU per process against `V`.
+
+**Why 0.25.** It is a target, not a derived number, and is stated as one. With a coefficient of variation of
+0.25 the busiest of 64 processes stores about 1.6 times the mean (normal approximation, `ESTIMATE`), against
+several times the mean with one member per process. Theory gives the shape to expect: one member's share of
+the ring is roughly exponential (coefficient of variation 1), and a sum of `V` independent shares has a
+coefficient of variation of `1/√V`, so for owned keys the rule lands near `V = 16`; stored copies average three
+arcs and may need fewer.
+
+**Rejected: `V = 1`.** No extra traffic; the busiest process holds several times its share, and the slowest
+disk fills first.
+
+**Rejected: a large fixed `V` such as 256** (Cassandra's long-time default). Near-perfect balance, but every
+member here runs its own stabilisation, so 256 members per process is 256 times the background traffic —
+Cassandra can afford it because its nodes exchange membership by gossip rather than maintaining Chord tables
+per token, and it has since lowered the default to 16.
+
+**Rejected: `V` proportional to each machine's capacity.** The real advantage of virtual nodes on mixed
+hardware, and unnecessary when every process is identical.
+
+**Cost accepted.** The rule's threshold is a choice, and the value is good for 16 to 64 processes; the curve
+is published so another target can read its own `V` from it. Every earlier experiment ran with one member per
+process; their harnesses pass `--vnodes 1` explicitly once the default changes.
+
+**Evidence:** none yet — design time. `BENCHMARKS.md`, the load-balance entry.

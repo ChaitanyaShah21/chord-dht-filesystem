@@ -881,6 +881,18 @@ hands chunks the process no longer owns to their owner, as a write the owner rep
 every chunk (three times the traffic forever), and hash-tree comparison as in Dynamo (the right answer at scale,
 more than a laptop's chunk counts need). **Cost:** a full scan re-hashes everything the process holds.
 
+### Virtual nodes per process: chosen from a curve, by a rule written down first
+
+One member per process leaves the busiest process with several times its share of the chunks. Each extra member
+evens the load and adds its own stabilisation traffic. The rule, fixed before measuring: the smallest power of two
+for which the coefficient of variation (standard deviation over mean) of chunk copies per process is at most 0.25,
+in the median of 20 address sets, at 16 and at 64 processes. Placement is a pure function of addresses and keys,
+so the curve is computed in process from the node's own hashing and placement code, then checked against a real
+ring, where every process's store must hold exactly the number of chunks predicted. **Rejected:** one member per
+process (unbalanced), a large fixed number such as Cassandra's 256 (every member here runs its own stabilisation,
+so 256 per process is 256 times the traffic), and members in proportion to capacity (no need with identical
+processes). **Cost:** the threshold is a target, not a derivation; the curve is published so another one can be read.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
