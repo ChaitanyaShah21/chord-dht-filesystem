@@ -136,3 +136,14 @@ write and no clock assumption. Followers redirect.
 | **Reads through the log** | a flush on a majority for every read |
 | **Leader leases** | correct only with bounded clock drift and pauses; this host has stalled for seconds |
 | **Follower reads of found names** | right only while names can never change |
+
+### Check-quorum, not pre-vote — [D-077](../ARCHITECTURE.md#d-077--a-leader-that-has-not-heard-from-a-majority-for-2e-steps-down-pre-vote-is-not-built)
+
+A leader with no reply from a majority for 2E steps down and answers `UNAVAILABLE`, so its clients move on instead
+of waiting out their deadline. Pre-vote is not built: a replica returning from a partition with a raised term still
+forces one election.
+
+| Alternative | Why not |
+|---|---|
+| **Neither** | a cut-off leader's clients each wait their whole deadline |
+| **Pre-vote as well** | a second call type and election state, to save one election per healed partition |

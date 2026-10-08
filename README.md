@@ -147,6 +147,7 @@ has every alternative considered and what it would have cost.
 | **One file of self-checking records per replica** (D-074) | one flush per step; a crash's torn tail is cut, older damage refuses to start | skipping damaged records, which leaves a hole in the log |
 | **`OK` after the entry is applied; no client sessions** (D-075) | a write-once registration is idempotent, so a retry after a leader change is safe | sessions to deduplicate what already deduplicates itself |
 | **ReadIndex reads** (D-076) | linearizable with no clock assumption; a round trip, no flush | leases, which a paused leader can outlive |
+| **Check-quorum** (D-077) | a leader cut off from the majority steps down instead of stalling its clients | pre-vote (deferred; costs one election per healed partition) |
 
 ## Project structure
 

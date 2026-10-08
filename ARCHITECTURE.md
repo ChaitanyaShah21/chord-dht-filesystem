@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-076: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-077: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-076 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-077 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 68 recorded here (F1–F67 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 69 recorded here (F1–F68 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -305,6 +305,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F65** | **How does a replica persist its term, vote and log?** One file of self-checking records; a separate file for term and vote; and what replay does with damage. | Decides what survives a crash, how many flushes a step costs, and whether damage is cut, skipped or refused. | **RESOLVED** — D-074 |
 | **F66** | **When is a registration acknowledged, and what makes a retry safe?** After its own entry is applied, with no sessions; client sessions; at commit; or from local state. | Decides what `OK` promises across a leader change, and whether a retried registration can apply twice. | **RESOLVED** — D-075 |
 | **F67** | **How are reads made linearizable?** Through the log; ReadIndex; leader leases; or follower reads of found names. | Decides what a read costs and whether a deposed or paused leader can answer stale. | **RESOLVED** — D-076 |
+| **F68** | **Does a leader notice it is cut off, and does a returning replica disrupt the group?** Neither; check-quorum; check-quorum and pre-vote. | Decides what clients of a cut-off leader see, and whether a healed partition costs an election. | **RESOLVED** — D-077 |
 
 ---
 
@@ -4112,3 +4113,32 @@ write-once — deletion (D-023) would make it silently wrong.
 new leader serves no reads until its no-op commits — one round trip after it wins.
 
 **Evidence:** pending — the linearizability checker in `test-raft` (with planted stale reads), `BENCHMARKS.md` §7.
+
+---
+
+### D-077 — A leader that has not heard from a majority for 2E steps down; pre-vote is not built
+
+**Fork:** F68. **Date:** 8 Oct 2026. **Depends on:** D-073. **Gates:** what clients of a cut-off leader see.
+
+**The decision.** **Check-quorum:** a leader that has not had a reply in its term from a majority of the group
+(itself included) within the last **2E** — the longest election timeout any follower can draw — becomes a follower.
+Its waiting requests are answered `UNAVAILABLE`, and new ones too, until it learns of a leader. **Pre-vote** (Raft
+thesis §9.6) is not built.
+
+**Why.** Without it, a leader cut off from the majority keeps believing it leads: it accepts requests it can never
+commit, and its clients wait for their whole deadline. With it, the cut-off leader stops within 2E, by which time the
+majority side may already have elected a new leader — so clients are redirected instead of stalled. Safety does not
+depend on it: a cut-off leader can never commit (it lacks a majority) and can never answer a read (D-076).
+
+**Rejected: the core protocol only.** Correct, and a cut-off leader's clients each wait out their full deadline.
+
+**Rejected: check-quorum and pre-vote.** Pre-vote stops a replica that was cut off — and whose term kept rising with
+every timeout — from forcing a healthy group into an election when it returns: before raising its term, a candidate
+asks whether it could win. It costs a second call type and a second election state; what it saves is one election
+per healed partition, which the failover measurements put a number on.
+
+**Cost accepted.** A follower returning from a partition with a higher term deposes a working leader: one election's
+unavailability (D-073's measurement). A leader that steps down while a majority is merely slow — every reply delayed
+past 2E — causes an election that nothing needed.
+
+**Evidence:** pending — `test-raft`, `e2e-raft.sh` (the minority leader).
