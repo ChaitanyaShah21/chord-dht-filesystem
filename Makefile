@@ -234,7 +234,16 @@ NODE_TSAN_SRC = $(NODE_SRC) $(REPAIR_SRC) $(CHUNK_SRC) $(STORE_SRC) $(STABILIZE_
 $(NODE_TSAN): $(NODE_TSAN_SRC) repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h sha1.h
 	$(CXX) -std=c++17 -Wall -pthread -g -O1 -fsanitize=thread -o $@ $(NODE_TSAN_SRC) $(CRYPTO_LDLIBS)
 
-tsan: $(NODE_TSAN)
+# The client is multi-threaded too since Phase 5 (D-056): its workers share a
+# counter, a stop flag, per-chunk result slots and the part file's descriptor.
+#   CLIENT_CMD="setarch $$(uname -m) -R ./client-tsan" NODE_CMD=... scripts/e2e-transfer.sh
+CLIENT_TSAN = client-tsan
+CLIENT_TSAN_SRC = $(CLIENT_SRC) $(TRANSFER_SRC) $(NAMES_SRC) $(CHUNK_SRC) $(STORE_SRC) $(STABILIZE_SRC) $(LOOKUP_SRC) $(CHORD_SRC) $(NET_SRC)
+
+$(CLIENT_TSAN): $(CLIENT_TSAN_SRC) transfer.h names.h chunk.h store.h stabilize.h lookup.h chord.h net.h sha1.h
+	$(CXX) -std=c++17 -Wall -pthread -g -O1 -fsanitize=thread -o $@ $(CLIENT_TSAN_SRC) $(CRYPTO_LDLIBS)
+
+tsan: $(NODE_TSAN) $(CLIENT_TSAN)
 
 # -----------------------------
 # Clean rule
@@ -245,7 +254,7 @@ clean:
 	      $(STORE_OBJ) $(CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_MAIN_OBJ) $(TEST_CHUNK_OBJ) $(SIM_BALANCE_OBJ) \
 	      $(TRANSFER_OBJ) $(TEST_TRANSFER_OBJ) $(TEST_TRANSFER) $(NAMES_OBJ) $(TEST_NAMES_OBJ) $(TEST_NAMES) \
 	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) \
-	      $(TEST_STABILIZE) $(TEST_CHUNK) $(NODE_TSAN)
+	      $(TEST_STABILIZE) $(TEST_CHUNK) $(NODE_TSAN) $(CLIENT_TSAN)
 
 # -----------------------------
 # Convenience rules

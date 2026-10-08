@@ -240,7 +240,13 @@ try:
     huge = os.urandom(60 * CHUNK)
     r = client("put", write("huge", huge), "huge")
     check(r.returncode == 0, "a 30 MiB file stored")
-    victim = addrs[5]
+    # The victim owns an early chunk (one worker fetches them in order), so the client
+    # reaches it milliseconds after the kill -- well before the ring can notice the
+    # death (a 200 ms period) and route around it. A later chunk would make the
+    # fall-through depend on timing. Never one of the client's entry points.
+    hk = manifest_keys(put_key(r))
+    first = next(i for i in range(1, len(hk)) if placement.holders(hk[i])[0] not in (addrs[0], addrs[1]))
+    victim = placement.holders(hk[first])[0]
     dl = subprocess.Popen(client_cmd + ["--tracker", TRACKER, "--ring", RING, "--workers", "1", "get", "huge", path("huge.out")],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     line = dl.stderr.readline()                         # "client: manifest ...": the chunks start now
@@ -251,7 +257,7 @@ try:
     live = [a for a in addrs if a in procs]
     placement = Placement(live, V)
     check(dl.returncode == 0 and read("huge.out") == huge,
-          f"{victim} killed as the chunks began: the download completes, identical")
+          f"{victim}, owner of chunk {first}, killed as the chunks began: the download completes, identical")
     check(b"refused" in err, f"and {err.count(b'refused')} chunk fetches fell through past the dead node")
 
     # ---- 7. a chunk lost everywhere ----
