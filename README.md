@@ -893,6 +893,16 @@ process (unbalanced), a large fixed number such as Cassandra's 256 (every member
 so 256 per process is 256 times the traffic), and members in proportion to capacity (no need with identical
 processes). **Cost:** the threshold is a target, not a derivation; the curve is published so another one can be read.
 
+### A chunk in flight is held once, shared by its parallel sends, and capped
+
+A node holds a chunk's body in memory while it checks the hash — at most 512 KiB — and a coordinator forwards that
+one buffer to both replicas through a shared read-only pointer, so a write costs one chunk of memory, not three. At
+most 32 bodies are in memory per process at once, counted by one atomic counter; a request beyond that is refused
+with `ERR busy`, its body read in small pieces and discarded rather than buffered. **Rejected:** streaming each body to disk while hashing (the coordinator
+would have to read it back to forward it), no cap (a burst or a hostile client could make a node allocate without
+limit), and a waiting queue (a slow failure instead of a fast one). **Cost:** 32 is sized to this machine, not
+derived; a larger burst gets `busy` and must retry.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

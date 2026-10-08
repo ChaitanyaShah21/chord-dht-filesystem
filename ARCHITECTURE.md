@@ -225,6 +225,7 @@ decided before the paper is one that cannot be defended in December.
 | **F41** | **How does a read find a good copy?** One replica, checked locally, falling through; two replicas compared; all replicas at once; and where the list of replicas comes from when the owner is dead. | Decides read traffic, what happens in the window after an owner dies, and whether a quorum is needed at all. | **RESOLVED** — D-049 |
 | **F42** | **How is RF = 3 restored after a death, and who is responsible?** A periodic full scan; an event when the successor list changes; both; every replica checking every chunk; or hash-tree comparison. | Decides how long a chunk stays one copy short, how much background traffic repair costs, and whether a silently lost file is ever found. | **RESOLVED** — D-050 |
 | **F43** | **How many virtual nodes per process?** One; a large fixed number such as 256; a number read off a measured balance curve by a rule fixed first; or in proportion to capacity. | Load balance improves as 1/√V while every member adds its own stabilisation traffic. | **RESOLVED** — D-051 (rule); value in `BENCHMARKS.md` |
+| **F44** | **How much of a chunk is in memory, and is it bounded?** The whole body, shared between parallel sends, capped per process; streamed to disk while hashing; uncapped; or a waiting queue. | Sets memory per node under write load, whether a client can make a node allocate without limit, and how many processes fit on this machine. | **RESOLVED** — D-052 |
 
 ---
 
@@ -3003,3 +3004,40 @@ is published so another target can read its own `V` from it. Every earlier exper
 process; their harnesses pass `--vnodes 1` explicitly once the default changes.
 
 **Evidence:** none yet — design time. `BENCHMARKS.md`, the load-balance entry.
+
+---
+
+### D-052 — A chunk in flight is held whole in memory, shared between its parallel sends, and capped per process
+
+**Fork:** F44. **Date:** 8 Oct 2026. **Gates:** memory per node under write load, and how many processes the
+benchmarks can run.
+
+**The decision.**
+- A node receiving a chunk reads the whole body (at most 512 KiB) into memory, hashes it, then writes it. A
+  coordinator sends that one buffer to both replicas through a shared, read-only pointer, so a write occupies
+  one chunk's memory, not three.
+- At most **32 chunk bodies** are held at once per process — about 16 MiB. A request that would exceed it is
+  answered `ERR busy` **without its body being buffered**: the body's bytes are read in 4 KiB pieces and thrown
+  away, so the connection stays in step and the answer is not lost. (Closing instead would leave unread bytes in
+  the socket, and Linux answers a close with unread data by resetting the connection, which can destroy the
+  `ERR busy` before the sender reads it.) The sender treats `busy` as a failed copy. The count is a single atomic
+  counter, incremented and checked in one indivisible step.
+- The store is on disk; the only per-chunk memory is its key in the index (about 100 bytes with the set's
+  overhead — `ESTIMATE`). Benchmarks put every store under one scratch directory, removed afterwards.
+
+**Rejected: stream the body to a temporary file while hashing incrementally.** Constant memory per transfer.
+The coordinator would then have to read the file back to forward it, or forward while receiving and undo the
+forwarding when the hash turns out wrong — and a chunk is only 512 KiB.
+
+**Rejected: no cap.** A burst of writes, or a hostile client opening many connections, could make a node allocate
+without limit; one-thread-per-connection already has that shape (see the scale notes), and memory would make it
+worse.
+
+**Rejected: a bounded queue that makes callers wait.** Smooths bursts, but a caller waiting on a full queue holds
+its connection and thread, and the sender's deadline expires anyway — a slow failure instead of a fast one.
+
+**Cost accepted.** 32 is a choice sized to this machine (16 MiB per process, a few hundred MiB for a benchmark
+ring), not derived from a workload. Under a burst larger than 32 concurrent chunks per process, writes fail with
+`busy` and must be retried.
+
+**Evidence:** none yet — design time. A test drives 33 concurrent bodies at one node.
