@@ -239,6 +239,7 @@ decided before the paper is one that cannot be defended in December.
 | **F53** | **How is deduplication measured, and on what?** Counted at the stores, on stated synthetic edits plus one real corpus; reported by the client; a real corpus only; or not measured. | D-014 claims deduplication for free; the number decides whether that claim survives, and the workload decides whether the number means anything. | **RESOLVED** — D-062 |
 | **F54** | **How is the chunk-size sweep run above the 512 KiB framing limit?** A second build with a raised limit, used for every point; a run-time limit on every program; a sweep only up to 512 KiB; or a raised default. | D-016 promised five sizes up to 8 MiB, and the framing and stores refuse anything above 512 KiB (D-044). | **RESOLVED** — D-063 |
 | **F55** | **How does someone else start a ring, given that Docker is not installed on the development machine?** A tested local launcher plus container files marked not yet run; container files only; nothing until Docker is installed; or installing Docker now. | Decides what "how would someone run this?" can honestly be answered with, and what is claimed about containers. | **RESOLVED** — D-064 |
+| **F56** | **What does continuous integration run?** The build, the unit tests and the fast end-to-end suites on every push, with the timing-sensitive suites on demand; unit tests only; everything on every push; or none. | Decides what a green check means, and whether a flaky check teaches everyone to ignore it. | **RESOLVED** — D-065 |
 
 ---
 
@@ -3563,3 +3564,38 @@ belongs to its owner; Docker Desktop with WSL integration is the planned route.
 existing Docker network on the host that runs it.
 
 **Evidence:** none yet — design time.
+
+---
+
+### D-065 — Continuous integration builds, runs the unit tests and the fast end-to-end suites; the timing-sensitive runs are on demand
+
+**Fork:** F56. **Date:** 8 Oct 2026. **Gates:** what a green check on the repository means.
+
+**The decision.** `.github/workflows/ci.yml`, on every push and pull request, on two hosted runners — `ubuntu-24.04`
+(x86-64) and `ubuntu-24.04-arm` (the development machine's architecture):
+- install `g++`, `make`, `libssl-dev`, `python3`;
+- `make` with the build log checked for warnings (the build must stay warning-free), then `make check`;
+- the end-to-end suites that finish in seconds and do not depend on timing under load: `e2e-node`, `e2e-chord`,
+  `e2e-chunk`, `e2e-transfer`, `e2e-deadline`, `e2e-smoke`, `e2e-edge`, `e2e-persistence`, `e2e-framing`,
+  `e2e-hangup`.
+
+A second job, started by hand (`workflow_dispatch`), runs `e2e-churn` and the ThreadSanitizer builds — they kill and
+freeze processes on timers, and a shared runner's scheduling makes them the likeliest to fail for reasons that are
+not bugs.
+
+**It has not run.** It runs only once the repository is pushed, and nothing has been pushed during this work. No status
+badge is added until a run has passed.
+
+**Rejected: unit tests only.** Misses the case the end-to-end suites exist for: a program that does not use the tested
+code.
+
+**Rejected: every suite on every push.** A check that fails now and then for timing reasons is a check people learn to
+re-run and then to ignore.
+
+**Rejected: no CI.**
+
+**Cost accepted.** The x86-64 runner is not the development machine; the arm runner is, but hosted arm runners are a
+newer offering whose availability is checked by the first run, not assumed. The timing-sensitive suites only run when
+someone asks.
+
+**Evidence:** none yet — not run.

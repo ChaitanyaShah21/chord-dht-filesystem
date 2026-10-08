@@ -1062,6 +1062,15 @@ written but **have not been run** — the development machine has no Docker. **R
 (nothing verifiable), waiting for Docker (the local launcher is useful and testable now), and installing Docker as a
 side effect of this work. **Cost:** the container files stay unverified until they are run.
 
+### Continuous integration runs everything that is fast and deterministic
+
+On every push, on x86-64 and arm64 runners: the build (which must stay warning-free), the unit tests, and every
+end-to-end suite that runs in seconds without depending on timing under load. The churn suite and the ThreadSanitizer
+runs, which kill and freeze processes on timers, run on demand. The workflow **has not run yet** — it runs once the
+repository is pushed — and no badge is shown until it has passed. **Rejected:** unit tests only (they cannot catch a
+program that skips the tested code), every suite on every push (a check that fails for timing reasons gets ignored),
+and no CI. **Cost:** the timing-sensitive suites run only when asked.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
