@@ -144,7 +144,7 @@ if pts:
     ax.set_xticklabels([str(x) for x in xs])
     ax.set_xlim(xs[0] / 1.3, xs[-1] * 3.5)
     ax.plot(xs, [x / 1000 for x in xs], color=INK_2, linestyle=(0, (4, 3)), linewidth=1)
-    ax.annotate("one period", (xs[-1], xs[-1] / 1000), xytext=(6, -8), textcoords="offset points",
+    ax.annotate("one period", (xs[2], xs[2] / 1000), xytext=(4, -12), textcoords="offset points",
                 color=INK_2, fontsize=8)
     ax.axhline(1.0, color=INK_2, linewidth=0.8, linestyle=(0, (1, 2)))
     ax.annotate("1 s target", (xs[0], 1.0), xytext=(0, 4), textcoords="offset points", color=INK_2, fontsize=8)
@@ -165,10 +165,15 @@ if cpu:
     ax.set_yscale("log")
     ax.set_xticks(xs)
     ax.set_xticklabels([str(x) for x in xs])
+    ax.yaxis.set_major_locator(matplotlib.ticker.FixedLocator([0.25, 0.5, 1, 2, 4]))
+    ax.yaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g} %"))
+    for x, y in zip(xs, ys):
+        ax.annotate(f"{y:.2f} %", (x, y), xytext=(6, 4), textcoords="offset points", color=INK, fontsize=8)
     if chosen_t:
         ax.axvline(chosen_t, color=GRID, linewidth=6, zorder=0)
 style(ax, f"b · the price: CPU per idle node ({cpu[0]['n'] if cpu else '?'} nodes)",
-      "stabilisation period T (ms, log scale)", "% of one core per node (log scale)")
+      "stabilisation period T (ms, log scale)", "CPU per node, % of one core (log scale)")
 
 ax = axes[1][0]
 pts = series_of("size", "n")
@@ -195,7 +200,7 @@ if pts:
     ax.set_xticklabels([str(x) for x in xs])
     ax.set_xlim(xs[0] / 1.3, xs[-1] * 3.5)
 ax.set_ylim(bottom=0)
-style(ax, f"d · nodes killed at once, chosen at random (64 nodes, T = {chosen_t} ms)",
+style(ax, f"d · k nodes killed at random (64 nodes, T = {chosen_t} ms)",
       "nodes killed together (log scale)", "seconds after the kill")
 
 handles, labels = axes[0][0].get_legend_handles_labels()

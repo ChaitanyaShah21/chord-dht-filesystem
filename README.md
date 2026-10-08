@@ -33,7 +33,7 @@ at `29a829c` (13 Sep 2026), the lookup and churn suites on 7 Oct 2026.
 | Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
 | Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
 | Chord lookup originator (`lookup`) | **Works** on a fixed ring. Follows `NEXT` to `OWNER`, checks every reply for progress, and reports a refused, timed-out or garbled node by name | `make check` — 70 lookup checks against correct, lying and broken rings · `scripts/e2e-chord.sh` — real 16-node ring, 4000 lookups, one node killed, one frozen |
-| Chord joins, stabilisation, failure handling | **Works.** Nodes join through any member, a background thread runs stabilise, notify and finger repair, a refused node is evicted at once and a silent one after two strikes, and a node that loses everyone it knew stops routing and rejoins | `make check` — 95 in-process checks: every round order of two joins between the same pair, kills, freezes, a fast restart, collisions, 200 random churn histories · `scripts/e2e-churn.sh` — 22 checks on real processes, also run under ThreadSanitizer |
+| Chord joins, stabilisation, failure handling | **Works.** Nodes join through any member, a background thread runs stabilise, notify and finger repair, a refused node is evicted at once and a silent one after two strikes, and a node that loses everyone it knew stops routing and rejoins | `make check` — 97 in-process checks: every round order of two joins between the same pair, kills, freezes, a fast restart, collisions, 200 random churn histories · `scripts/e2e-churn.sh` — 22 checks on real processes, also run under ThreadSanitizer · repair time measured in [`BENCHMARKS.md`](BENCHMARKS.md) §4 |
 | Replication, chunk storage | **Not built yet** | — |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
@@ -97,6 +97,36 @@ against an independent oracle:
   measured and not yet explained.
 
 Method, ring-to-ring spread and memory figures: [`BENCHMARKS.md`](BENCHMARKS.md) §2.
+
+### A killed node is repaired out of the ring in well under a second
+
+![Reconvergence after node failure](docs/figures/reconverge.png)
+
+Measured 7 Oct 2026 at commit `b171554`: 130 runs, each a fresh ring of real `node` processes. After every
+kill a test harness — never the nodes — computes what each survivor should hold from the surviving addresses
+alone, and polls until reality matches:
+
+| One node killed, 64 nodes, 1 s stabilisation period | Median | Fastest – slowest |
+|---|---:|---:|
+| **ring correct** — every successor and predecessor right | **0.63 s** | 0.17 – 1.03 s (10 runs) |
+| successor lists correct | 3.48 s | |
+| every finger table correct | 5.32 s | |
+
+- **The period was chosen by a rule fixed before measuring**: the longest period at which at least 9 of 10 runs
+  repair the ring within 1 s. That is 1000 ms, at 0.44 % of a core per idle node.
+- **Repair time does not grow with the ring**: 0.42–0.56 s from 16 to 128 nodes. With k nodes killed at random, the
+  ring waits for the slowest of k predecessors' next rounds, close to the predicted T · 0.5^(1/k).
+- **Losing a node's whole successor list now costs no more than one death**: 8 adjacent deaths went from 1.49 s
+  (worst 4.1 s) to 0.36 s, and 9 from 2.99 s (worst 7.6 s) to 0.67 s, after stabilisation was changed to run to
+  its fixed point within a round instead of one step per period.
+- **Under lookup load, finger repair speeds up from 4 s to 0.3 s**, because a client that reaches a dead node
+  reports it to the node that named it. Of 28,790 lookups issued during and after kills, none failed, and the only
+  wrong answers named the dead node in the fraction of a second before its predecessor noticed.
+- **Stated limit:** in one of five 256-node runs, live nodes were wrongly evicted at the 200 ms call deadline and
+  repair took 9 s. On this machine 256 processes share eight cores.
+
+Method, every table, the calibration behind the deadline, and the two earlier versions of the selection rules
+that failed: [`BENCHMARKS.md`](BENCHMARKS.md) §4.
 
 ### Single-peer transfer baseline
 
@@ -1004,6 +1034,11 @@ Stated limits read as engineering judgement. Unstated ones read as things that w
   enforced anywhere; it is assumed by every caller.
 - **No clean shutdown.** Every connection handler is a detached thread that nothing joins, so
   processes are killed rather than stopped — possibly mid-write.
+- **A node that loses every node it knew stays out until one of its remembered contacts is alive.** It refuses
+  to route rather than claim the whole ring, and rejoins when it can; with no live contact, an operator restarts
+  it. There is no configured seed list yet.
+- **At 256 nodes on one machine, the 200 ms call deadline wrongly evicted live nodes in one run of five.** The
+  deadline is a fixed timeout; an adaptive (phi-accrual) detector is the known improvement.
 - **All benchmarking is single-host.** Loopback has no propagation delay and all peers share one
   page cache and eight cores, so throughput numbers are optimistic and round-trip-sensitive
   numbers are very optimistic. Quantified in [`BENCHMARKS.md`](BENCHMARKS.md).

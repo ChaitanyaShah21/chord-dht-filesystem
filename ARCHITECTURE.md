@@ -212,7 +212,7 @@ decided before the paper is one that cannot be defended in December.
 | **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
 | **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
 | **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
-| **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §3 |
+| **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §4 |
 | **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
 | **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
 | **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
@@ -2284,7 +2284,7 @@ named are real; a liar can name new identifiers for ever.
 
 ### D-038 — "Reconverged" is three milestones, judged by an oracle in the harness
 
-**Fork:** F30. **Date:** 7 Oct 2026. **Gates:** the reconvergence benchmark (`BENCHMARKS.md` §3).
+**Fork:** F30. **Date:** 7 Oct 2026. **Gates:** the reconvergence benchmark (`BENCHMARKS.md` §4).
 
 **The decision.** After a node is killed, the harness computes the correct state of every live node
 from the set of live addresses alone — SHA-1 of each, sorted — and polls every live node until its
@@ -2377,7 +2377,12 @@ by rounds run back to back to catch up, exactly when a peer is already slow.
 - The 1 s target is a stated objective, not derived from anything deeper. The curve is published so
   a different objective can be read off it.
 
-**Evidence:** `BENCHMARKS.md` §3, where the values are filled in from the measured curves.
+**Evidence:** `BENCHMARKS.md` §4. The rules as first written failed twice and were restated (D-041, D-042);
+applied in code at `b171554` they chose **T = 1000 ms** (9 of 10 runs repaired within 1 s; 2000 ms: 4 of 10) and
+**D = 200 ms** (ten times the 99.9th-percentile exchange was 55 ms; the slowest exchange 116.7 ms). These are the
+node's defaults. One of five 256-node runs then logged 77 evictions of live nodes at that deadline, which the
+rule's no-false-eviction check, run only on 64 nodes, does not cover — recorded in `BENCHMARKS.md` §4 and
+`SCALE_NOTES.md`.
 
 ---
 
@@ -2484,7 +2489,7 @@ the result that 50 ms is where this machine runs out of cores.
 to prevent. It is stated here rather than made silently, the original wording and the measurement that broke
 it are both kept, and the change narrows the rule's scope without touching its margin.
 
-**Evidence:** `BENCHMARKS.md` §3, the calibration table.
+**Evidence:** `BENCHMARKS.md` §4, the calibration table.
 
 ---
 
@@ -2540,7 +2545,7 @@ what triggered it: the same rule, on the same code, produced two different answe
 failure rather than a disliked value. Every version of the rules, and both runs' data, are kept. The new rules
 were fixed before the final run, which is the one reported.
 
-**Evidence:** the table above; `BENCHMARKS.md` §3 for the final run.
+**Evidence:** the table above; `BENCHMARKS.md` §4 for the final run.
 
 ---
 
@@ -2583,4 +2588,4 @@ its neighbours, and leaves the walk as slow as it was.
 **Evidence:** two in-process tests written against the old code first. Six adjacent deaths with r = 4, ten
 rings of 64: ring correct after at most **5 rounds before, 1 after**. A ring of 128 in which half the nodes
 start three rounds late: fully correct after at most **64 rounds before, 12 after**. The real-process
-before and after are in `BENCHMARKS.md` §3.
+before and after are in `BENCHMARKS.md` §4.

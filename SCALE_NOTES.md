@@ -101,7 +101,7 @@ precisely so they can be checked.**
 | Order | What saturates first | At roughly | Symptom | Fix |
 |---|---|---|---|---|
 | 1 | **Lookup round trips** (if fork F1 chooses iterative) | large rings | latency grows as hops × round-trip time; on loopback invisible, on a real network dominant | recursive lookup, or cache finger entries aggressively |
-| 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers | back off the period adaptively |
+| 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers. **Measured 7 Oct (`b171554`): 0.44 % of a core per idle node at a 1 s period, 5.0 % at 50 ms; 256 nodes at 50 ms saturates this 8-core machine (load average 66)** | back off the period adaptively |
 | 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2 |
 | 4 | **Free RAM on this host** | **2048 node processes** within a 3.4 GiB budget (measured 7 Oct: about 1 MiB per node at that size, growing with N — see the 7 Oct entry) | cannot start more nodes; **this is a measurement artefact, not a system property, and is labelled as such on the plot** | in-process replay past the ceiling (D-027); cloud VMs — cut-order item 3 |
 
@@ -305,3 +305,71 @@ file, is how a large ring gets built.
 **Confidence:** `MEASURED`. On the day of measurement the machine reported more free memory than the
 documented 3.4 GiB (about 8.7 GiB available), so the ceiling is set by the documented budget rather
 than by the machine on one particular day.
+
+---
+
+### 7 Oct 2026 — maintenance cost grows as N / T, and one machine runs out of cores first
+
+**Observed:** `MEASURED` at `b171554` (`BENCHMARKS.md` §4). On an idle 64-node ring, CPU per node falls as one
+over the stabilisation period: 5.04 % of a core at 50 ms, 2.73 % at 100 ms, 0.77 % at 500 ms, 0.44 % at 1000 ms,
+0.25 % at 2000 ms. Each round is a `NEIGHBOURS`, a `NOTIFY`, a `PING` and one finger lookup of a few hops, each a
+fresh TCP connection (D-024), so the cost is mostly connection set-up. With 256 nodes at 50 ms the machine
+saturated: load average 66 on eight cores, median node-to-node exchange 5.3 ms against 0.3 ms at a 1 s period, and
+a slowest exchange of 455 ms.
+
+**At 10x:** the total cost on one host is N × (cost per round) / T. 2560 nodes at the chosen 1 s period would need
+about 11 cores, more than this machine has, before any lookup traffic. On a real deployment each node pays only its
+own share, so the per-node figure is the one that transfers: under half a percent of a core.
+
+**Would do:** reuse connections between neighbours (D-024 rejected a connection cache for lookups because one dead
+node should produce one signal; a neighbour connection is a different case), and lengthen the period adaptively
+when nothing has changed for many rounds. **Confidence:** `MEASURED` for the numbers; the 10x figure is arithmetic.
+
+---
+
+### 7 Oct 2026 — at 256 nodes a 200 ms deadline evicted live nodes in one run of five
+
+**Observed:** `MEASURED` at `b171554`. In one of the five 256-node runs, 77 evictions of nodes that were alive were
+logged and the ring took 9.01 s to be correct instead of under 1.1 s. None of the other 129 runs of that benchmark
+had a single false eviction. The cause is `REASONED`, not confirmed (that run's logs were not kept): with 256
+processes on eight cores, a stall longer than the 200 ms deadline turns into a strike, and two consecutive strikes
+evict (D-035). The deadline came from a rule (D-042) whose false-eviction check ran on 64 nodes only.
+
+**At 10x:** more processes per core make long stalls more frequent, so false evictions would grow faster than N. On
+real hardware with one node per machine the stall would be the node's own, not its neighbours'.
+
+**Would do:** re-run the 256-node configuration with logs kept, to confirm the cause; then either run the
+false-eviction check at the largest ring size, or make the deadline adaptive (a phi-accrual detector, D-013's named
+alternative). **Confidence:** `MEASURED` that it happened once in five; `REASONED` for why.
+
+---
+
+### 7 Oct 2026 — a wired ring's start-up is O(N) repair, and the harness's resolution is O(N)
+
+**Observed:** `MEASURED` at `b171554`. Starting N `--wired` nodes one after another, the time until the harness
+verified every node correct was 2.0 s at 16–64 nodes, 8.1 s at 128 and 12.1 s at 256 (medians). The nodes that
+start first see the later ones as refused and evict them, then repair; before D-043 a node that had fallen back far
+round the ring walked home one node per period, and a 256-node start failed to converge within 60 s in 3 of 5 runs.
+Separately, one poll of every node by the harness took 9 ms at 16 nodes and 148 ms at 256, which is the timing
+resolution of every reconvergence figure.
+
+**At 10x:** a 2560-node start would be dominated by the same refusals; the harness's poll would take about 1.5 s,
+coarser than the period. The harness would need to probe in parallel processes rather than Python threads.
+
+**Would do:** start wired nodes with their first round delayed until all are listening (a start-up grace), if wired
+start were ever used outside a benchmark. **Confidence:** `MEASURED`.
+
+---
+
+### 7 Oct 2026 — a client's `SUSPECT` costs the receiver one ping, without limit
+
+**Observed:** `REASONED` from the code (D-031, D-036). Any client can send `SUSPECT <ip> <port>` naming a node the
+receiver holds, and the receiver opens one connection to check it. Under the 769-per-second load runs, only the
+lookups that reached the dead node sent one.
+
+**At 10x:** at scale, a dead finger target shared by many nodes and hit by many clients produces a burst of
+identical probes; a hostile client can make a node send one ping per message.
+
+**Would do:** remember the outcome of a probe for a short time and answer repeat hints from it, and rate-limit hints
+per client. **Confidence:** `REASONED`.
+
