@@ -36,7 +36,7 @@ multi-tracker support that never existed) went with groups and the greeting in D
 fixed by D-008; D4 (an uncaught `stoull` on a malformed number killing the tracker) was fixed with
 R1 (see its table below); and D1, D6, D7 and D8 disappeared with the code they were in.
 
-Session date: 1 Sep 2026 · baseline commit `219a9b8` · g++ 13.3.0, C++17, aarch64 under WSL2.
+Session date: 1 Sep 2026 · baseline commit `c65ca7b` · g++ 13.3.0, C++17, aarch64 under WSL2.
 
 ---
 

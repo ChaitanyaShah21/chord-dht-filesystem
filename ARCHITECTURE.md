@@ -1,14 +1,18 @@
 # Architecture — chord-dht-filesystem
 
-The current design, and the log of every decision that produced it. The README's **Key Design
-Rationales** section and `docs/design.md` are written from it.
+The current design first — what the system is, its parts, what must always hold, how it behaves
+under concurrency and failure — and then the full **decision log**, D-001 to D-068: every decision,
+the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
+README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
+[`docs/`](docs/) describe each subsystem's code.
 
-> **State as of 8 Oct 2026.** Since Phase 5 the code implements the target design: files are cut
-> into content-addressed chunks stored three times on a Chord ring, and a small tracker maps names to
-> manifest keys. The diagram below is that system. The coursework system this repository began as —
-> a tracker with users, groups and seeder lists, and peers serving pieces to each other — was retired
-> in Phase 5 (D-060); it is described in the decisions that changed it (D-004 to D-011) and in the
-> history (`pre-resurrection`, and `e381179` for the transfer baseline).
+> **State as of 8 Oct 2026.** Files are cut into content-addressed chunks stored three times on a
+> Chord ring, and a small tracker maps names to manifest keys. Everything in the current-state
+> sections below is built, tested and measured ([`BENCHMARKS.md`](BENCHMARKS.md)). The coursework
+> system this repository began as — a tracker with users, groups and seeder lists, and peers serving
+> pieces to each other — was retired in Phase 5 (D-060); it is described in the decisions that
+> changed it (D-004 to D-011), in [`docs/postmortem-resurrection.md`](docs/postmortem-resurrection.md),
+> and in the history (`pre-resurrection`, and `e381179` for the transfer baseline).
 
 ---
 
@@ -49,11 +53,10 @@ than by an apology.
 
 ---
 
-## The diagram — the system as it exists today
+## The system as it exists today
 
-Kept as diagram-as-text so it diffs in review and cannot silently drift from the design. Since
-Phase 5 this is the target design below, built; the target diagram is kept as the record of what
-was designed before it existed.
+Kept as diagram-as-text so it diffs in review and cannot silently drift from the design. The design
+as first drawn, before any of it was built, is kept further down as a historical record.
 
 ```mermaid
 flowchart TB
@@ -86,281 +89,19 @@ a user.
 
 ---
 
-## The target diagram — the system the five forks describe
-
-Drawn **after** the forks were resolved: a diagram made earlier would have decided them by
-implication. Kept as diagram-as-text so it diffs in review and cannot drift from the design.
-
-```mermaid
-flowchart TB
-    C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
-
-    subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
-        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · a Raft group is the planned next step"]
-    end
-
-    subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
-        direction LR
-        N8["<b>N8</b>"] --> N21["<b>N21</b>"] --> N32["<b>N32</b>"] --> N48["<b>N48</b>"] --> N8
-    end
-
-    C -- "1 · name" --> T
-    T -- "2 · manifest hash" --> C
-    C -- "3 · find_successor(hash) — one step, one answer" --> N8
-    N8 -- "4 · 'closer node is N32'" --> C
-    C -- "5 · client asks N32 itself" --> N32
-    N32 -- "6 · 'N48 owns it'" --> C
-    C -- "7 · GET &lt;manifest hash&gt;" --> N48
-    N48 -- "8 · manifest = [h0 h1 … hk]" --> C
-    C -- "9 · repeat 3–8 concurrently for every chunk hash" --> ring
-```
-
-The arrows inside the ring are **successor pointers**. They are the only routing state that has
-to be correct; everything else is an accelerator.
-
-**Reading the path.** Steps 1–2 are the only time the tracker is involved, and it returns 40
-bytes. Steps 3–6 are the iterative lookup: each node answers *one* question and returns
-immediately, and the **client** opens the next connection — which is what makes hop count a
-number the client observes rather than one the ring reports. Steps 7–8 fetch the manifest, which
-is itself just a chunk. Step 9 repeats the whole lookup-and-fetch for every chunk hash, issued
-**concurrently**, because content addressing means consecutive chunks of one file live on
-unrelated nodes and there is no locality to walk.
-
-**What each node holds**, in strict order of how much it matters:
-
-| Structure | Carries | If stale or wrong |
-|---|---|---|
-| **successor pointer** | correctness | wrong answers, returned confidently, undetectable |
-| **successor list** (`r ≈ log₂N`) | survival of failure — **and it is the replica set** | node orphaned only if *all* `r` die within one period |
-| **finger table** (`m` rows, ~`log₂N` distinct) | speed only | more hops, never a wrong answer |
-| **predecessor** | knowing its own arc; joins | joins stall until repaired |
-| **chunk store** | the data, keyed by `SHA-1` of its own contents | a failed hash check at the reader; try the next replica |
-
-**What runs in the background on every node**, forever: `stabilize` every `T` seconds (asks the
-successor for its predecessor, tightens the pointer, `notify`s), `fix_fingers` (refreshes one
-finger per round), and `check_predecessor`. Failure detection rides on these plus **any** failed
-call to the successor from any code path (D-013). Nothing is event-driven; everything is
-re-derived, so the ring converges from any state.
-
-**What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (planned, not built). Since Phase 4 each node in the drawing is a
-process with several ring members — virtual nodes, D-047 — and a chunk's three copies are on three different
-processes (D-048).
-
 ## Components
 
-| Component | Responsibility | Owns | Talks to |
-|---|---|---|---|
-| `tracker` (`tracker.cpp`, `names.cpp`) | The namespace: `REGISTER`, `RESOLVE`, `LIST`, `PING` (D-058) | the `name → key` map and its log, `names_<port>.log` | clients, one detached thread per connection |
-| `node` (`node.cpp`; `stabilize.cpp`, `chunk.cpp`, `repair.cpp`, `store.cpp`) | One process: several ring members, their routing state and maintenance; a chunk store; coordinating writes; repair | each member's successor list, fingers, predecessor; the store's files and index | other nodes and clients, one detached thread per connection; a maintenance thread and a repair thread |
-| `client` (`client.cpp`; `transfer.cpp`) | Upload and download of whole files; names through the tracker | nothing persistent; during a transfer, one chunk per worker and the part file | the tracker, and ring nodes over a fresh connection per exchange |
-| `chunk`, `lookup` | Tools: one chunk, or one lookup, through the ring | nothing | ring nodes |
-| `net.cpp` | The one framing layer: lines, bodies, connect deadline, server read deadline (D-010, D-044, D-025, D-061) | nothing | — |
-| `sha1.h` | Header-only wrapper over OpenSSL `SHA1()`, hex-encoding the 20-byte digest | nothing | — |
+| Component | Code | Responsibility | Owns | Talks to |
+|---|---|---|---|---|
+| `tracker` | `src/tracker.cpp`, `src/names.cpp` | The namespace: `REGISTER`, `RESOLVE`, `LIST`, `PING` (D-058) | the `name → key` map and its log, `names_<port>.log` | clients, one detached thread per connection |
+| `node` | `src/node.cpp`; `stabilize.cpp`, `chunk.cpp`, `repair.cpp`, `store.cpp` | One process: several ring members, their routing state and maintenance; a chunk store; coordinating writes; repair | each member's successor list, fingers, predecessor; the store's files and index | other nodes and clients, one detached thread per connection; a maintenance thread and a repair thread |
+| `client` | `src/client.cpp`; `transfer.cpp` | Upload and download of whole files; names through the tracker | nothing persistent; during a transfer, one chunk per worker and the part file | the tracker, and ring nodes over a fresh connection per exchange |
+| `chunk`, `lookup` | `src/chunk_main.cpp`, `src/lookup_main.cpp` | Tools: one chunk, or one lookup, through the ring | nothing | ring nodes |
+| `sim-hops`, `sim-balance` | `src/sim_hops.cpp`, `src/sim_balance.cpp` | Benchmark replays: the same routing (D-027) and placement (D-051) code with the ring in one process | nothing | — |
+| framing | `src/net.cpp` | The one framing layer: lines, bodies, connect deadline, server read deadline (D-010, D-044, D-025, D-061) | nothing | — |
+| hashing | `src/sha1.h` | Header-only wrapper over OpenSSL `SHA1()`, hex-encoding the 20-byte digest | nothing | — |
 
----
-
-## Open forks
-
-**Nothing here is implemented until it is decided.** Each fork moves to the decision log
-below once resolved. The first five were held open until the Chord paper had been read, so that
-none was decided by habit.
-
-| # | Fork | Why it changes things downstream | Status |
-|---|---|---|---|
-| **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
-| **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | **RESOLVED** — D-017 |
-| **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design.** | **RESOLVED** — D-014, D-015 |
-| **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
-| **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | **RESOLVED** — D-016 |
-
-| **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
-| **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6, and decided on its own rather than in passing. | **RESOLVED** — D-008 |
-| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns with a Raft-replicated tracker, which replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
-| **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
-| **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
-| **F7** | **What is on disk after a failed transfer?** Before Phase 5: a full-size, zero-filled file, indistinguishable from a real one by size. A temporary part file renamed into place; writing to the final name and deleting on failure; or holding the file in memory. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. | **RESOLVED** — D-055 |
-| **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
-| **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
-| **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
-| **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and justify it in Chord's sense. | Decides whether the one-line description is accurate, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
-| **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector designed, not built |
-| **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Salting trades away the property that an identifier is a function of its address. | **RESOLVED** — D-028: refused at join, and never adopted |
-| **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
-| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication. | **RESOLVED** — D-027 |
-| **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
-| **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building the lookup tool: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
-| **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
-| **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
-| **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
-| **F24** | **How long is the successor list?** The replication minimum (3); log₂ of the largest ring measured (8); or estimated at run time from the gap to the successor. | r is the exponent in the probability of a node being orphaned, and it is the replica set Phase 4 reads. | **RESOLVED** — D-032 |
-| **F25** | **Is there a graceful leave?** Crash-only; departure messages to the neighbours; or departure with a data hand-off. | Decides whether the system has one recovery path or two, and what a planned shutdown costs. | **RESOLVED** — D-033 |
-| **F26** | **How does `fix_fingers` proceed?** One finger per round (the paper); all fingers every round; or one lookup per round whose answer fills every finger it covers. | Sets how long a dead finger survives and the permanent background load per node. | **RESOLVED** — D-034 |
-| **F27** | **The failure-handling mechanics D-013 left open.** How many strikes; whether a candidate successor is verified before adoption; whether a surprising `NOTIFY` triggers a check; what replaces an evicted finger; what a node does when its whole successor list is gone. | Decides how fast a dead node leaves, whether it can be re-adopted from a neighbour's stale pointer, and whether an orphaned node claims the whole ring. | **RESOLVED** — D-035 |
-| **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
-| **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
-| **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
-| **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §4 |
-| **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
-| **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
-| **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
-| **F35** | **How fast does stabilise walk back after a distant fallback?** One step per round (the paper); run to the fixed point within a round; rejoin as an orphan; or a longer list. Surfaced by a 256-node ring that took minutes to converge. | Sets recovery after more than r adjacent deaths, and how long a wired ring takes to start. | **RESOLVED** — D-043 |
-| **F36** | **How does a chunk travel on the wire?** A length-prefixed body after a control line; the chunk encoded inside the line; or a separate data connection. | Decides whether a peer can size an allocation, how a short read is handled, and whether one socket carries two framing schemes. | **RESOLVED** — D-044 |
-| **F37** | **How and where is a chunk kept on disk?** One file per chunk with a temporary name and an atomic rename; an append-only log; or memory only — and whether a write is flushed before it counts. | Decides what a crash mid-write leaves behind, what an acknowledged write promises, and whether a peer's key can name a path. | **RESOLVED** — D-045 |
-| **F38** | **Who replicates a write, and where does W live?** The owner sending in parallel; the client writing every replica; or a chain — and W per node or per request. | Decides write latency (the slower of two parallel sends or the sum of a chain), who uploads the chunk how many times, and whether W values can be compared on one ring. | **RESOLVED** — D-046 |
-| **F39** | **How do virtual nodes share a process?** One listening port per member; one port with requests addressed by identifier; one shared routing table per process; or full membership. | Decides whether the wire can say which members share a process (replica placement needs it), what a refused connection proves, and the background traffic per process. | **RESOLVED** — D-047 |
-| **F40** | **Which members hold a chunk's replicas when one process has several members?** The next members regardless of process; the first distinct processes clockwise; a separate replica list; or a longer successor list. | With virtual nodes, adjacent members often share a process, so the naive rule puts two copies where one crash destroys both. | **RESOLVED** — D-048 |
-| **F41** | **How does a read find a good copy?** One replica, checked locally, falling through; two replicas compared; all replicas at once; and where the list of replicas comes from when the owner is dead. | Decides read traffic, what happens in the window after an owner dies, and whether a quorum is needed at all. | **RESOLVED** — D-049 |
-| **F42** | **How is RF = 3 restored after a death, and who is responsible?** A periodic full scan; an event when the successor list changes; both; every replica checking every chunk; or hash-tree comparison. | Decides how long a chunk stays one copy short, how much background traffic repair costs, and whether a silently lost file is ever found. | **RESOLVED** — D-050 |
-| **F43** | **How many virtual nodes per process?** One; a large fixed number such as 256; a number read off a measured balance curve by a rule fixed first; or in proportion to capacity. | Load balance improves as 1/√V while every member adds its own stabilisation traffic. | **RESOLVED** — D-051 (rule); value in `BENCHMARKS.md` |
-| **F44** | **How much of a chunk is in memory, and is it bounded?** The whole body, shared between parallel sends, capped per process; streamed to disk while hashing; uncapped; or a waiting queue. | Sets memory per node under write load, whether a client can make a node allocate without limit, and how many processes fit on this machine. | **RESOLVED** — D-052 |
-| **F45** | **How are W, durability and re-replication measured?** A fresh ring per W, or all W on one ring under one failure; durability from copy counts, or by killing the coordinator at acknowledgement; and who judges that RF = 3 is restored. | Decides whether the W comparison is between settings or between rings, and whether a durability claim was tested or inferred. | **RESOLVED** — D-053 |
-| **F46** | **What is a file's manifest, and what happens when it does not fit in one chunk?** A text manifest, split into a tree of manifests when large; a binary manifest; one flat manifest and a file-size limit; or a chain of manifests. | Decides the largest file the system can hold, how many round trips a download makes before its chunks can be fetched in parallel, and whether a manifest can be read and checked by hand. | **RESOLVED** — D-054 |
-| **F47** | **How is a transfer parallelised?** A fixed pool of workers taking chunk numbers from one counter, sized at run time; a thread per chunk; an event loop; or chunks batched by owner. And what does a transfer do when one chunk fails? | Sets throughput, the memory a transfer uses, how many connections land on a node at once, and whether throughput against parallelism can be measured as a curve. | **RESOLVED** — D-056 |
-| **F48** | **How does a client find the ring?** Addresses on its command line, tried in order; addresses handed out by the tracker; a seed file; or learning the membership from a first contact. | Decides whether the tracker carries liveness state about nodes, whether a client can read a file with the tracker down, and where every lookup's first request lands. | **RESOLVED** — D-057 |
-| **F49** | **What does the tracker become?** The name-to-manifest map alone, with an effect log; the legacy commands kept beside it; or a new program beside the legacy tracker. And what happens to users, groups, `update_seeder` and the persistence log format (D-009)? | Decides the size of the mutable state that consensus will later replicate, what recovery replays, and how much legacy machinery stays alive. | **RESOLVED** — D-058 |
-| **F50** | **What happens when a name is registered twice?** Refuse a different key and accept the same one again; the last writer wins; keep versions; or overwrite on request. | With no access control and no deletion, decides whether one user can replace another's file, and whether a retried upload succeeds. | **RESOLVED** — D-059 |
-| **F51** | **What happens to the legacy client and tracker code, their framing copies, and the suites that test them?** Rebuild both programs on the node's framing and remove the legacy path, re-pointing its suites; bolt the ring path onto the legacy client; or keep the legacy pair beside the new one. | Decides whether the framing rules exist once or three times (D-021), whether the legacy suites still test anything, and whether the Phase 0 baseline can be re-run. | **RESOLVED** — D-060 |
-| **F52** | **How long may a peer take to send what it announced?** A deadline per request line and per body, enforced before every receive; a per-system-call timeout; an event loop with timers; or nothing. | A peer that announces a chunk and never sends it holds a memory slot and a thread; with the chunk path user-facing, any client can do it. | **RESOLVED** — D-061 |
-| **F53** | **How is deduplication measured, and on what?** Counted at the stores, on stated synthetic edits plus one real corpus; reported by the client; a real corpus only; or not measured. | D-014 claims deduplication for free; the number decides whether that claim survives, and the workload decides whether the number means anything. | **RESOLVED** — D-062 |
-| **F54** | **How is the chunk-size sweep run above the 512 KiB framing limit?** A second build with a raised limit, used for every point; a run-time limit on every program; a sweep only up to 512 KiB; or a raised default. | D-016 promised five sizes up to 8 MiB, and the framing and stores refuse anything above 512 KiB (D-044). | **RESOLVED** — D-063 |
-| **F55** | **How does someone else start a ring, given that Docker is not installed on the development machine?** A tested local launcher plus container files marked not yet run; container files only; nothing until Docker is installed; or installing Docker now. | Decides what "how would someone run this?" can honestly be answered with, and what is claimed about containers. | **RESOLVED** — D-064 |
-| **F56** | **What does continuous integration run?** The build, the unit tests and the fast end-to-end suites on every push, with the timing-sensitive suites on demand; unit tests only; everything on every push; or none. | Decides what a green check means, and whether a flaky check teaches everyone to ignore it. | **RESOLVED** — D-065 |
-| **F57** | **How is the transfer path measured against the Phase 0 baseline?** Against a same-day re-run of the baseline at its own commit, with the clean single-variable comparison (one worker against many) beside it; or against the number recorded in September alone. And what are the curves? | The before/after is the phase's headline; moving several variables at once, or comparing across machine changes, would make it unattributable. | **RESOLVED** — D-066 |
-| **F58** | **An orphaned ring member is named as successor by its own sibling, which never evicts it, so it can never rejoin. What breaks the cycle?** An `ERR orphaned` reply evicts that member at once, siblings included; the orphan copies its predecessor's list in place; wired nodes wait for every peer before their first round; or fall back to a sibling instead of orphaning. Found by the Phase 5 benchmark, not foreseen. | A ring started all at once, or a process that loses every other process it knew, can stay wrong for good — every lookup through that sibling ends at a member that refuses to route. | **RESOLVED** — D-067 |
-| **F59** | **Where do sources, tests, objects and programs live?** Sources in `src/` and unit tests in `tests/`, or the flat layout kept; and where the build puts objects and programs. | Decides whether the repository reads at a glance, and whether every script, the container files and the documentation keep their paths. | **RESOLVED** — D-068 |
-
----
-
-## Decision log
-
-The heart of this file. One entry per resolved fork. Every entry names the rejected alternative
-and its cost — an entry without one is not finished, because a decision is only understood once
-the alternatives and their costs are.
-
-### D-001 — Repository named `chord-dht-filesystem`
-**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** none — the repository was renamed when it moved to its own remote, 6 Sep 2026
-
-**The fork:** the repository was called `os-assignment3`, a name that describes the course it came
-from rather than the system it was becoming.
-
-**Options considered:**
-
-| Option | What it means in practice | Cost |
-|---|---|---|
-| `chord-dht-filesystem` | Names the algorithm up front | Invites "why Chord and not Kademlia?" — a comparison the design is ready to make |
-| `distributed-p2p-filestore` | Names the domain, not the algorithm | Safer if the design drifts from strict Chord, but does not signal that a *named protocol* was implemented |
-| `chord-raft-filesystem` | Names both planes | Most descriptive of the plan — but **promises Raft, the component most likely to be deferred.** If Raft is not built the name claims something the repository does not contain |
-| `ringfs` | Short, product-like | Says nothing about the algorithm; "Chord" and "DHT" are what someone searching for this would type |
-
-**Chosen:** `chord-dht-filesystem`
-
-**Reasoning:** it states the scope in three words and commits only to what the minimum viable
-product guarantees. The Kademlia comparison it invites is a useful one — XOR metric versus
-successor-ring topology.
-
-**Rejected because:** `chord-raft-filesystem` names a component that might not be built. A
-repository name is not the place to promise the most deferrable feature.
-
-**What would change my mind:** if Raft ships and is solid, renaming is one command and the
-history survives.
-
-**Evidence:** none — naming, decided on reasoning.
-
----
-
-### D-002 — Phase 0 is a minimum viable resurrection, not a full repair
-**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** `e5a52fb`
-
-**The fork:** the inherited system has at least fifteen identified defects (the audit of
-23 Aug 2026; the ones reproduced are in `docs/failures.md`). How many get fixed before Chord work
-starts?
-
-**Options considered:**
-
-| Option | What it means in practice | Cost |
-|---|---|---|
-| Minimum viable resurrection | Fix the build (B1, B2), fix state replay (R1), fix the download path (R2). Stop when one file transfers end-to-end and verifies. | ~6–8 h. Leaves D1–D8 open — but most are in code the Chord rewrite deletes anyway |
-| Full repair | Also restore multi-tracker sync, fix the desync properly, close the traversal hole, make downloads non-blocking | ~14–16 h. **Roughly doubles the time before Chord routing work can start** |
-| Build-only, then straight to Chord | Fix compilation, write the postmortem, move on | ~2–3 h. But with no working download there is **no baseline throughput number**, and every later improvement needs a before number to be measured against |
-
-**Chosen:** minimum viable resurrection.
-
-**Reasoning:** the point of Phase 0 is not a good legacy system — it is (a) a working,
-debugged path whose failures are understood and (b) a **before** number that every later
-benchmark is measured against. Both need the download path working. Neither needs multi-tracker sync.
-
-**Rejected because:** full repair spends 8 extra hours hardening code that Phase 5 rewrites.
-Build-only saves 4 hours and forfeits the baseline, which is the more expensive loss.
-
-**What would change my mind:** if isolating R2 turns out to need the desync fixed first, D2
-gets promoted into Phase 0.
-
-**Evidence:** `BENCHMARKS.md` §1 (measured 9 Sep 2026 at `e381179`), the deliverable of this decision.
-
----
-
-### D-003 — The uncommitted November tree is committed as-is, then fixed forward
-**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** `7f724c8`
-
-**The fork:** 2,247 uncommitted lines sat in the working tree. They fixed two compile errors
-(B3, B4) **and regressed three features** that existed at HEAD — `stop_share`, `update_seeder`
-and `peer_reconnect_thread`.
-
-**Options considered:**
-
-| Option | What it means in practice | Cost |
-|---|---|---|
-| Commit as-is first | One honest `wip:` commit naming both what it fixed and what it regressed, then fix forward | An ugly commit sits in the history permanently |
-| Reconstruct, then commit clean | Restore the three deleted functions from HEAD first, so one tidy commit lands | Reads better as a diff, but it is **a story about November written in August**, and it hides that the regression happened |
-| Discard, start from HEAD | — | Not viable: HEAD does not compile at all, and it throws away real work |
-
-**Chosen:** commit as-is, tagged `pre-resurrection`.
-
-**Reasoning:** history is evidence. An ugly-but-true commit is worth more than a tidy invented
-one, and the regression is itself part of the record — a working tree that had silently dropped
-three handlers is a concrete example of why uncommitted work is a liability.
-
-**Rejected because:** reconstructing would have made the diff look deliberate when it was not,
-and the history would then record something that did not happen.
-
-**What would change my mind:** nothing. This is settled.
-
-**Evidence:** none — process decision.
-
----
-
-### D-004 — Users, groups and authentication are dropped
-**Date:** 23 Aug 2026 · **Phase:** 0 · **Executed:** Phase 5, `83d2a3b` (D-058, D-060) — **after** the baseline was measured at `e381179`
-
-**The fork:** the inherited system has user accounts, passwords, groups with owners, join
-requests and an approval workflow. Does that survive the pivot to Chord?
-
-**Options considered:**
-
-| Option | What it means in practice | Cost |
-|---|---|---|
-| Drop groups and auth | The ring stores content-addressed chunks; the tracker owns the manifest | Deletes working code — but it stays in git history, so nothing is actually lost |
-| Keep both, Chord underneath | Preserves working code, the pivot looks continuous | **Every** new subsystem — replication, stabilisation, read repair, anti-entropy — must respect group membership. Four subsystems taxed by a concern outside the system's purpose |
-| Keep auth, drop groups | Auth is cheap and answers "how do you stop anyone joining the ring?" | One extra concept to maintain that the Chord literature has no opinion about |
-
-**Chosen:** drop both.
-
-**Reasoning:** they were a coursework requirement, not a distributed-systems one. Removing them
-makes the DHT literature map straight onto the code, and shrinks the surface that has to be
-kept correct.
-
-**Rejected because:** keeping them costs hours in four separate subsystems for a feature that
-does not bear on routing, replication or failure handling.
-
-**⚠ Sequencing constraint:** **this removal happens after the Phase 0 baseline is recorded, not
-before.** The download path runs through `upload_file`, which checks group membership; deleting
-that code first would destroy the "before" number that D-002 exists to produce.
-
-**What would change my mind:** if the system's purpose became access control rather than
-distributed storage.
-
-**Evidence:** none — scoping decision.
+Wire formats: [`docs/protocol.md`](docs/protocol.md). Repository layout: D-068.
 
 ---
 
@@ -462,6 +203,299 @@ possible, so each plane is described separately.
 measured curve rather than a constant (D-046, D-053). Hinted handoff would raise write availability
 without lowering `W` (named in D-015, not built). A Raft group behind the tracker would keep the
 namespace available while a majority of its replicas is up, and linearizable.
+
+---
+
+## Reading the decision log
+
+Each entry records the fork, the options with what each meant in practice, the choice, the rejected
+alternatives and their cost, and — added as it arrived — the evidence. Entries are history: they keep
+the reasoning as it was at the time, including predictions that later failed, and point forward to
+the decision or measurement that settled them. Code paths in older entries name files as they were
+then (`node.cpp`); since D-068 the sources are under `src/`.
+
+| Phase | Dates | What was built | Decisions |
+|---|---|---|---|
+| 0 | 23 Aug – 9 Sep 2026 | the coursework system resurrected: build fixed, defects reproduced and fixed, the transfer baseline measured | D-001 – D-011 |
+| 1 | 12 – 13 Sep 2026 | design only: the forks that shape everything after, decided before any code | D-012 – D-023 |
+| 2 | 13 Sep – 7 Oct 2026 | routing on a fixed ring; the hop-count benchmark | D-024 – D-027 |
+| 3 | 7 Oct 2026 | joins, stabilisation, failure handling; the reconvergence benchmark | D-028 – D-043 |
+| 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
+| 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
+| 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
+
+---
+
+## Open forks
+
+**No fork is open.** All 60 recorded here (F1–F59 and F6a; F3a was decided inside D-014) are resolved, each by
+the decision named in its last column. The rule while building was that nothing is implemented until
+its fork is decided; the first five were held open until the Chord paper had been read, so that none
+was decided by habit. The table is kept in the order the forks were raised.
+
+| # | Fork | Why it changes things downstream | Status |
+|---|---|---|---|
+| **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
+| **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | **RESOLVED** — D-017 |
+| **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design.** | **RESOLVED** — D-014, D-015 |
+| **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
+| **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | **RESOLVED** — D-016 |
+
+| **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
+| **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6, and decided on its own rather than in passing. | **RESOLVED** — D-008 |
+| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns with a Raft-replicated tracker, which replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
+| **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
+| **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
+| **F7** | **What is on disk after a failed transfer?** Before Phase 5: a full-size, zero-filled file, indistinguishable from a real one by size. A temporary part file renamed into place; writing to the final name and deleting on failure; or holding the file in memory. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. | **RESOLVED** — D-055 |
+| **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
+| **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
+| **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
+| **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and justify it in Chord's sense. | Decides whether the one-line description is accurate, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
+| **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector designed, not built |
+| **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Salting trades away the property that an identifier is a function of its address. | **RESOLVED** — D-028: refused at join, and never adopted |
+| **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
+| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication. | **RESOLVED** — D-027 |
+| **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
+| **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building the lookup tool: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
+| **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
+| **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
+| **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
+| **F24** | **How long is the successor list?** The replication minimum (3); log₂ of the largest ring measured (8); or estimated at run time from the gap to the successor. | r is the exponent in the probability of a node being orphaned, and it is the replica set Phase 4 reads. | **RESOLVED** — D-032 |
+| **F25** | **Is there a graceful leave?** Crash-only; departure messages to the neighbours; or departure with a data hand-off. | Decides whether the system has one recovery path or two, and what a planned shutdown costs. | **RESOLVED** — D-033 |
+| **F26** | **How does `fix_fingers` proceed?** One finger per round (the paper); all fingers every round; or one lookup per round whose answer fills every finger it covers. | Sets how long a dead finger survives and the permanent background load per node. | **RESOLVED** — D-034 |
+| **F27** | **The failure-handling mechanics D-013 left open.** How many strikes; whether a candidate successor is verified before adoption; whether a surprising `NOTIFY` triggers a check; what replaces an evicted finger; what a node does when its whole successor list is gone. | Decides how fast a dead node leaves, whether it can be re-adopted from a neighbour's stale pointer, and whether an orphaned node claims the whole ring. | **RESOLVED** — D-035 |
+| **F28** | **What does an originator do when it reaches a dead node?** Fail; retry silently; report to the node that named it, then retry; or resume with an exclusion. | Under iterative routing nodes never see a client's failures, so this decides whether D-013's detection adapts to load at all. | **RESOLVED** — D-036 |
+| **F29** | **Does the 65-request cap survive stale fingers?** Keep it; raise it; or drop it and rely on the progress check. | D-024 derived 65 for correct fingers and asked Phase 3 to revisit it; stale fingers can need up to N requests. | **RESOLVED** — D-037 |
+| **F30** | **What does "reconverged" mean, and who decides?** Successor pointers only; every piece of routing state; a lookup sweep; or nodes reporting it themselves. | It is the definition behind the Phase 3 headline number, and decides whether the measuring instrument sits outside the thing measured. | **RESOLVED** — D-038 |
+| **F31** | **What are the stabilisation period T and the node's call deadline, and how are they swept?** Precedent; a multiple of each other; or measured curves with selection rules fixed before measuring. | T sets every reconvergence number twice over, and the deadline decides whether a slow node is evicted while alive. | **RESOLVED** — D-039 (rules); values from `BENCHMARKS.md` §4 |
+| **F32** | **What does a node do when every node it knew has gone?** Fall back to itself; stay orphaned; or stay orphaned and rejoin through remembered addresses. Surfaced by the churn tests, not foreseen. | Falling back to itself claims the whole ring and can recruit joiners into a second ring that stabilisation cannot merge. | **RESOLVED** — D-040 |
+| **F33** | **The deadline rule had no solution.** Its named load (256 nodes at 50 ms) saturated the machine, and the slowest exchange there needs D ≥ 3.46 s. Use the largest candidate; add larger ones; drop 50 ms; or apply the rule to the loads the benchmark actually runs. | Decides the call deadline, and whether a rule fixed before measuring may be narrowed after it fails. | **RESOLVED** — D-041 |
+| **F34** | **Both selection rules gave different answers when the benchmark was repeated.** The period rule's 1 s median target sits on T = 2000 ms's own median; the deadline rule keyed on the single slowest of ~70,000 samples. Keep them with more runs; pick between runs; instrument the nodes; or restate them in statistics that repeat. | Decides T and D, and whether the numbers behind them are reproducible. | **RESOLVED** — D-042 |
+| **F35** | **How fast does stabilise walk back after a distant fallback?** One step per round (the paper); run to the fixed point within a round; rejoin as an orphan; or a longer list. Surfaced by a 256-node ring that took minutes to converge. | Sets recovery after more than r adjacent deaths, and how long a wired ring takes to start. | **RESOLVED** — D-043 |
+| **F36** | **How does a chunk travel on the wire?** A length-prefixed body after a control line; the chunk encoded inside the line; or a separate data connection. | Decides whether a peer can size an allocation, how a short read is handled, and whether one socket carries two framing schemes. | **RESOLVED** — D-044 |
+| **F37** | **How and where is a chunk kept on disk?** One file per chunk with a temporary name and an atomic rename; an append-only log; or memory only — and whether a write is flushed before it counts. | Decides what a crash mid-write leaves behind, what an acknowledged write promises, and whether a peer's key can name a path. | **RESOLVED** — D-045 |
+| **F38** | **Who replicates a write, and where does W live?** The owner sending in parallel; the client writing every replica; or a chain — and W per node or per request. | Decides write latency (the slower of two parallel sends or the sum of a chain), who uploads the chunk how many times, and whether W values can be compared on one ring. | **RESOLVED** — D-046 |
+| **F39** | **How do virtual nodes share a process?** One listening port per member; one port with requests addressed by identifier; one shared routing table per process; or full membership. | Decides whether the wire can say which members share a process (replica placement needs it), what a refused connection proves, and the background traffic per process. | **RESOLVED** — D-047 |
+| **F40** | **Which members hold a chunk's replicas when one process has several members?** The next members regardless of process; the first distinct processes clockwise; a separate replica list; or a longer successor list. | With virtual nodes, adjacent members often share a process, so the naive rule puts two copies where one crash destroys both. | **RESOLVED** — D-048 |
+| **F41** | **How does a read find a good copy?** One replica, checked locally, falling through; two replicas compared; all replicas at once; and where the list of replicas comes from when the owner is dead. | Decides read traffic, what happens in the window after an owner dies, and whether a quorum is needed at all. | **RESOLVED** — D-049 |
+| **F42** | **How is RF = 3 restored after a death, and who is responsible?** A periodic full scan; an event when the successor list changes; both; every replica checking every chunk; or hash-tree comparison. | Decides how long a chunk stays one copy short, how much background traffic repair costs, and whether a silently lost file is ever found. | **RESOLVED** — D-050 |
+| **F43** | **How many virtual nodes per process?** One; a large fixed number such as 256; a number read off a measured balance curve by a rule fixed first; or in proportion to capacity. | Load balance improves as 1/√V while every member adds its own stabilisation traffic. | **RESOLVED** — D-051 (rule); value in `BENCHMARKS.md` |
+| **F44** | **How much of a chunk is in memory, and is it bounded?** The whole body, shared between parallel sends, capped per process; streamed to disk while hashing; uncapped; or a waiting queue. | Sets memory per node under write load, whether a client can make a node allocate without limit, and how many processes fit on this machine. | **RESOLVED** — D-052 |
+| **F45** | **How are W, durability and re-replication measured?** A fresh ring per W, or all W on one ring under one failure; durability from copy counts, or by killing the coordinator at acknowledgement; and who judges that RF = 3 is restored. | Decides whether the W comparison is between settings or between rings, and whether a durability claim was tested or inferred. | **RESOLVED** — D-053 |
+| **F46** | **What is a file's manifest, and what happens when it does not fit in one chunk?** A text manifest, split into a tree of manifests when large; a binary manifest; one flat manifest and a file-size limit; or a chain of manifests. | Decides the largest file the system can hold, how many round trips a download makes before its chunks can be fetched in parallel, and whether a manifest can be read and checked by hand. | **RESOLVED** — D-054 |
+| **F47** | **How is a transfer parallelised?** A fixed pool of workers taking chunk numbers from one counter, sized at run time; a thread per chunk; an event loop; or chunks batched by owner. And what does a transfer do when one chunk fails? | Sets throughput, the memory a transfer uses, how many connections land on a node at once, and whether throughput against parallelism can be measured as a curve. | **RESOLVED** — D-056 |
+| **F48** | **How does a client find the ring?** Addresses on its command line, tried in order; addresses handed out by the tracker; a seed file; or learning the membership from a first contact. | Decides whether the tracker carries liveness state about nodes, whether a client can read a file with the tracker down, and where every lookup's first request lands. | **RESOLVED** — D-057 |
+| **F49** | **What does the tracker become?** The name-to-manifest map alone, with an effect log; the legacy commands kept beside it; or a new program beside the legacy tracker. And what happens to users, groups, `update_seeder` and the persistence log format (D-009)? | Decides the size of the mutable state that consensus will later replicate, what recovery replays, and how much legacy machinery stays alive. | **RESOLVED** — D-058 |
+| **F50** | **What happens when a name is registered twice?** Refuse a different key and accept the same one again; the last writer wins; keep versions; or overwrite on request. | With no access control and no deletion, decides whether one user can replace another's file, and whether a retried upload succeeds. | **RESOLVED** — D-059 |
+| **F51** | **What happens to the legacy client and tracker code, their framing copies, and the suites that test them?** Rebuild both programs on the node's framing and remove the legacy path, re-pointing its suites; bolt the ring path onto the legacy client; or keep the legacy pair beside the new one. | Decides whether the framing rules exist once or three times (D-021), whether the legacy suites still test anything, and whether the Phase 0 baseline can be re-run. | **RESOLVED** — D-060 |
+| **F52** | **How long may a peer take to send what it announced?** A deadline per request line and per body, enforced before every receive; a per-system-call timeout; an event loop with timers; or nothing. | A peer that announces a chunk and never sends it holds a memory slot and a thread; with the chunk path user-facing, any client can do it. | **RESOLVED** — D-061 |
+| **F53** | **How is deduplication measured, and on what?** Counted at the stores, on stated synthetic edits plus one real corpus; reported by the client; a real corpus only; or not measured. | D-014 claims deduplication for free; the number decides whether that claim survives, and the workload decides whether the number means anything. | **RESOLVED** — D-062 |
+| **F54** | **How is the chunk-size sweep run above the 512 KiB framing limit?** A second build with a raised limit, used for every point; a run-time limit on every program; a sweep only up to 512 KiB; or a raised default. | D-016 promised five sizes up to 8 MiB, and the framing and stores refuse anything above 512 KiB (D-044). | **RESOLVED** — D-063 |
+| **F55** | **How does someone else start a ring, given that Docker is not installed on the development machine?** A tested local launcher plus container files marked not yet run; container files only; nothing until Docker is installed; or installing Docker now. | Decides what "how would someone run this?" can honestly be answered with, and what is claimed about containers. | **RESOLVED** — D-064 |
+| **F56** | **What does continuous integration run?** The build, the unit tests and the fast end-to-end suites on every push, with the timing-sensitive suites on demand; unit tests only; everything on every push; or none. | Decides what a green check means, and whether a flaky check teaches everyone to ignore it. | **RESOLVED** — D-065 |
+| **F57** | **How is the transfer path measured against the Phase 0 baseline?** Against a same-day re-run of the baseline at its own commit, with the clean single-variable comparison (one worker against many) beside it; or against the number recorded in September alone. And what are the curves? | The before/after is the phase's headline; moving several variables at once, or comparing across machine changes, would make it unattributable. | **RESOLVED** — D-066 |
+| **F58** | **An orphaned ring member is named as successor by its own sibling, which never evicts it, so it can never rejoin. What breaks the cycle?** An `ERR orphaned` reply evicts that member at once, siblings included; the orphan copies its predecessor's list in place; wired nodes wait for every peer before their first round; or fall back to a sibling instead of orphaning. Found by the Phase 5 benchmark, not foreseen. | A ring started all at once, or a process that loses every other process it knew, can stay wrong for good — every lookup through that sibling ends at a member that refuses to route. | **RESOLVED** — D-067 |
+| **F59** | **Where do sources, tests, objects and programs live?** Sources in `src/` and unit tests in `tests/`, or the flat layout kept; and where the build puts objects and programs. | Decides whether the repository reads at a glance, and whether every script, the container files and the documentation keep their paths. | **RESOLVED** — D-068 |
+
+---
+
+## Historical: the design as first drawn (12 Sep 2026)
+
+*Not the current system — see "The system as it exists today" above.* This diagram was drawn in
+Phase 1, after the first forks were resolved and before any Chord code existed: a diagram made
+earlier would have decided them by implication. It is kept as the record of what was designed.
+Since then: the Raft group behind the tracker was not built; each node is a process with 8 ring
+members (D-047) and a chunk's copies are on distinct processes (D-048); stabilisation asks
+`NEIGHBOURS` and runs to its fixed point (D-031, D-043); finger repair fills every finger one lookup
+covers (D-034); and the tracker holds names written once, with an effect log (D-058, D-059).
+
+```mermaid
+flowchart TB
+    C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
+
+    subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · a Raft group is the planned next step"]
+    end
+
+    subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
+        direction LR
+        N8["<b>N8</b>"] --> N21["<b>N21</b>"] --> N32["<b>N32</b>"] --> N48["<b>N48</b>"] --> N8
+    end
+
+    C -- "1 · name" --> T
+    T -- "2 · manifest hash" --> C
+    C -- "3 · find_successor(hash) — one step, one answer" --> N8
+    N8 -- "4 · 'closer node is N32'" --> C
+    C -- "5 · client asks N32 itself" --> N32
+    N32 -- "6 · 'N48 owns it'" --> C
+    C -- "7 · GET &lt;manifest hash&gt;" --> N48
+    N48 -- "8 · manifest = [h0 h1 … hk]" --> C
+    C -- "9 · repeat 3–8 concurrently for every chunk hash" --> ring
+```
+
+The arrows inside the ring are **successor pointers**. They are the only routing state that has
+to be correct; everything else is an accelerator.
+
+**Reading the path.** Steps 1–2 are the only time the tracker is involved, and it returns 40
+bytes. Steps 3–6 are the iterative lookup: each node answers *one* question and returns
+immediately, and the **client** opens the next connection — which is what makes hop count a
+number the client observes rather than one the ring reports. Steps 7–8 fetch the manifest, which
+is itself just a chunk. Step 9 repeats the whole lookup-and-fetch for every chunk hash, issued
+**concurrently**, because content addressing means consecutive chunks of one file live on
+unrelated nodes and there is no locality to walk.
+
+**What each node holds**, in strict order of how much it matters:
+
+| Structure | Carries | If stale or wrong |
+|---|---|---|
+| **successor pointer** | correctness | wrong answers, returned confidently, undetectable |
+| **successor list** (`r ≈ log₂N`) | survival of failure — **and it is the replica set** | node orphaned only if *all* `r` die within one period |
+| **finger table** (`m` rows, ~`log₂N` distinct) | speed only | more hops, never a wrong answer |
+| **predecessor** | knowing its own arc; joins | joins stall until repaired |
+| **chunk store** | the data, keyed by `SHA-1` of its own contents | a failed hash check at the reader; try the next replica |
+
+**What runs in the background on every node**, forever: `stabilize` every `T` seconds (asks the
+successor for its predecessor, tightens the pointer, `notify`s), `fix_fingers` (refreshes one
+finger per round), and `check_predecessor`. Failure detection rides on these plus **any** failed
+call to the successor from any code path (D-013). Nothing is event-driven; everything is
+re-derived, so the ring converges from any state.
+
+**What this diagram deliberately does not show**, because they do not exist yet: the Raft group
+behind the tracker (planned, not built). Since Phase 4 each node in the drawing is a
+process with several ring members — virtual nodes, D-047 — and a chunk's three copies are on three different
+processes (D-048).
+
+---
+
+## Decision log
+
+The heart of this file. One entry per resolved fork. Every entry names the rejected alternative
+and its cost — an entry without one is not finished, because a decision is only understood once
+the alternatives and their costs are.
+
+### D-001 — Repository named `chord-dht-filesystem`
+**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** none — the repository was renamed when it moved to its own remote, 6 Sep 2026
+
+**The fork:** the repository was called `os-assignment3`, a name that describes the course it came
+from rather than the system it was becoming.
+
+**Options considered:**
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| `chord-dht-filesystem` | Names the algorithm up front | Invites "why Chord and not Kademlia?" — a comparison the design is ready to make |
+| `distributed-p2p-filestore` | Names the domain, not the algorithm | Safer if the design drifts from strict Chord, but does not signal that a *named protocol* was implemented |
+| `chord-raft-filesystem` | Names both planes | Most descriptive of the plan — but **promises Raft, the component most likely to be deferred.** If Raft is not built the name claims something the repository does not contain |
+| `ringfs` | Short, product-like | Says nothing about the algorithm; "Chord" and "DHT" are what someone searching for this would type |
+
+**Chosen:** `chord-dht-filesystem`
+
+**Reasoning:** it states the scope in three words and commits only to what the minimum viable
+product guarantees. The Kademlia comparison it invites is a useful one — XOR metric versus
+successor-ring topology.
+
+**Rejected because:** `chord-raft-filesystem` names a component that might not be built. A
+repository name is not the place to promise the most deferrable feature.
+
+**What would change my mind:** if Raft ships and is solid, renaming is one command and the
+history survives.
+
+**Evidence:** none — naming, decided on reasoning.
+
+---
+
+### D-002 — Phase 0 is a minimum viable resurrection, not a full repair
+**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** `b6620aa`
+
+**The fork:** the inherited system has at least fifteen identified defects (the audit of
+23 Aug 2026; the ones reproduced are in `docs/failures.md`). How many get fixed before Chord work
+starts?
+
+**Options considered:**
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Minimum viable resurrection | Fix the build (B1, B2), fix state replay (R1), fix the download path (R2). Stop when one file transfers end-to-end and verifies. | ~6–8 h. Leaves D1–D8 open — but most are in code the Chord rewrite deletes anyway |
+| Full repair | Also restore multi-tracker sync, fix the desync properly, close the traversal hole, make downloads non-blocking | ~14–16 h. **Roughly doubles the time before Chord routing work can start** |
+| Build-only, then straight to Chord | Fix compilation, write the postmortem, move on | ~2–3 h. But with no working download there is **no baseline throughput number**, and every later improvement needs a before number to be measured against |
+
+**Chosen:** minimum viable resurrection.
+
+**Reasoning:** the point of Phase 0 is not a good legacy system — it is (a) a working,
+debugged path whose failures are understood and (b) a **before** number that every later
+benchmark is measured against. Both need the download path working. Neither needs multi-tracker sync.
+
+**Rejected because:** full repair spends 8 extra hours hardening code that Phase 5 rewrites.
+Build-only saves 4 hours and forfeits the baseline, which is the more expensive loss.
+
+**What would change my mind:** if isolating R2 turns out to need the desync fixed first, D2
+gets promoted into Phase 0.
+
+**Evidence:** `BENCHMARKS.md` §1 (measured 9 Sep 2026 at `e381179`), the deliverable of this decision.
+
+---
+
+### D-003 — The uncommitted November tree is committed as-is, then fixed forward
+**Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** `cd10483`, tagged `pre-resurrection`
+
+**The fork:** 2,247 uncommitted lines sat in the working tree. They fixed two compile errors
+(B3, B4) **and regressed three features** that existed at HEAD — `stop_share`, `update_seeder`
+and `peer_reconnect_thread`.
+
+**Options considered:**
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Commit as-is first | One honest `wip:` commit naming both what it fixed and what it regressed, then fix forward | An ugly commit sits in the history permanently |
+| Reconstruct, then commit clean | Restore the three deleted functions from HEAD first, so one tidy commit lands | Reads better as a diff, but it is **a story about November written in August**, and it hides that the regression happened |
+| Discard, start from HEAD | — | Not viable: HEAD does not compile at all, and it throws away real work |
+
+**Chosen:** commit as-is, tagged `pre-resurrection`.
+
+**Reasoning:** history is evidence. An ugly-but-true commit is worth more than a tidy invented
+one, and the regression is itself part of the record — a working tree that had silently dropped
+three handlers is a concrete example of why uncommitted work is a liability.
+
+**Rejected because:** reconstructing would have made the diff look deliberate when it was not,
+and the history would then record something that did not happen.
+
+**What would change my mind:** nothing. This is settled.
+
+**Evidence:** none — process decision.
+
+---
+
+### D-004 — Users, groups and authentication are dropped
+**Date:** 23 Aug 2026 · **Phase:** 0 · **Executed:** Phase 5, `83d2a3b` (D-058, D-060) — **after** the baseline was measured at `e381179`
+
+**The fork:** the inherited system has user accounts, passwords, groups with owners, join
+requests and an approval workflow. Does that survive the pivot to Chord?
+
+**Options considered:**
+
+| Option | What it means in practice | Cost |
+|---|---|---|
+| Drop groups and auth | The ring stores content-addressed chunks; the tracker owns the manifest | Deletes working code — but it stays in git history, so nothing is actually lost |
+| Keep both, Chord underneath | Preserves working code, the pivot looks continuous | **Every** new subsystem — replication, stabilisation, read repair, anti-entropy — must respect group membership. Four subsystems taxed by a concern outside the system's purpose |
+| Keep auth, drop groups | Auth is cheap and answers "how do you stop anyone joining the ring?" | One extra concept to maintain that the Chord literature has no opinion about |
+
+**Chosen:** drop both.
+
+**Reasoning:** they were a coursework requirement, not a distributed-systems one. Removing them
+makes the DHT literature map straight onto the code, and shrinks the surface that has to be
+kept correct.
+
+**Rejected because:** keeping them costs hours in four separate subsystems for a feature that
+does not bear on routing, replication or failure handling.
+
+**⚠ Sequencing constraint:** **this removal happens after the Phase 0 baseline is recorded, not
+before.** The download path runs through `upload_file`, which checks group membership; deleting
+that code first would destroy the "before" number that D-002 exists to produce.
+
+**What would change my mind:** if the system's purpose became access control rather than
+distributed storage.
+
+**Evidence:** none — scoping decision.
 
 ---
 
