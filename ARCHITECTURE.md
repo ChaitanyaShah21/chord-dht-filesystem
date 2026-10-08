@@ -220,6 +220,7 @@ decided before the paper is one that cannot be defended in December.
 | **F36** | **How does a chunk travel on the wire?** A length-prefixed body after a control line; the chunk encoded inside the line; or a separate data connection. | Decides whether a peer can size an allocation, how a short read is handled, and whether one socket carries two framing schemes. | **RESOLVED** — D-044 |
 | **F37** | **How and where is a chunk kept on disk?** One file per chunk with a temporary name and an atomic rename; an append-only log; or memory only — and whether a write is flushed before it counts. | Decides what a crash mid-write leaves behind, what an acknowledged write promises, and whether a peer's key can name a path. | **RESOLVED** — D-045 |
 | **F38** | **Who replicates a write, and where does W live?** The owner sending in parallel; the client writing every replica; or a chain — and W per node or per request. | Decides write latency (the slower of two parallel sends or the sum of a chain), who uploads the chunk how many times, and whether W values can be compared on one ring. | **RESOLVED** — D-046 |
+| **F39** | **How do virtual nodes share a process?** One listening port per member; one port with requests addressed by identifier; one shared routing table per process; or full membership. | Decides whether the wire can say which members share a process (replica placement needs it), what a refused connection proves, and the background traffic per process. | **RESOLVED** — D-047 |
 
 ---
 
@@ -2759,3 +2760,60 @@ ring per value, and the comparison would then be between rings rather than betwe
 - `W = 3` with a dead or frozen replica fails after the call deadline: the price of insisting on three.
 
 **Evidence:** none yet — design time. Measured in the `W` sweep (D-053).
+
+---
+
+### D-047 — Virtual nodes: several ring members per process, one listening socket, requests addressed by identifier
+
+**Fork:** F39. **Date:** 8 Oct 2026. **Depends on:** D-018 (routing primitives are free functions), D-019.
+**Gates:** load balance, replica placement (D-048), and every message.
+
+**The decision.**
+1. **Identity.** A process at `ip:port` started with `--vnodes V` is `V` ring members. Member 0 keeps the
+   identifier it always had, `SHA-1("ip:port")`; member `i ≥ 1` is `SHA-1("ip:port#i")`. The `#` cannot occur
+   in a dotted quad or a port number, so no member of one process can hash the same string as a member of
+   another. A process whose own members collide refuses to start.
+2. **One listening socket per process; every request names its member.** A request to a ring member is
+   prefixed `TO <16-hex identifier> `, added by the transport from the `Peer` it is sending to, so routing
+   code and lookup code do not change. A request without the prefix goes to member 0, so a tool that predates
+   virtual nodes still talks to the process's own address identity. A request for an identifier the process
+   does not have is answered `ERR`, which the sender counts as a strike against that member. Chunk requests
+   (D-044) are addressed to the process, not a member: the store belongs to the process.
+3. **Each member keeps its own Phase 3 state** — predecessor, successor list, fingers, strikes — and runs the
+   same maintenance round as before. One maintenance thread per process runs each member's round in turn.
+4. **A member is an address and an identifier; a process is an address.** Routing state compares members
+   (two members of one process are different ring members). Failure evidence is split by what it is
+   evidence of: **a refused connection proves nothing is listening at that address, so every member of that
+   process is evicted at once**; a timeout or a bad reply is about one exchange with one member, so the strike
+   counts against that member. A node never strikes or evicts a member of its own process — it is that
+   process. "Am I alone?" still compares addresses and identifiers, never identifiers alone (I8).
+5. **Starting.** `--join` joins each member separately through the contact before the process listens
+   (D-029). `--wired` reads a membership file of processes and expands every process into its `V` members,
+   so every node must be started with the same `V`. The fixed-ring mode of Phase 2 stays one member per
+   process. The default is set by D-051.
+
+**Why one socket and an identifier on the wire.** Replicas must be placed on distinct *processes* (D-048), so
+anything that sees the ring must be able to tell which members share a process. With one socket per process,
+the address is the process, for free, everywhere a `Peer` already travels.
+
+**Rejected: one listening port per member.** No change to any message — each member is a Phase 3 node that
+happens to share a process. But then an address no longer identifies a process, and every peer and the
+harness would need a second identity on the wire to keep replicas apart, which is the change this option
+was meant to avoid; and a process would hold `V` listening sockets.
+
+**Rejected: one routing table per process** (every member's fingers pooled, and a lookup answered from
+whichever member is closest to the key). Fewer hops and `V` times less finger maintenance — the Chord paper
+suggests it. It changes the routing rule underneath the hop-count measurement and the progress checks the
+originator applies, so it is left as an optimisation to measure separately.
+
+**Rejected: tokens with full membership** (Dynamo's and Cassandra's design: every node knows every token and
+routes in one hop). It is the O(N) membership per node that D-020 and the scale notes reject for this design.
+
+**Cost accepted.**
+- Maintenance traffic per process grows `V`-fold: each member stabilises, checks its predecessor and repairs
+  a finger every round. On one host that is `N × V` members' worth of background load.
+- Joining takes `V` lookups; every request carries 22 more bytes.
+- A peer can address any member of a process, including one the process does not have; that costs one `ERR`.
+
+**Evidence:** none yet — design time. In-process tests of a ring with several members per process, the
+existing Phase 3 suites unchanged with one member per process, and a real-process ring with `--vnodes`.

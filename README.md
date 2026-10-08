@@ -833,6 +833,19 @@ node's command line, so one ring under one failure can be measured at `w` = 1, 2
 first), chain replication (latency becomes the sum of the hops, and immutable chunks have no order for a chain
 to protect), and a per-node `W` (a fresh ring per setting). **Cost:** the owner uploads each chunk twice.
 
+### Virtual nodes: several ring members per process, and every request names its member
+
+With one identifier per process the arcs between neighbours are uneven, and the busiest process owns several
+times its share. A process started with `--vnodes V` is `V` ring members — `SHA-1("ip:port")` and
+`SHA-1("ip:port#i")` — each with its own successor list, fingers and maintenance round, sharing one listening
+socket. Every request is prefixed `TO <identifier>` so the process knows which member it is for; the transport
+adds it, so the routing code is unchanged. The address identifies the process, which is what replica placement
+needs. A refused connection is proof that nothing is listening at that address, so it evicts every member of
+the process at once; a timeout is about one member and strikes only that member. **Rejected:** one port per
+member (no message changes, but nothing would say which members share a process), one routing table per
+process (fewer hops, but it changes the routing rule underneath the hop-count results), and full membership as
+in Dynamo (the O(N) per-node state this design avoids). **Cost:** `V` times the maintenance traffic per process.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
