@@ -9,8 +9,9 @@ by scripts/bench-chunks.py) and writes:
   docs/figures/chunks-balance.png    a. spread of stored copies per process against virtual nodes
                                         per process (coefficient of variation), 16 and 64 processes
                                      b. idle CPU per process against virtual nodes per process
-  docs/figures/chunks-wsweep.png     write latency (median and 99th percentile) and the fraction
-                                     acknowledged, for W = 1, 2, 3, in each phase
+  docs/figures/chunks-wsweep.png     the coordinator's time to answer a write (median and 99th
+                                     percentile, from its own log, so the client's lookup is left
+                                     out) and the fraction acknowledged, for W = 1, 2, 3, per phase
 Points are medians; bars run from the smallest to the largest of the runs or address sets.
 """
 import csv, os, statistics, sys
@@ -74,8 +75,6 @@ if bal:
                             "short_sets_max": max(short)})
         a.errorbar(vs, med, yerr=[[m - l for m, l in zip(med, lo)], [h - m for m, h in zip(med, hi)]], color=color,
                    marker=marker, markersize=6, linewidth=2, capsize=3, label=f"{P} processes")
-        a.annotate(f"{P} processes", (vs[-1], med[-1]), textcoords="offset points", xytext=(6, 0), fontsize=8,
-                   color=INK_2, va="center")
     a.axhline(0.25, color=INK_2, linewidth=1, linestyle="--")
     a.annotate("rule: 0.25", (1, 0.25), textcoords="offset points", xytext=(2, 4), fontsize=8, color=INK_2)
     a.set_xscale("log", base=2)
@@ -106,25 +105,33 @@ if ws:
             rs = [r for r in ws if r["phase"] == ph and int(r["w"]) == w]
             ok = sorted(float(r["latency_ms"]) for r in rs if int(r["ok"]))
             pct = lambda q: ok[min(len(ok) - 1, int(q * len(ok)))] if ok else None
+            # The coordinator's own time to answer, every write (acknowledged or not) whose
+            # coordinator logged it: this isolates W from the client's lookup.
+            co = sorted(float(r["answered_ms"]) for r in rs if r.get("answered_ms") not in (None, ""))
+            cpct = lambda q: co[min(len(co) - 1, int(q * len(co)))] if co else None
             windows = [int(r["last_copy_ms"]) - int(r["answered_ms"]) for r in rs
                        if int(r["ok"]) and r.get("answered_ms") not in (None, "")]
             summary.append({"table": "wsweep", "phase": ph, "W": w, "writes": len(rs),
                             "acked": sum(int(r["ok"]) for r in rs),
-                            "latency_p50_ms": pct(0.5), "latency_p99_ms": pct(0.99),
+                            "client_latency_p50_ms": pct(0.5), "client_latency_p99_ms": pct(0.99),
+                            "coordinator_answer_p50_ms": cpct(0.5), "coordinator_answer_p99_ms": cpct(0.99),
+                            "coordinator_logged": len(co),
                             "window_median_ms": statistics.median(windows) if windows else "",
                             "window_max_ms": max(windows) if windows else ""})
-            if ok:
-                ax.plot([w, w], [pct(0.5), pct(0.99)], color=color, linewidth=2)
-                ax.plot([w], [pct(0.5)], color=color, marker=marker, markersize=8)
-                ax.plot([w], [pct(0.99)], color=color, marker=marker, markersize=8, fillstyle="none")
+            if co:
+                lo, hi = max(cpct(0.5), 0.5), max(cpct(0.99), 0.5)       # 0 ms cannot sit on a log axis
+                ax.plot([w, w], [lo, hi], color=color, linewidth=2)
+                ax.plot([w], [lo], color=color, marker=marker, markersize=8)
+                ax.plot([w], [hi], color=color, marker=marker, markersize=8, fillstyle="none")
             frac = f"{sum(int(r['ok']) for r in rs)}/{len(rs)} acked"
-            ax.annotate(frac, (w, pct(0.99) if ok else 1), textcoords="offset points", xytext=(0, 8), ha="center",
-                        fontsize=8, color=INK_2)
+            ax.annotate(frac, (w, max(cpct(0.99), 0.5) if co else 1), textcoords="offset points", xytext=(0, 8),
+                        ha="center", fontsize=8, color=INK_2)
         ax.set_xticks([1, 2, 3])
         ax.set_xlim(0.5, 3.5)
         ax.set_yscale("log")
         style(ax, {"healthy": "a. Healthy", "frozen": "b. One replica frozen", "killed": "c. One replica killed"}[ph],
-              "W (copies before acknowledging)", "write latency, ms (filled: median, open: p99)" if ph == "healthy" else "")
+              "W (copies before acknowledging)", "ms to answer (filled: median, open: p99)"
+              if ph == "healthy" else "")
     fig.tight_layout()
     fig.savefig(os.path.join(FIG, "chunks-wsweep.png"), dpi=150, facecolor=SURFACE)
 

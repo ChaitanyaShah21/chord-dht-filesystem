@@ -157,7 +157,9 @@ call to the successor from any code path (D-013). Nothing is event-driven; every
 re-derived, so the ring converges from any state.
 
 **What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (Block 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
+behind the tracker (Block 2, subject to the 1 Nov trip-wire). Since Phase 4 each node in the drawing is a
+process with several ring members — virtual nodes, D-047 — and a chunk's three copies are on three different
+processes (D-048).
 
 ## Components
 
@@ -380,8 +382,8 @@ Phase 0 work list.
 | I4 | A peer only ever serves bytes from files it has explicitly shared | nothing — `GET_PIECE` opens any path given | not yet | **✗ D3** |
 | I5 | Malformed input from any peer cannot terminate a process | nothing — bare `stoull` throws in a detached thread | not yet | **✗ D4** |
 | I6 | Every reply read by the client's main loop is the reply to the request it just sent | nothing — the heartbeat shares the socket | not yet | **✗ D2** |
-| I7 | **A routing identifier decides which *node*; it never decides which *object*.** The chunk store is keyed by the full 160-bit hash | D-019 — truncation is applied to placement only | in-process test, step 2.4 | ✓ by construction (no Chord code yet) |
-| I8 | **"Am I alone in the ring?" is answered by comparing *addresses*, never identifiers** — because `(n, n]` evaluates to the whole ring, so `successor.id == my_id` silently means "I own everything" | D-019 — `successor.address == my_address` | in-process test, step 2.4 | ✓ by construction (no Chord code yet) |
+| I7 | **A routing identifier decides which *node*; it never decides which *object*.** The chunk store is keyed by the full 160-bit hash | D-019 — truncation is applied to placement only; the store (D-045) names every file by the full 40-character key, validated before any path is built | `test-chunk` (keys, store), `e2e-chunk.sh` | ✓ |
+| I8 | **"Am I alone in the ring?" is answered by comparing *addresses*, never identifiers alone** — because `(n, n]` evaluates to the whole ring, so `successor.id == my_id` silently means "I own everything". With virtual nodes (D-047) a ring member is an address *and* an identifier, and a process is an address | D-019, D-047 — `same_node` compares address and identifier, `same_process` the address | `test-stabilize`, `test-chunk` (siblings) | ✓ |
 
 ---
 
@@ -1038,8 +1040,10 @@ node returns). It raises write availability without lowering `W`. It is the answ
 you do if `W = 2` writes were failing too often?", and it is deliberately out of a 9 h Phase 4
 that already contains virtual nodes.
 
-**Evidence:** none yet — design time (R11). Phase 4's `W`-sweep is the first evidence, and the
-degraded-window measurement is the second.
+**Evidence:** `BENCHMARKS.md` §6 (`7d99fc0`): with one replica dead W = 2 acknowledged 300/300 writes and W = 3
+244/300; W = 1 answers in 14 ms against 31 ms, and its acknowledged chunk is on one disk for a median 18 ms (the
+degraded window); killing the coordinator at the acknowledgement left no other copy in 20 of 20 W = 1 trials and at
+least two in every W = 2 and W = 3 trial. W = 2 and W = 3 cost the same with healthy replicas on loopback.
 **Defence entry:** `DEFENCE.md` D-015
 
 ---
@@ -2651,8 +2655,11 @@ transfer, and two connections whose failures have to be matched up, for no gain 
 - A peer that sends the body slowly holds a thread until each `recv` times out; there is a deadline per
   system call, not per body.
 
-**Evidence:** none yet — design time. The framing tests (exactly 512 KiB, 512 KiB + 1, zero bytes, a peer
-that closes mid-body, a short read) are written with the code.
+**Evidence (8 Oct, `1328ce0`, `52a3f32`):** `test-chunk` checks the length rule on every boundary (0, exactly
+524,288, 524,289, leading zeros, signs, eight digits, a trailing space), reassembles a 300 KB body sent in uneven
+pieces over a real socket, and reads a peer that hangs up after 400 of 1,000 bytes as a failed transfer. On real
+processes (`e2e-chunk.sh`) a node refuses a 512 KiB + 1 header before reading a byte, and survives a client that dies
+mid-body with no file and no temporary file left. A mutant with the limit off by one was caught by both layers.
 
 ---
 
@@ -2706,8 +2713,11 @@ cache". Kept as the stated alternative if write latency ever matters more than s
 **Cost accepted.** Two flushes per stored chunk; the store keeps one directory entry per chunk; and
 nothing ever deletes a chunk (D-023), so storage only grows.
 
-**Evidence:** none yet — design time. Tests: path-traversal keys, a kill between write and rename,
-concurrent writes of one key, and the restart clean-up.
+**Evidence (8 Oct):** 40-character traversal keys, uppercase, 39 characters and an embedded NUL are refused before a
+path is built (in process and on real processes, with a sentinel file checked); a restart removes a left-over temporary
+file and reloads the index; eight threads writing one chunk at once leave one file. A mutant accepting any 40
+characters was caught by both layers — after the in-process test was fixed: its first version used a traversal key
+too short to reach the character check. Cost of the flushes: part of every write latency in `BENCHMARKS.md` §6.
 
 ---
 
@@ -2765,7 +2775,10 @@ ring per value, and the comparison would then be between rings rather than betwe
   repair (D-050) moves them to where they belong.
 - `W = 3` with a dead or frozen replica fails after the call deadline: the price of insisting on three.
 
-**Evidence:** none yet — design time. Measured in the `W` sweep (D-053).
+**Evidence (`BENCHMARKS.md` §6, `7d99fc0`):** the coordinator answers a W = 2 write of 512 KiB in 31 ms (median) and
+a W = 1 write in 14 ms; with one replica killed, W = 2 acknowledged 300 of 300 writes and W = 3 244 of 300. One
+prediction failed: W = 2 is **not** faster than W = 3 while both replicas are healthy (31 vs 32 ms), because on loopback
+the two replicas are equally fast, so the faster and the slower of two parallel copies take about the same time.
 
 ---
 
@@ -2821,8 +2834,11 @@ routes in one hop). It is the O(N) membership per node that D-020 and the scale 
 - Joining takes `V` lookups; every request carries 22 more bytes.
 - A peer can address any member of a process, including one the process does not have; that costs one `ERR`.
 
-**Evidence:** none yet — design time. In-process tests of a ring with several members per process, the
-existing Phase 3 suites unchanged with one member per process, and a real-process ring with `--vnodes`.
+**Evidence (8 Oct):** in process, a ring of 8 processes × 4 members is correct again within two rounds after a process
+dies and every lookup reaches the oracle's owner; a timed-out sibling is never struck; a refusal evicts a whole
+process and a timeout one member. The Phase 3 suites pass unchanged with one member per process. On real processes,
+`e2e-chunk.sh` runs 6 × 4 members, also under ThreadSanitizer. Mutants that ignore the `TO` prefix, cut a successor
+list at a sibling, or strike a sibling are each caught.
 
 ---
 
@@ -2859,8 +2875,10 @@ set is as large as the ring allows and the write's `W` decides whether that is a
 every node to agree on the ring locally, which they do only after stabilisation — during repair, two nodes can
 compute different sets for one key, and repair (D-050) settles it.
 
-**Evidence:** none yet — design time. An in-process test builds rings where the next members belong to the
-owner's own process, and checks every replica set holds distinct processes.
+**Evidence (8 Oct):** the replica set of every member on 30 random rings (3–16 processes, 1–8 members each, 1,193
+sets) equals a brute-force oracle and never repeats a process; a mutant comparing members instead of processes is
+caught. On a real ring every chunk's copies are on exactly the oracle's three processes (`e2e-chunk.sh`), and the
+load-balance simulation, which uses this rule, matched 2,000 real chunks file for file (`BENCHMARKS.md` §6).
 
 ---
 
@@ -2898,8 +2916,9 @@ second `GET`. Until the owner's predecessor has evicted it, the lookup still nam
 window); the fall-through serves the read from the next replica during that window instead of failing it.
 A read does not repair what it finds wrong; repair is the scrub's and the owner's job (D-050).
 
-**Evidence:** none yet — design time. Tests: a corrupt replica on disk, a dead owner, a replica that closes
-mid-body, and every replica wrong.
+**Evidence (8 Oct):** with the owner's copy corrupted on disk, a read is served by the next replica and records why;
+with the owner and the second replica killed, a read is served at once by the third (real processes); with every
+copy corrupt the read fails naming all three. Mutants that skip the hash or never fall through are caught.
 
 ---
 
@@ -2958,8 +2977,10 @@ would slow the repair of the ring itself.
   and both push it. `STORE` is idempotent, so the cost is traffic, not damage.
 - Extra copies are never reclaimed.
 
-**Evidence:** none yet — design time. Measured as the time from a kill until every chunk is again on its three
-correct live processes, judged by the harness.
+**Evidence (`BENCHMARKS.md` §6, `7d99fc0`):** after one of 16 processes dies, every chunk it held is back on three
+correct live processes in a median of 2.2 s (eight members per process) and 1.9 s (one). Found by the real-process
+suite: a copy that failed its hash during an arc check was removed but not replaced, and when the only good copies
+were then killed the chunk was gone; the check now replaces it with a verified copy, as the scrub does.
 
 ---
 
@@ -3004,7 +3025,10 @@ hardware, and unnecessary when every process is identical.
 is published so another target can read its own `V` from it. Every earlier experiment ran with one member per
 process; their harnesses pass `--vnodes 1` explicitly once the default changes.
 
-**Evidence:** none yet — design time. `BENCHMARKS.md`, the load-balance entry.
+**Evidence (`BENCHMARKS.md` §6, `7d99fc0`):** the rule chose **V = 8** — median coefficient of variation 0.203 at both
+16 and 64 processes, against 0.273 and 0.277 at V = 4. The busiest of 64 processes stores 1.52 times the mean, against
+2.80 with one member. Owned-key spread followed 1/√V to within 0.01 at every V. Cost: about half a percent of a core per
+member at T = 1 s. The default was set to 8 at `6692a3e`; earlier harnesses pass `--vnodes 1`.
 
 ---
 
@@ -3041,7 +3065,11 @@ its connection and thread, and the sender's deadline expires anyway — a slow f
 ring), not derived from a workload. Under a burst larger than 32 concurrent chunks per process, writes fail with
 `busy` and must be retried.
 
-**Evidence:** none yet — design time. A test drives 33 concurrent bodies at one node.
+**Evidence (8 Oct):** 32 bodies announced and withheld make the 33rd `ERR busy`, and its drained connection still answers
+a `PING` (real processes); 64 threads × 20,000 attempts never hold more than 32 slots. A mutant that checks and then
+increments in two steps survived both the stress test and ThreadSanitizer — a race on an atomic is not a data race, so
+the sanitizer cannot see it, and the window is too narrow to hit; the single `fetch_add` is correct by construction,
+not by test. The `ERR busy` reply was not lost on loopback even when the connection was closed instead of drained.
 
 ---
 
@@ -3077,4 +3105,4 @@ acknowledgement, which only a kill can show.
 as much as the protocol, and the coordinator-crash test measures a race between the kill and the background
 copies on loopback, where a real network would make that window wider.
 
-**Evidence:** `BENCHMARKS.md`, Phase 4 entries.
+**Evidence:** `BENCHMARKS.md` §6, at `7d99fc0`.

@@ -9,8 +9,8 @@ defended.
 **Estimates are allowed and are labelled `ESTIMATE`.** An estimate is never presented as a
 measurement.
 
-> **Status:** §1, the single-peer transfer baseline, §2, lookup hop count versus ring size, and
-> §4, time to reconverge after nodes are killed, are measured. §1 was taken deliberately *before* any optimisation, because a "before" number
+> **Status:** §1, the single-peer transfer baseline, §2, lookup hop count versus ring size,
+> §4, time to reconverge after nodes are killed, and §6, chunk placement, replication and repair, are measured. §1 was taken deliberately *before* any optimisation, because a "before" number
 > cannot be recovered afterwards. Further entries land as each phase is measured.
 
 ---
@@ -59,6 +59,9 @@ The headline results. Each links to its full entry below.
 | *Single-peer transfer baseline, 100 MB* | **71.2 MB/s** (median of 3) | — this **is** the before | `e381179` | §1 |
 | *Ring reconverges after node failure* | **0.63 s median** to every successor and predecessor correct, one of 64 nodes killed, 1 s stabilisation period (9 of 10 runs under 1 s) | 8 adjacent deaths, the whole successor list: 1.49 s, worst 4.14 s → **0.36 s**, worst 0.81 s (D-043) | `b171554` (before: `5b6830d`) | §4 |
 | *Sustained transfer throughput across N peers* | — | — | — | §5 pending |
+| *Virtual nodes even out storage* | busiest of 64 processes stores **1.52×** the mean with 8 virtual nodes per process; CV of copies per process **0.20** (median of 20 address sets; the real ring matched the simulation file for file) | **2.80×**, CV 0.57 with one member per process | `7d99fc0` | §6 |
+| *Three copies restored after a process dies* | **2.2 s median** (1.8–2.9 s, 5 runs) from the kill until every chunk the dead process held is back on three correct live processes (16 processes × 8, 300 chunks of 512 KiB) | — | `7d99fc0` | §6 |
+| *W: what it buys* | with one replica dead, W = 2 acknowledged **300/300** writes and W = 3 **244/300**; W = 1 answers in 14 ms against 31 ms but each acknowledged chunk is on one disk for ~18 ms | — a trade-off curve, not an optimisation | `7d99fc0` | §6 |
 | *Lookup hops track ½ log₂ N* | **9.87 hops mean** at 2²⁰ nodes (½ log₂ N = 10); **5.38** on 2048 real processes (½ log₂ N = 5.5) | — a scaling curve, not an optimisation | `e042857` | §2 |
 
 
@@ -449,6 +452,139 @@ not carry it.
 
 ---
 
+### §6 · Chunk placement, replication and repair — **MEASURED 8 Oct 2026**
+
+**Questions this answers:** how evenly do chunks spread over processes, with and without virtual nodes, and what
+does each virtual node cost? What does `W` cost in write latency, and what does it buy when a replica is slow, dead,
+or the coordinator itself dies? After a process dies, how long until every chunk is back to three copies?
+
+![Load balance against virtual nodes](docs/figures/chunks-balance.png)
+![Write latency and acknowledgement against W](docs/figures/chunks-wsweep.png)
+
+**Commit:** `7d99fc0`, clean working tree, binaries rebuilt with `make clean && make` immediately before the run
+(10:59–11:11 UTC, 8 Oct). **Harness:** `scripts/bench-chunks.py` (modes `--balance`, `--wsweep`, `--crash`,
+`--repair`); `scripts/plot-chunks.py` writes the figures and `docs/figures/chunks.csv`. Raw rows in
+`bench/raw/*-7d99fc0.csv` (not committed). Every ring is N `node --wired` processes on loopback with their own
+chunk stores; T = 1000 ms, D = 200 ms (§4). Where chunks *should* be is computed by the harness from the live
+addresses alone (`scripts/chunkcheck.py`); where they *are* is asked with `HAVE` or counted on disk.
+
+#### Load balance and the number of virtual nodes (decision D-051)
+
+**Method.** Placement is a pure function of addresses and keys, so `sim-balance` computes it with the node's own
+identifier and replica-set code: 16 and 64 processes, `V` from 1 to 128 members per process, 20 address sets of the
+form the benchmarks use, 100,000 keys each, `RF = 3` on distinct processes. Load per process is the number of copies
+it stores; its spread is the coefficient of variation (standard deviation over mean) across processes.
+**The rule, fixed before measuring:** the smallest power of two whose median coefficient of variation is at most
+0.25 at both sizes.
+
+| V | CV of stored copies, 16 processes (median, min–max of 20) | 64 processes | Busiest / mean, 16 · 64 | CV of owned keys, 64 (theory 1/√V) | Idle CPU per process (16) |
+|---:|---|---|---|---|---:|
+| 1 | 0.437 (0.196–0.898) | 0.565 (0.461–0.792) | 1.82 · 2.80 | 0.98 (1.00) | 0.53 % |
+| 2 | 0.405 | 0.403 | 1.70 · 2.07 | 0.69 (0.71) | 1.08 % |
+| 4 | 0.273 | 0.277 | 1.50 · 1.71 | 0.51 (0.50) | 2.47 % |
+| **8** | **0.203 (0.093–0.293)** | **0.203 (0.170–0.246)** | **1.40 · 1.52** | **0.36 (0.35)** | **3.75 %** |
+| 16 | 0.134 | 0.137 | 1.25 · 1.32 | 0.25 (0.25) | 5.47 % |
+| 32 | 0.103 | 0.102 | 1.19 · 1.26 | 0.18 (0.18) | 10.36 % |
+| 64 | 0.076 | 0.074 | 1.13 · 1.19 | 0.13 (0.13) | — |
+| 128 | 0.046 | 0.054 | 1.09 · 1.14 | 0.09 (0.09) | — |
+
+**Result: V = 8**, now the node's default (`6692a3e`). With one member per process the busiest of 64 processes stores
+2.8 times the mean; with eight, 1.5 times. The owned-key spread follows the 1/√V of a sum of V independent arcs to
+within 0.01 at every V, which is the check that the simulation computes what the theory describes.
+
+**The simulation is checked against real processes exactly.** On 16 real processes, 2,000 chunks written with
+`W = 3`: the number of files in every process's store equalled the simulation's prediction for those addresses and
+keys, for V = 1 (from 32 to 740 files per process) and V = 8 (from 268 to 484).
+
+**The cost is linear.** Idle CPU per process grows with V, about half a percent of a core per member at T = 1 s,
+because every member runs its own stabilise, predecessor check and finger repair (D-047). Replica sets never came up
+short at V ≤ 64; at V = 128 with 16 processes, eight successors held fewer than three processes for 0.12 % of keys.
+
+#### W: latency, acknowledgement, and the window with fewer than three copies (decisions D-015, D-046, D-053)
+
+**Method.** 16 processes, V = 8. Four client processes write fresh random 512 KiB chunks, cycling W = 1, 2, 3 write
+by write, through three phases of 100 writes per W: healthy; one process frozen with SIGSTOP; the same process
+killed. In the fault phases every chunk is chosen so the faulty process is its second or third replica — never the
+owner. Three runs, each a fresh ring. The coordinator's own log gives its time to answer and when its last copy
+landed; the client's time includes its lookup.
+
+| Phase | W | Acknowledged | Coordinator answers, p50 · p99 | Client sees, p50 · p99 | Answer → last copy, median · max |
+|---|---:|---:|---|---|---|
+| healthy | 1 | 300/300 | 14 · 26 ms | 18 · 34 ms | 18 · 54 ms |
+| healthy | 2 | 300/300 | 31 · 45 ms | 36 · 50 ms | 0 · 54 ms |
+| healthy | 3 | 300/300 | 32 · 48 ms | 37 · 55 ms | 0 · 2 ms |
+| replica frozen | 1 | 300/300 | 11 · 23 ms | 14 · 41 ms | 15 · 215 ms |
+| replica frozen | 2 | 300/300 | 24 · 47 ms | 28 ms · 5.5 s | 1 · 202 ms |
+| replica frozen | 3 | **269/300** | 26 · **219 ms** | 29 ms · 10.5 s | 0 · 1 ms |
+| replica killed | 1 | 300/300 | 13 · 36 ms | 18 · 57 ms | 16 · 48 ms |
+| replica killed | 2 | 300/300 | 29 · 78 ms | 34 · 96 ms | 0 · 13 ms |
+| replica killed | 3 | **244/300** | 28 · 87 ms | 34 · 95 ms | 0 · 2 ms |
+
+**What it shows.**
+- **W = 1 answers in half the time** (14 against 31 ms): it waits for its own flushed copy only. The price is the
+  last column — about 18 ms in which the acknowledged chunk exists on one disk.
+- **W = 2 and W = 3 cost the same while every replica is healthy** (31 and 32 ms). D-015 expected W = 2 to be
+  materially faster, as the faster of two parallel copies against the slower; on loopback the two replicas are
+  equally fast, so the minimum and maximum of two nearly equal times are nearly equal. The difference appears only
+  when a replica misbehaves.
+- **With one replica frozen or dead, W = 3 fails and W = 2 does not.** Frozen: 31 of 300 W = 3 writes failed, each
+  after the 200 ms deadline (the p99 of 219 ms), until the ring evicted the frozen process and the replica sets moved
+  past it. Killed: 56 of 300 failed — fast, on a refused connection — until the eviction. Every W = 1 and W = 2 write
+  succeeded in every phase.
+- **The client's p99 in the frozen phase (5.5 and 10.5 s) is the lookup, not W.** A lookup routed through the frozen
+  process waits for the client's 5 s hang guard (D-024), once or twice, before its recovery (D-036) moves on. It hit
+  W = 2 and W = 3 writes here and missed the W = 1 writes by chance.
+
+#### Durability when the coordinator dies the moment it acknowledges
+
+**Method.** 16 processes, V = 8; for each W, 20 trials: one write, and the instant the client reads the
+acknowledgement the harness SIGKILLs the coordinating process (0.06–0.44 ms after the acknowledgement, median
+0.13 ms). The harness then asks every live process whether it holds the chunk, at once and 250 ms later, and checks
+the node logs for any repair round that sent chunks in that window. The coordinator is then restarted from its own
+store and the chunk read through the ring.
+
+| W | Trials | No copy on any other process at the kill | No copy elsewhere 250 ms later | Readable after restart |
+|---:|---:|---:|---:|---:|
+| 1 | 20 | **20** | 0 | 20 |
+| 2 | 20 | 0 | 0 | 20 |
+| 3 | 20 | 0 | 0 | 20 |
+
+At the instant of acknowledgement a W = 1 write existed only on the coordinator's disk, every time: had that disk been
+lost with the process, all 20 acknowledged writes would have been lost. On loopback the other two copies were
+already in flight — their bytes in the replicas' socket buffers — and landed within 250 ms in all 20 trials, so a
+process crash alone lost nothing. With W = 2 and W = 3 at least two other processes held the chunk at the kill, in
+every trial. (A repair round sent chunks somewhere in the ring inside the 250 ms window in 7 of 60 trials; the copy
+counts in those trials are the same as in the others.)
+
+#### Re-replication after a process dies (decision D-050)
+
+**Method.** 16 processes; 300 chunks of 512 KiB written with W = 3; one process (chosen by seed, never the first)
+killed; the harness polls `HAVE` on every chunk the victim held until each is on all three of its correct live
+processes, and separately polls ring correctness. Five runs per V, each a fresh ring.
+
+| V | Chunks the victim held (median) | Ring correct, median | **RF = 3 restored, median (min–max)** | Processes sending repairs |
+|---:|---:|---:|---|---:|
+| 1 | 57 (29–76) | 0.40 s | **1.87 s (1.50–2.21)** | 3 |
+| 8 | 58 (46–77) | 0.97 s | **2.22 s (1.81–2.94)** | 10–12 |
+
+**About 2 s from a kill to three copies of everything, for about 29 MiB to copy.** Repair waits for the ring to notice
+(D-035), then for the next repair round of each affected owner (one per period), then copies. Spreading the work
+over ten or more processes instead of three did **not** make it faster here: all processes share one host's cores and
+disk, so the copy is not the bottleneck — the detection and the round are. On separate machines the spread is what
+would let repair use many disks at once; this host cannot show that, and no claim is made for it.
+
+**Limits of these numbers.**
+- **One host.** Loopback has no propagation delay and every replica is equally fast, which is why W = 2 and W = 3 tie
+  when healthy; on a network with uneven replicas the gap would open. Every `fsync` lands on one virtual disk.
+- **Every write is flushed** (D-045); the latencies include two flushes on the critical path for W ≥ 2.
+- **Fault phases are short.** The frozen and killed phases last only until the ring evicts the faulty process, so the
+  failure counts measure that window, not a steady state.
+- **Repair counts processes whose repair thread sent anything during the whole run**, not per chunk.
+- **The coordinator-crash test races a kill against copies already in flight on loopback**; with real network latency
+  the copies would land later and a W = 1 crash would leave a longer single-copy window.
+
+---
+
 ## Curves worth having
 
 A single number invites "is that good?". A curve answers a design question and is much harder to
@@ -457,7 +593,7 @@ argue with. Prefer a plot wherever the parameter can be varied.
 | Curve | Why it earns its place | Phase |
 |---|---|---|
 | Lookup hops vs ring size, plotted against log₂N | Shows the O(log N) claim **empirically** instead of asserting it. This is the plot that proves Chord was actually implemented and not just described. | 2 |
-| Key distribution (keys per node) with and without virtual nodes | Justifies virtual nodes existing at all. Without them the spread is wide; the point is the *shape* of the histogram, not a single evenness figure. | 4 |
+| Key distribution (keys per node) with and without virtual nodes | Justifies virtual nodes existing at all. Without them the spread is wide; the point is the *shape* of the histogram, not a single evenness figure. **Measured, §6.** | 4 |
 | Reconvergence time vs number of nodes killed simultaneously | Turns "it recovers" into a bounded claim, and exposes where the successor list runs out. **Measured, §4.** | 3 |
 | Throughput vs peer count, **with p50 and p99 chunk latency** | The tail is what gets asked about. A mean hides the one slow peer that dominates a chunked transfer. | 5 |
 | **Throughput vs chunk size, swept across at least three values** | Justifies the 512 KB chunk size with a curve rather than a precedent. The headline before/after comparison stays pinned at 512 KB, so the improvement is attributable to one variable (decision D-016). | 5 |

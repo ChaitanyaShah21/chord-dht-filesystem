@@ -5,7 +5,8 @@
 
 > [!NOTE]
 > **Under active reconstruction: the legacy BitTorrent-style layer works; the Chord ring routes
-> lookups but does not store data yet.** This repository began as an operating-systems course
+> lookups and stores, replicates, verifies and repairs chunks, but whole files do not move through it
+> yet — the chunked file transfer through the ring is the next phase.** This repository began as an operating-systems course
 > assignment — a BitTorrent-style file sharer — and is being rebuilt into distributed storage. Every row in the table below was verified by a script
 > at the commit it names — nothing is claimed to work that has not been run.
 >
@@ -19,11 +20,11 @@
 
 Verified by running the scripts in the Evidence column on the machine described in
 [`BENCHMARKS.md`](BENCHMARKS.md): the legacy suites at `a9c69cc` (9 Sep 2026), the routing suites
-at `29a829c` (13 Sep 2026), the lookup and churn suites on 7 Oct 2026.
+at `29a829c` (13 Sep 2026), the lookup and churn suites on 7 Oct 2026, the chunk-plane suites on 8 Oct 2026.
 
 | Component | State | Evidence |
 |---|---|---|
-| Build | **Works.** `tracker`, `client` and `node` build clean, zero warnings | `make clean && make` |
+| Build | **Works.** `tracker`, `client`, `node`, `lookup` and `chunk` build clean, zero warnings | `make clean && make` |
 | Tracker — users, groups, metadata | **Works** in memory | `scripts/e2e-smoke.sh` |
 | Tracker — persistence across restart | **Works.** Replay applies effects directly rather than re-running commands, so recovery cannot be refused by an authorisation guard it never reaches | `scripts/e2e-persistence.sh` — 4/4 |
 | Tracker — multi-tracker sync | **Never existed.** Dead code; superseded by the planned Raft group | — |
@@ -34,7 +35,8 @@ at `29a829c` (13 Sep 2026), the lookup and churn suites on 7 Oct 2026.
 | Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
 | Chord lookup originator (`lookup`) | **Works** on a fixed ring. Follows `NEXT` to `OWNER`, checks every reply for progress, and reports a refused, timed-out or garbled node by name | `make check` — 70 lookup checks against correct, lying and broken rings · `scripts/e2e-chord.sh` — real 16-node ring, 4000 lookups, one node killed, one frozen |
 | Chord joins, stabilisation, failure handling | **Works.** Nodes join through any member, a background thread runs stabilise, notify and finger repair, a refused node is evicted at once and a silent one after two strikes, and a node that loses everyone it knew stops routing and rejoins | `make check` — 97 in-process checks: every round order of two joins between the same pair, kills, freezes, a fast restart, collisions, 200 random churn histories · `scripts/e2e-churn.sh` — 22 checks on real processes, also run under ThreadSanitizer · repair time measured in [`BENCHMARKS.md`](BENCHMARKS.md) §4 |
-| Replication, chunk storage | **Not built yet** | — |
+| Chunk storage, replication, virtual nodes, repair | **Works.** Chunks are files written atomically and flushed; a write is coordinated by the owner and acknowledged after `W` copies on distinct processes; reads check the hash and fall through to the next replica; a process is 8 ring members by default; a dead process's chunks are re-replicated by their new owners, and a scrub replaces copies that rot on disk | `make check` — 102 chunk-plane checks · `scripts/e2e-chunk.sh` — 6 processes × 4 members: corruption, two of three replicas killed, hostile requests, repair · also under ThreadSanitizer · [`BENCHMARKS.md`](BENCHMARKS.md) §6 |
+| Files through the ring (chunked transfer, manifests, tracker names) | **Not built yet** — next phase | — |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
 reproduction steps for every one are in [`docs/failures.md`](docs/failures.md).
@@ -60,7 +62,7 @@ a file gets popular, and this system does not. A file has three copies however m
 it, and in exchange it survives every one of its uploaders going offline.
 
 - **What it does:** distributes file chunks across a ring of nodes, routes lookups in O(log N)
-  hops, replicates each chunk to three successors, repairs routing state after failures, and
+  hops, replicates each chunk on the first three distinct processes after its owner, repairs routing state after failures, and
   transfers chunks in parallel with per-chunk integrity verification.
 - **What makes it non-trivial:** the routing state has to stay correct while nodes join and die
   underneath it. Chord's guarantee is that lookups remain *correct* as long as successor
@@ -128,6 +130,33 @@ alone, and polls until reality matches:
 
 Method, every table, the calibration behind the deadline, and the two earlier versions of the selection rules
 that failed: [`BENCHMARKS.md`](BENCHMARKS.md) §4.
+
+### Chunks are stored three times on three processes, evenly, and come back in about two seconds
+
+![Load balance against virtual nodes](docs/figures/chunks-balance.png)
+
+Measured 8 Oct 2026 at commit `7d99fc0`, rings of real `node` processes each with its own on-disk chunk store,
+every placement checked by an oracle in the test harness:
+
+| | Result |
+|---|---|
+| **Load balance** — busiest of 64 processes against the mean | **1.52×** with 8 virtual nodes per process, against 2.80× with one (median of 20 address sets) |
+| **Simulation against reality** — 2,000 chunks on 16 real processes | every store held **exactly** the number of chunks the simulation predicted, with 1 and with 8 virtual nodes |
+| **Re-replication** — one of 16 processes killed, 300 chunks of 512 KiB | every chunk it held back on three correct live processes in a median of **2.2 s** (1.8–2.9 s, 5 runs) |
+| **W with one replica dead** | W = 2 acknowledged **300/300** writes; W = 3 **244/300** until the ring evicted it |
+| **W = 1's price** | answers in 14 ms against 31 ms for W = 2, but each acknowledged chunk sits on one disk for about 18 ms; killing the coordinator at the acknowledgement left no other copy in 20 of 20 trials |
+
+- **The number of virtual nodes was chosen by a rule fixed before measuring**: the smallest power of two for which
+  copies stored per process vary by at most 0.25 of the mean, at 16 and 64 processes. That is 8, now the default. Each
+  virtual node costs about half a percent of a core in background maintenance.
+- **W = 2 and W = 3 cost the same while every replica is healthy** (31 vs 32 ms per flushed 512 KiB write) — on
+  loopback both replicas are equally fast. W only shows its price when a replica is slow or dead.
+- **Stated limit:** one host. Spreading repair over more processes did not make it faster here, because every process
+  shares the same cores and disk; the claim is the time, not a speed-up.
+
+![Write latency and acknowledgement against W](docs/figures/chunks-wsweep.png)
+
+Method, every table, the coordinator-crash test and the limits: [`BENCHMARKS.md`](BENCHMARKS.md) §6.
 
 ### Single-peer transfer baseline
 
@@ -257,7 +286,8 @@ call to the successor from any code path (D-013). Nothing is event-driven; every
 re-derived, so the ring converges from any state.
 
 **What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (Block 2, subject to the 1 Nov trip-wire) and virtual nodes (Phase 4).
+behind the tracker (Block 2, subject to the 1 Nov trip-wire). Each node in the drawing is a process with several
+ring members (virtual nodes), and a chunk's three copies are on three different processes.
 
 ## Key Design Rationales
 
@@ -1016,7 +1046,14 @@ an entry without one is not finished.*
 chord-dht-filesystem/
 ├── chord.h, chord.cpp     # Routing primitives as pure functions: identifiers, arcs, fingers, route_step
 ├── net.h, net.cpp         # Line framing, and one request/reply exchange that tells refused from timed out
-├── node.cpp               # Chord ring member: create, join or wire a ring; sockets and the maintenance thread
+├── node.cpp               # A ring process: one or more members (virtual nodes), a chunk store, sockets,
+│                          #   the maintenance and repair threads
+├── store.h, store.cpp     # The chunk store: one file per chunk, written to a temporary name, flushed, renamed
+├── chunk.h, chunk.cpp     # The chunk plane: PUT/STORE/GET/HAVE, the write coordinator, replica sets on
+│                          #   distinct processes, and the client's verified, falling-through reads and writes
+├── repair.h, repair.cpp   # Re-replication: owner-driven arc checks, the scrub, and the hand-off
+├── chunk_main.cpp         # `chunk`: put and get chunks through a ring, or run many from stdin
+├── sim_balance.cpp        # `sim-balance`: chunk placement with the node's own code, for load-balance curves
 ├── stabilize.h, stabilize.cpp # A node's routing state and everything that changes it: joins, stabilise, notify,
 │                          #   finger repair, failure detection -- with the network passed in
 ├── lookup.h, lookup.cpp   # The originator's loop: follows NEXT to OWNER, checks every reply for progress
@@ -1029,6 +1066,8 @@ chord-dht-filesystem/
 ├── test_net.cpp           # Unit tests: framing edge cases, and refused/timeout/closed over real sockets
 ├── test_lookup.cpp        # Unit tests: the lookup loop against correct, lying and broken rings
 ├── test_stabilize.cpp     # Unit tests: a whole ring in one process, with joins, deaths and freezes timed by hand
+├── test_chunk.cpp         # Unit tests: the store, body framing, virtual nodes, replica sets, writes, reads,
+│                          #   repair -- several processes' stores and members in one process
 ├── Makefile               # Hand-written; `make` builds the binaries, `make check` runs the unit tests
 ├── scripts/
 │   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
@@ -1040,6 +1079,10 @@ chord-dht-filesystem/
 │   ├── bench-reconverge.py # Time for the ring to repair itself after kills, judged by the oracle
 │   ├── run-reconverge.py  # Runs that benchmark end to end, choosing the period and deadline by stated rules
 │   ├── plot-reconverge.py # Summarises that benchmark into docs/figures/reconverge.{csv,png}
+│   ├── e2e-chunk.sh       # Chunks on real processes: placement, sizes, hostile requests, corruption, kills, repair
+│   ├── chunkcheck.py      # The placement oracle and a raw chunk client, independent of the C++ code
+│   ├── bench-chunks.py    # Load balance vs virtual nodes, the W sweep, coordinator crashes, re-replication
+│   ├── plot-chunks.py     # Summarises those into docs/figures/chunks*.{csv,png}
 │   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
 │   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
 │   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
@@ -1065,12 +1108,20 @@ chord-dht-filesystem/
 > suites run directly:
 
 ```bash
-make clean && make          # tracker, client, node and lookup, no warnings
-make check                  # unit tests: identifier arithmetic, routing, framing, the lookup loop
+make clean && make          # tracker, client, node, lookup and chunk, no warnings
+make check                  # unit tests: routing, framing, the lookup loop, stabilisation, the chunk plane
 
 ./scripts/e2e-node.sh       # a real 8-node Chord ring: owners and hop counts vs independent models
 ./scripts/e2e-chord.sh      # the C++ lookup tool on a 16-node ring, including a killed and a frozen node
 ./scripts/e2e-churn.sh      # a ring built by joins, then kills, a freeze and a fast restart, checked by an oracle
+./scripts/e2e-chunk.sh      # 6 processes x 4 virtual nodes storing chunks: corruption, two replicas killed, repair
+
+# A three-process ring that stores chunks, by hand:
+./node 127.0.0.1 7001 --create --vnodes 8 --store /tmp/s1 &
+./node 127.0.0.1 7002 --join 127.0.0.1:7001 --vnodes 8 --store /tmp/s2 &
+./node 127.0.0.1 7003 --join 127.0.0.1:7001 --vnodes 8 --store /tmp/s3 &
+./chunk put 127.0.0.1:7001 --w 2 < somefile          # prints: put <key> ok <copies> ...
+./chunk get 127.0.0.1:7002 <key> > copy               # verified against <key> before it is written
 
 make tsan                   # the node built with ThreadSanitizer; run the churn suite with it:
 NODE_CMD="setarch $(uname -m) -R ./node-tsan" ./scripts/e2e-churn.sh
@@ -1093,7 +1144,7 @@ Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ## Testing
 
-Four unit-test binaries (`make check`) and eight end-to-end suites. No continuous integration yet —
+Five unit-test binaries (`make check`) and nine end-to-end suites. No continuous integration yet —
 CI lands in Phase 5.
 
 Routing is tested in two layers because each catches bugs the other cannot. The unit tests build
@@ -1119,6 +1170,17 @@ a lock held across a call to another node would deadlock the test rather than pa
 is judged against an oracle computed from the live addresses alone. `e2e-churn.sh` does the same
 with real processes, and is also run against a ThreadSanitizer build of the node. That build was
 checked by removing one lock on purpose, and it reported the race.
+
+The chunk plane is tested the same two ways. `test-chunk` runs several processes' stores and ring
+members in one process: path-traversal keys (including a 40-character one, so the length check alone
+cannot pass it), zero bytes, exactly 512 KiB and one byte more, a body arriving in uneven pieces and a
+peer hanging up mid-body over a real socket, replica sets compared with a brute-force oracle on 30 random
+rings, `W` against dead and slow replicas, reads past a corrupt owner copy, and repair after a process
+dies. `e2e-chunk.sh` repeats the important cases on real processes and checks placement on disk against an
+oracle in Python. Twenty deliberate bugs were planted; eighteen were caught. The two that survive are
+recorded with the reason: one is covered twice over (the receiver re-checks the hash anyway), and one is a
+race on an atomic counter that neither a stress test nor ThreadSanitizer can see — it is correct by
+construction (one indivisible `fetch_add`), not by test.
 
 `e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
 that pins a known defect is more useful than a passing test that avoids it, and it turns a

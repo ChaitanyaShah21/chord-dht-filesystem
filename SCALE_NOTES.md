@@ -102,7 +102,8 @@ precisely so they can be checked.**
 |---|---|---|---|---|
 | 1 | **Lookup round trips** (if fork F1 chooses iterative) | large rings | latency grows as hops × round-trip time; on loopback invisible, on a real network dominant | recursive lookup, or cache finger entries aggressively |
 | 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers. **Measured 7 Oct (`b171554`): 0.44 % of a core per idle node at a 1 s period, 5.0 % at 50 ms; 256 nodes at 50 ms saturates this 8-core machine (load average 66)** | back off the period adaptively |
-| 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2 |
+| 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2. **Measured 8 Oct (`7d99fc0`): with healthy replicas W = 2 and W = 3 cost the same on loopback (31 vs 32 ms per 512 KiB write, both flushed); with one replica dead W = 3 failed 56 of 300 writes until eviction, W = 2 none** |
+| 3a | **Virtual-node maintenance** | V × N members | every member stabilises on its own, so background CPU grows with V. **Measured 8 Oct: about 0.5 % of a core per member at T = 1 s (3.75 % per process at V = 8)** | a shared routing table per process (D-047's rejected option) |
 | 4 | **Free RAM on this host** | **2048 node processes** within a 3.4 GiB budget (measured 7 Oct: about 1 MiB per node at that size, growing with N — see the 7 Oct entry) | cannot start more nodes; **this is a measurement artefact, not a system property, and is labelled as such on the plot** | in-process replay past the ceiling (D-027); cloud VMs — cut-order item 3 |
 
 ---
@@ -380,3 +381,50 @@ identical probes; a hostile client can make a node send one ping per message.
 **Would do:** remember the outcome of a probe for a short time and answer repeat hints from it, and rate-limit hints
 per client. **Confidence:** `REASONED`.
 
+---
+
+### 8 Oct 2026 — virtual nodes cost background CPU in proportion to their number
+
+**Observed:** `MEASURED` at `7d99fc0` (`BENCHMARKS.md` §6). Idle CPU per process at a 1 s period, 16 processes: 0.53 % of
+a core with one member, 3.75 % with eight, 10.4 % with 32 — about half a percent per member, because each member runs
+its own stabilise, predecessor check and finger lookup every round (D-047). Eight members per process bring the
+spread of stored copies down from a coefficient of variation of 0.57 to 0.20 at 64 processes.
+
+**At 10x:** the cost is per member, so a ring of 64 processes at V = 8 maintains 512 members — on this host, the same
+background load as a 512-node ring, which §4a shows is past where one 8-core machine stays healthy. On real hardware
+each process pays only its own 3–4 %.
+
+**Would do:** pool the members' finger tables per process (the Chord paper's suggestion, D-047's rejected option): one
+finger table answers for all members, cutting both hops and maintenance by up to V. **Confidence:** `MEASURED` for the
+cost; the saving is `REASONED`.
+
+---
+
+### 8 Oct 2026 — repair is detection-bound here, and a full scan is O(chunks)
+
+**Observed:** `MEASURED` at `7d99fc0`. After one of 16 processes dies, every chunk it held (about 57 of 300, 29 MiB) is
+back on three live processes in a median of 1.9 s with one member per process and 2.2 s with eight. Spreading the
+repair over ten or more sending processes instead of three did not make it faster: the time is the ring noticing the
+death plus one repair round, and the copying shares one host's cores and disk.
+
+**At 10x:** ten times the data per process makes the copy itself visible (290 MiB from one host's disk); ten times the
+chunks makes the full scan — a re-hash of everything a process holds, once a minute by default — cost about a second
+of CPU per GiB (`ESTIMATE`) and a `HAVE` per owned chunk.
+
+**Would do:** hash-tree (Merkle) comparison between replicas, so a scan costs in proportion to the differences
+(D-050's named alternative); and a rate limit on repair traffic so it cannot crowd out client writes.
+**Confidence:** `MEASURED` for the repair time; the 10x figures are arithmetic.
+
+---
+
+### 8 Oct 2026 — a frozen node costs a client its whole hang guard
+
+**Observed:** `MEASURED` at `7d99fc0`. With one process frozen (SIGSTOP), the coordinators' own answer times stayed under
+50 ms at W = 1 and 2, but the client-side 99th percentile rose to 5.5–10.5 s: a lookup routed through the frozen
+process waits out the client's 5 s deadline (D-024) once or twice before its recovery moves on (D-036).
+
+**At 10x:** with more lookups per second, more of them cross the frozen node in the two rounds before it is evicted;
+the number of 5-second waits grows with the request rate, not with the ring.
+
+**Would do:** a shorter client deadline for routing hops than for chunk transfers, or hedging a hop that has not
+answered after a few round-trip times. **Confidence:** `MEASURED`.

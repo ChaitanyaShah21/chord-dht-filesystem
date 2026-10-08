@@ -53,7 +53,7 @@ namespace {
 constexpr int DEFAULT_PERIOD_MS  = 1000;
 constexpr int DEFAULT_TIMEOUT_MS = 200;
 
-// Members per process, chosen by D-051's rule at commit 7d99fc0 (BENCHMARKS.md §5):
+// Members per process, chosen by D-051's rule at commit 7d99fc0 (BENCHMARKS.md §6):
 // the smallest power of two for which the copies stored per process vary by at most
 // 0.25 of the mean (coefficient of variation), at 16 and at 64 processes.
 constexpr int DEFAULT_VNODES     = 8;

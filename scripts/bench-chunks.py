@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bench-chunks.py -- the Phase 4 measurements (BENCHMARKS.md §5; decisions D-051, D-053).
+"""bench-chunks.py -- the Phase 4 measurements (BENCHMARKS.md §6; decisions D-051, D-053).
 
 Modes (one per run of the script):
   --balance          load balance against virtual nodes per process (D-051's rule):
