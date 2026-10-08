@@ -251,6 +251,7 @@ try:
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     line = dl.stderr.readline()                         # "client: manifest ...": the chunks start now
     kill(victim)
+    running_at_kill = dl.poll() is None
     out, err = dl.communicate(timeout=120)
     err = line + err
     client_errs.append(err)
@@ -258,7 +259,14 @@ try:
     placement = Placement(live, V)
     check(dl.returncode == 0 and read("huge.out") == huge,
           f"{victim}, owner of chunk {first}, killed as the chunks began: the download completes, identical")
-    check(b"refused" in err, f"and {err.count(b'refused')} chunk fetches fell through past the dead node")
+    # Who meets the dead node first is a race, and both outcomes are correct: the client
+    # (its fetch is refused and falls through to the next replica, D-049) or the dead
+    # node's neighbours (they evict it, and the client's lookup names the new owner, which
+    # already holds a replica, D-035). Under load the neighbours sometimes win; asserting
+    # the client's path made this check fail about one run in 25. What must hold either
+    # way: the kill landed while the download was running, and the file came back whole.
+    check(running_at_kill, f"the node died while the download was still running "
+                           f"({err.count(b'refused')} fetches fell through past it; otherwise the ring had already moved on)")
 
     # ---- 7. a chunk lost everywhere ----
     small = rand(3 * CHUNK)

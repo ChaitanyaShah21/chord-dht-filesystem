@@ -10,6 +10,7 @@
 
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -284,18 +285,25 @@ std::thread trickle(int fd, std::string bytes, int gap_ms) {
     });
 }
 
+// A backstop on the reading end: if the deadline under test were not enforced, the
+// read would otherwise wait for ever and hang the test binary instead of failing it.
+void backstop(int fd) {
+    timeval tv{3, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+}
+
 void test_deadlines() {
     std::string out;
-    { Pair p; write_raw(p.a, "PING\n");
+    { Pair p; backstop(p.b); write_raw(p.a, "PING\n");
       check(recv_line_by(p.b, out, deadline_in(200)) && out == "PING", "a line that is there arrives before its deadline"); }
 
-    { Pair p; const auto t0 = std::chrono::steady_clock::now();
+    { Pair p; backstop(p.b); const auto t0 = std::chrono::steady_clock::now();
       const bool got = recv_line_by(p.b, out, deadline_in(200));
       const int e = errno; const long long ms = ms_since_start(t0);
       check(!got && e == EAGAIN && ms >= 190 && ms < 1000,
             "nothing sent: the line read gives up at the deadline with EAGAIN (" + std::to_string(ms) + " ms)"); }
 
-    { Pair p; std::thread t = trickle(p.a, "abcdefghijklmnopqrstuvwxyz\n", 40);       // ~1,080 ms in all
+    { Pair p; backstop(p.b); std::thread t = trickle(p.a, "abcdefghijklmnopqrstuvwxyz\n", 40);       // ~1,080 ms in all
       const auto t0 = std::chrono::steady_clock::now();
       const bool got = recv_line_by(p.b, out, deadline_in(200));
       const long long ms = ms_since_start(t0);
@@ -303,18 +311,18 @@ void test_deadlines() {
             "a line trickled a byte every 40 ms still fails at the 200 ms deadline (" + std::to_string(ms) + " ms)");
       shutdown(p.b, SHUT_RDWR); t.join(); }
 
-    { Pair p; std::thread t = trickle(p.a, "abc\n", 20);
+    { Pair p; backstop(p.b); std::thread t = trickle(p.a, "abc\n", 20);
       check(recv_line_by(p.b, out, deadline_in(1000)) && out == "abc", "a slow line that finishes in time is read whole");
       t.join(); }
 
-    { Pair p; std::thread t = trickle(p.a, std::string(100, 'x'), 20);                  // ~2 s for 100 bytes
+    { Pair p; backstop(p.b); std::thread t = trickle(p.a, std::string(100, 'x'), 20);                  // ~2 s for 100 bytes
       std::string body; const auto t0 = std::chrono::steady_clock::now();
       const bool got = recv_exact_by(p.b, 100, body, deadline_in(200));
       const long long ms = ms_since_start(t0);
       check(!got && errno == EAGAIN && ms < 500, "a body trickled past its deadline fails at the deadline (" + std::to_string(ms) + " ms)");
       shutdown(p.b, SHUT_RDWR); t.join(); }
 
-    { Pair p; const int fd = p.a;
+    { Pair p; backstop(p.b); const int fd = p.a;
       // 300 KB is more than a socketpair buffers, so the writer needs its own thread.
       std::thread w([fd] { write_raw(fd, std::string(300000, 'y')); });
       std::string body;
@@ -322,16 +330,16 @@ void test_deadlines() {
             "a 300 KB body arriving in many pieces is read whole within the deadline");
       w.join(); }
 
-    { Pair p; std::thread t = trickle(p.a, std::string(100, 'z'), 20);
+    { Pair p; backstop(p.b); std::thread t = trickle(p.a, std::string(100, 'z'), 20);
       const auto t0 = std::chrono::steady_clock::now();
       const bool got = recv_discard_by(p.b, 100, deadline_in(200));
       check(!got && ms_since_start(t0) < 500, "draining a refused body has the same deadline");
       shutdown(p.b, SHUT_RDWR); t.join(); }
 
-    { Pair p; write_raw(p.a, "half"); close(p.a); p.a = -1;
+    { Pair p; backstop(p.b); write_raw(p.a, "half"); close(p.a); p.a = -1;
       check(!recv_line_by(p.b, out, deadline_in(1000)) && errno == 0, "a peer that closes mid-line is a close (errno 0), not a timeout"); }
 
-    { Pair p; check(!recv_line_by(p.b, out, deadline_in(-5)) && errno == EAGAIN, "a deadline already past fails at once"); }
+    { Pair p; backstop(p.b); check(!recv_line_by(p.b, out, deadline_in(-5)) && errno == EAGAIN, "a deadline already past fails at once"); }
 }
 
 int main() {

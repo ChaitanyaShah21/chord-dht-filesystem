@@ -90,14 +90,20 @@ with open(log_path, "ab") as f:
     rec = f"REGISTER cut.pdf {key(5)}"
     rec += " " + hashlib.sha1(rec.encode()).hexdigest()[:8]
     f.write(rec[:40].encode() + b"\n")          # a record cut inside its key, newline intact
+    flip = f"REGISTER flipped.pdf {key(8)}"
+    flip += " " + hashlib.sha1(flip.encode()).hexdigest()[:8]
+    flip = flip.replace(key(8), key(8)[:-1] + ("0" if key(8)[-1] != "0" else "1"))
+    f.write(flip.encode() + b"\n")              # one key character changed on disk: same length, so
+                                                # only the record's check can tell
     f.write(b"0 create_user alice pw\n")         # the old tracker's log format
     f.write(b"REGISTER torn.pdf " + key(6)[:20].encode())   # torn by a crash: no newline
 t = start("c")
 report = open(os.path.join(work, "tracker-c.err")).read()
 for n, k in names.items():
     check(f"{n} survives the damage", ask(f"RESOLVE {n}") == f"FILE {k}")
-check("the cut and the torn records are not replayed", ask("RESOLVE cut.pdf") == "MISSING" and ask("RESOLVE torn.pdf") == "MISSING")
-check("recovery says what it skipped and cut off", "2 damaged records skipped" in report and "torn final record" in report)
+check("the cut, the altered and the torn records are not replayed",
+      ask("RESOLVE cut.pdf") == "MISSING" and ask("RESOLVE torn.pdf") == "MISSING" and ask("RESOLVE flipped.pdf") == "MISSING")
+check("recovery says what it skipped and cut off", "3 damaged records skipped" in report and "torn final record" in report)
 check("the torn tail is cut off the file", not open(log_path, "rb").read().endswith(key(6)[:20].encode()))
 check("a registration after recovery succeeds", ask(f"REGISTER after.pdf {key(7)}") == "OK")
 t.kill(); t.wait()
