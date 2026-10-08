@@ -821,6 +821,18 @@ scope), memory only (a restart loses everything, and three replicas would not fi
 (roughly five to eight times faster per write here, but "stored" would then mean "in a page cache that a
 power cut erases"). **Cost:** two flushes per chunk.
 
+### The owner coordinates each write, and W travels with the request
+
+A client sends `PUT <key> <w> <length>` and the chunk to the key's owner. The owner checks that the bytes hash
+to the key, stores its own copy, sends the chunk to the other two replicas **in parallel**, and answers as
+soon as `w` copies — its own included — are confirmed; the remaining copy finishes in the background, and the
+owner logs how long that took, which is the window in which fewer than three copies exist. With `w = 2` the
+answer waits for the faster of the two replicas, not the slower. `w` is in each request rather than on the
+node's command line, so one ring under one failure can be measured at `w` = 1, 2 and 3 side by side.
+**Rejected:** the client writing every replica (three uploads from the client, and the replica set to learn
+first), chain replication (latency becomes the sum of the hops, and immutable chunks have no order for a chain
+to protect), and a per-node `W` (a fresh ring per setting). **Cost:** the owner uploads each chunk twice.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

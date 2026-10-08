@@ -219,6 +219,7 @@ decided before the paper is one that cannot be defended in December.
 | **F35** | **How fast does stabilise walk back after a distant fallback?** One step per round (the paper); run to the fixed point within a round; rejoin as an orphan; or a longer list. Surfaced by a 256-node ring that took minutes to converge. | Sets recovery after more than r adjacent deaths, and how long a wired ring takes to start. | **RESOLVED** — D-043 |
 | **F36** | **How does a chunk travel on the wire?** A length-prefixed body after a control line; the chunk encoded inside the line; or a separate data connection. | Decides whether a peer can size an allocation, how a short read is handled, and whether one socket carries two framing schemes. | **RESOLVED** — D-044 |
 | **F37** | **How and where is a chunk kept on disk?** One file per chunk with a temporary name and an atomic rename; an append-only log; or memory only — and whether a write is flushed before it counts. | Decides what a crash mid-write leaves behind, what an acknowledged write promises, and whether a peer's key can name a path. | **RESOLVED** — D-045 |
+| **F38** | **Who replicates a write, and where does W live?** The owner sending in parallel; the client writing every replica; or a chain — and W per node or per request. | Decides write latency (the slower of two parallel sends or the sum of a chain), who uploads the chunk how many times, and whether W values can be compared on one ring. | **RESOLVED** — D-046 |
 
 ---
 
@@ -2700,3 +2701,61 @@ nothing ever deletes a chunk (D-023), so storage only grows.
 
 **Evidence:** none yet — design time. Tests: path-traversal keys, a kill between write and rename,
 concurrent writes of one key, and the restart clean-up.
+
+---
+
+### D-046 — The owner coordinates a write: it stores its copy, sends the others in parallel, and answers after W
+
+**Fork:** F38. **Date:** 8 Oct 2026. **Depends on:** D-014, D-015. **Gates:** the write path and the `W` sweep.
+
+**The decision.** A client looks up the owner of `SHA-1(chunk)` and sends it `PUT <key> <w> <length>` with
+the body. The node that receives it:
+1. checks the key, the length and then the hash of the body against the key — a mismatch is refused, so a
+   chunk is never stored under a name it does not hash to;
+2. stores its own copy (D-045) — copy 1;
+3. sends `STORE <key> <length>` with the same body to each other member of the replica set (D-048),
+   **in parallel**, one thread each;
+4. answers `OK <copies>` as soon as `w` copies are confirmed, its own included, or `ERR` once enough
+   replicas have failed that `w` can no longer be reached;
+5. keeps waiting for the remaining replicas after answering, and logs how long the last one took — the
+   window in which fewer than `RF` copies exist.
+
+**`w` travels in each request** (1, 2 or 3; the client's default is 2). D-015 made `W` a runtime parameter;
+putting it in the request rather than on the node's command line lets one ring, under one failure, serve
+writes at every `W` — so the sweep compares settings on the same ring and the same kills, and an
+application could ask for more durability for some writes than others (Cassandra's per-request consistency
+level is the precedent).
+
+**If the owner cannot be reached,** the client tells the member that answered its lookup (`SUSPECT`, D-036) and
+sends the write to the next distinct process in that member's successor list, which coordinates it with its own
+replica set — the same fall-through a read uses (D-049), so a write is not refused during the window before a dead
+owner is evicted. An owner that **answers** `ERR` because it could not reach `w` copies has given the answer: the
+client does not try another coordinator, which would face the same replicas and scatter extra copies. The one
+exception is `ERR busy` (D-052), which says nothing about the replicas.
+
+**A failed write is not rolled back.** If only one of two needed copies is confirmed the client gets `ERR`,
+and the copy that was written stays. Nothing can be inconsistent about it — it is the right bytes under the
+right name — and the client's retry or the next repair (D-050) completes it.
+
+**Rejected: the client writes every replica itself.** Saves the owner's forwarding hop and keeps nodes
+simpler. The client then has to learn the replica set (another request), push the body three times over its
+own link instead of once, and carry the `W` logic; and a client that dies after one copy leaves the other
+replicas to repair. D-015 already put the coordination on the owner.
+
+**Rejected: chain replication** (owner → second → third, the acknowledgement travelling back). Each link
+carries the body once, and the tail can serve reads that are guaranteed complete. But latency becomes the
+**sum** of the hops rather than the slower of two parallel sends, a slow middle node delays every write
+through it, and `W` stops meaning "the first `W` copies to finish" — with immutable chunks there is no order
+for the chain to protect.
+
+**Rejected: `W` on the node's command line.** Simpler request; but comparing `W` values would need a fresh
+ring per value, and the comparison would then be between rings rather than between settings.
+
+**Cost accepted.**
+- The owner sends the body twice, so its outgoing traffic per write is twice the chunk.
+- A client's lookup can be stale for up to a period after a join or a failure, so a `PUT` can land on a node
+  that is not the owner. That node coordinates anyway, with its own replica set; the copies are real, and
+  repair (D-050) moves them to where they belong.
+- `W = 3` with a dead or frozen replica fails after the call deadline: the price of insisting on three.
+
+**Evidence:** none yet — design time. Measured in the `W` sweep (D-053).
