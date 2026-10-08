@@ -81,7 +81,10 @@ int listen_on(const std::string &ip, int port);
 
 // The longest body either side will send or accept: one chunk, 512 KiB (D-016).
 // Equal to MAX_CHUNK in store.h; chunk.cpp checks the two agree at compile time.
-constexpr std::size_t MAX_BODY = 512 * 1024;
+#ifndef CHORDFS_MAX_CHUNK
+#define CHORDFS_MAX_CHUNK (512 * 1024)       // overridden only by the sweep build (D-063)
+#endif
+constexpr std::size_t MAX_BODY = CHORDFS_MAX_CHUNK;
 
 enum class Body {
     None,        // this line carries no body

@@ -285,6 +285,7 @@ PutOutcome put_chunk(const Peer &start, const std::string &body, int w, const Tr
                      const FrameTransport &send, int retries) {
     PutOutcome out;
     const std::string key = chunk_key(body);
+    out.key = key;
     Id k = 0;
     id_from_key(key, k);
 

@@ -107,6 +107,7 @@ struct PutOutcome {
     std::string message;             // on failure: what went wrong, naming the node
     Peer        coordinator;         // who answered (or failed last)
     int         attempts = 0;        // coordinators tried
+    std::string key;                 // the chunk's key, SHA-1 of the body (set even on failure)
 };
 
 // Write `body` under its key with `w` confirmed copies (D-046). Looks up the

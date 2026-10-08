@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
             w = t[0] - '0';
         }
         std::string body;
-        if (!read_file(std::cin, body)) { std::fprintf(stderr, "chunk: input is larger than 524288 bytes\n"); return 1; }
+        if (!read_file(std::cin, body)) { std::fprintf(stderr, "chunk: input is larger than %zu bytes\n", MAX_CHUNK); return 1; }
         const std::string out = put_line(body, w, start[0]);
         std::printf("%s\n", out.c_str());
         return out.find(" ok ") != std::string::npos ? 0 : 1;

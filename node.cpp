@@ -99,7 +99,7 @@ bool serve_chunk(int fd, const std::string &line) {
     std::size_t length = 0;
     const Body b = body_length(line, length);
     if (b == Body::Malformed) { send_line(fd, "ERR malformed body length"); return false; }
-    if (b == Body::TooLarge)  { send_line(fd, "ERR chunk larger than 524288 bytes"); return false; }
+    if (b == Body::TooLarge)  { send_line(fd, "ERR chunk larger than " + std::to_string(MAX_BODY) + " bytes"); return false; }
 
     // Take a body slot BEFORE reading the body, so a peer cannot make this node
     // allocate more than MAX_BODIES chunks at once (D-052).

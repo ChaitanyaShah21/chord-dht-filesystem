@@ -6,6 +6,13 @@
 CXX      = g++
 CXXFLAGS = -std=c++17 -Wall -pthread -O2
 
+# The largest chunk, in bytes, is one compile-time constant (decision D-063). Only
+# the chunk-size sweep changes it, in a separate copy of the tree:
+#   make CHUNK_LIMIT=8388608
+ifdef CHUNK_LIMIT
+CXXFLAGS += -DCHORDFS_MAX_CHUNK=$(CHUNK_LIMIT)
+endif
+
 # Link-time libraries.
 # client.cpp includes sha1.h, which is a header-only wrapper over OpenSSL's SHA1().
 # The declaration comes from <openssl/sha.h> at compile time, but the machine code for
@@ -33,6 +40,7 @@ TEST_NET   = test-net
 TEST_LOOKUP = test-lookup
 TEST_STABILIZE = test-stabilize
 TEST_CHUNK     = test-chunk
+TEST_TRANSFER  = test-transfer
 
 # Source files.
 # There is no sha1.cpp and there never was: sha1.h is header-only (every function is
@@ -77,6 +85,12 @@ REPAIR_SRC     = repair.cpp
 CHUNK_MAIN_SRC = chunk_main.cpp
 TEST_CHUNK_SRC = test_chunk.cpp
 
+# Whole files through the ring (Phase 5): chunking, manifests and their tree, the
+# worker pool and the part file (transfer.cpp). Storing and fetching one chunk are
+# passed in, so test_transfer.cpp runs whole transfers against a ring in memory.
+TRANSFER_SRC      = transfer.cpp
+TEST_TRANSFER_SRC = test_transfer.cpp
+
 # The load-balance simulation (decision D-051): placement computed with the node's
 # own identifier and replica-set code, for rings far larger than fit as processes.
 SIM_BALANCE_SRC = sim_balance.cpp
@@ -105,6 +119,8 @@ REPAIR_OBJ         = $(REPAIR_SRC:.cpp=.o)
 CHUNK_MAIN_OBJ     = $(CHUNK_MAIN_SRC:.cpp=.o)
 TEST_CHUNK_OBJ     = $(TEST_CHUNK_SRC:.cpp=.o)
 SIM_BALANCE_OBJ    = $(SIM_BALANCE_SRC:.cpp=.o)
+TRANSFER_OBJ       = $(TRANSFER_SRC:.cpp=.o)
+TEST_TRANSFER_OBJ  = $(TEST_TRANSFER_SRC:.cpp=.o)
 
 # Default target
 all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE)
@@ -153,6 +169,9 @@ $(TEST_STABILIZE): $(TEST_STABILIZE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_
 $(SIM_BALANCE): $(SIM_BALANCE_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+$(TEST_TRANSFER): $(TEST_TRANSFER_OBJ) $(TRANSFER_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 $(TEST_CHUNK): $(TEST_CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
@@ -178,6 +197,8 @@ $(CHUNK_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(REPAIR_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(CHUNK_MAIN_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(TEST_CHUNK_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(TRANSFER_OBJ): transfer.h chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(TEST_TRANSFER_OBJ): transfer.h chunk.h store.h stabilize.h lookup.h chord.h net.h
 $(SIM_BALANCE_OBJ): chunk.h store.h stabilize.h lookup.h chord.h net.h sha1.h
 
 # A ThreadSanitizer build of the node, for looking for data races between the
@@ -201,6 +222,7 @@ clean:
 	rm -f $(TRACKER_OBJ) $(CLIENT_OBJ) $(CHORD_OBJ) $(TEST_CHORD_OBJ) $(NODE_OBJ) $(NET_OBJ) $(TEST_NET_OBJ) \
 	      $(LOOKUP_OBJ) $(LOOKUP_MAIN_OBJ) $(TEST_LOOKUP_OBJ) $(SIM_HOPS_OBJ) $(STABILIZE_OBJ) $(TEST_STABILIZE_OBJ) \
 	      $(STORE_OBJ) $(CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_MAIN_OBJ) $(TEST_CHUNK_OBJ) $(SIM_BALANCE_OBJ) \
+	      $(TRANSFER_OBJ) $(TEST_TRANSFER_OBJ) $(TEST_TRANSFER) \
 	      $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE) $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) \
 	      $(TEST_STABILIZE) $(TEST_CHUNK) $(NODE_TSAN)
 
@@ -215,11 +237,12 @@ run-client:
 
 # Build and run the in-process arithmetic tests. Exits non-zero on failure, so
 # it can be used as a gate.
-check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(TEST_CHUNK)
+check: $(TEST_CHORD) $(TEST_NET) $(TEST_LOOKUP) $(TEST_STABILIZE) $(TEST_CHUNK) $(TEST_TRANSFER)
 	./$(TEST_CHORD)
 	./$(TEST_NET)
 	./$(TEST_LOOKUP)
 	./$(TEST_STABILIZE)
 	./$(TEST_CHUNK)
+	./$(TEST_TRANSFER)
 
 .PHONY: all clean run-tracker run-client check tsan

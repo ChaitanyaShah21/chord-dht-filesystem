@@ -25,8 +25,14 @@
 // "which keys lie in this arc?" for repair.
 // ---------------------------------------------------------------------------
 
-// The largest chunk a node will store or send (D-016, D-044): 512 KiB.
-constexpr std::size_t MAX_CHUNK = 512 * 1024;
+// The largest chunk a node will store or send (D-016, D-044): 512 KiB. One
+// compile-time constant, CHORDFS_MAX_CHUNK, sets both this and net.h's MAX_BODY;
+// only the chunk-size sweep overrides it, in a separate build (D-063):
+//   make CHUNK_LIMIT=8388608
+#ifndef CHORDFS_MAX_CHUNK
+#define CHORDFS_MAX_CHUNK (512 * 1024)
+#endif
+constexpr std::size_t MAX_CHUNK = CHORDFS_MAX_CHUNK;
 
 // Exactly 40 characters, each 0-9 or a-f. Lowercase only, so one chunk cannot
 // have two names; "../", "/", uppercase and every other length are refused.

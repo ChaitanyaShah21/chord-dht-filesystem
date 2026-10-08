@@ -22,6 +22,10 @@ CMakeFiles/
 /test-lookup
 /test-stabilize
 /test-chunk
+/test-transfer
+/test-names
+/client-tsan
+/test-transfer-tsan
 /chunk
 /sim-balance
 /node-tsan
