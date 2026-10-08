@@ -28,7 +28,7 @@ WORK="${TMPDIR:-/tmp}/p2p-transfer-$$"
 BASE_PORT="${BASE_PORT:-7720}"
 LAST_PORT=$((BASE_PORT + 9))           # 8 nodes, then the tracker at BASE_PORT + 9
 
-# Kill only this suite's processes, matched by port -- never a machine-wide pkill (E6).
+# Kill only this suite's processes, matched by port -- never a machine-wide pkill.
 reap() {
   local p i
   for p in $(seq "$BASE_PORT" "$LAST_PORT"); do

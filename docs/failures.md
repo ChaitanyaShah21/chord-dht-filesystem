@@ -1,9 +1,10 @@
 # Failure Log — what was broken, how it was found, why the fix works
 
 **What this file is.** One entry per defect that was actually reproduced on this machine,
-written while the detail was fresh. It is a deliverable, not housekeeping (R20): *"tell me
-about a bug you found and how you debugged it"* is asked in almost every round, and it is
-nearly impossible to answer convincingly from memory.
+written while the detail was fresh: what was wrong, how it was found, and why the fix works.
+Most of these defects were in the coursework system this repository began as; that code was
+retired in Phase 5 (decision D-060 in `ARCHITECTURE.md`), and the regression suites written for
+these defects now run against the programs that replaced it.
 
 **The rule that keeps it honest:** nothing goes in this file that was not reproduced. Reading
 code and forming a theory is a *hypothesis*; it is written down as a hypothesis and marked
@@ -12,7 +13,7 @@ REFUTED, deliberately — a log that only records the guesses that turned out ri
 that has been edited after the fact, and it reads that way.
 
 **Entry format.** Symptom → how it was found → root cause → why it was hard to see → fix →
-trade-off accepted → how recurrence is prevented → the interview question it answers.
+trade-off accepted → how recurrence is prevented → the general lesson.
 
 | ID | Defect | Severity | Status |
 |---|---|---|---|
@@ -24,6 +25,15 @@ trade-off accepted → how recurrence is prevented → the interview question it
 | R4 | A zero-byte file cannot be uploaded at all | Medium | **FIXED** 8 Oct 2026 — by the Phase 5 transfer path (D-054) |
 | R2b | A failed download still leaves a full-size zero-filled file behind | High | **FIXED** 8 Oct 2026 — part file and atomic rename (D-055) |
 | R1 | Tracker state does not survive a restart | Critical | **FIXED** 6 Sep 2026 (D-009) |
+| R6 | Five replies were two lines; the connection stayed one reply behind | High | **FIXED** 9 Sep 2026 (D-010) |
+| R9 | Any client could kill the tracker by hanging up (`SIGPIPE`) | Critical | **FIXED** 9 Sep 2026 (D-011) |
+
+Defects found by the 23 Aug audit but never reproduced as entries here (R5, R7, R8, C1, D1–D8)
+are described in `ARCHITECTURE.md`: R7, R8 and D3 were closed structurally by the rewrite in
+D-060; R5 (a group's new owner chosen non-deterministically) and C1 (a greeting advertising
+multi-tracker support that never existed) went with groups and the greeting in D-058; D2 was
+fixed by D-008; D4 (an uncaught `stoull` on a malformed number killing the tracker) was fixed with
+R1 (see its table below); and D1, D6, D7 and D8 disappeared with the code they were in.
 
 Session date: 1 Sep 2026 · baseline commit `219a9b8` · g++ 13.3.0, C++17, aarch64 under WSL2.
 
@@ -77,8 +87,9 @@ Without it, editing `sha1.h` leaves the stale `client.o` in place and the next `
 links yesterday's code. That is a nastier bug than this one, because it produces a *wrong
 binary* rather than an error.
 
-**Interview question it answers:** *"What is the difference between a header-only library and
-one with a separate source file, and when would you pick each?"*
+**The general lesson:** know whether a library is header-only or has a separate source file,
+and what each means for the build — the first is compiled into every translation unit that
+includes it, the second is one object file that must be named.
 
 ---
 
@@ -118,11 +129,10 @@ mixing link-time libraries into it is how a `Makefile` becomes untraceable. The 
 need SHA-1 in the Chord phase (hashing node identifiers and keys onto the ring); the flag gets
 added to its rule *then*, when it is true.
 
-**Interview question it answers:** *"What is the difference between a compile error and a link
-error? Given `undefined reference to X`, what are the three things that could be wrong?"*
-(Answers: the library was not named; it was named but in the wrong order relative to the object
-that needs it; or the symbol has a different name than expected — C++ name mangling, usually
-fixed with `extern "C"`.)
+**The general lesson:** a compile error and a link error are different failures. Given
+`undefined reference to X`, three things could be wrong: the library was not named; it was named
+but in the wrong order relative to the object that needs it; or the symbol has a different name
+than expected — C++ name mangling, usually fixed with `extern "C"`.
 
 ---
 
@@ -180,17 +190,18 @@ four-tuple. In practice TCP sequence numbers make this vanishingly unlikely, and
 *not* setting it is that the service cannot be restarted for a minute. Every production server
 sets it. The important thing is to know what is being given up rather than to copy the line.
 
-**The distinction that matters, and that gets asked:** `SO_REUSEADDR` is **not**
+**The distinction that matters:** `SO_REUSEADDR` is **not**
 `SO_REUSEPORT`. `SO_REUSEADDR` allows binding past *lingering* sockets; it will still refuse a
 second *live* listener on the same port. `SO_REUSEPORT` is the one that allows several live
 listeners to share a port and have the kernel load-balance connections between them.
 
 **Why this was a blocker rather than an annoyance:** every benchmark in `BENCHMARKS.md` has to
-be repeatable, and R13 requires a before number and an after number. A service that cannot be
-restarted inside 60 seconds cannot be benchmarked in a loop.
+be repeatable, and every improvement claimed needs a before number and an after number. A
+service that cannot be restarted inside 60 seconds cannot be benchmarked in a loop.
 
-**Interview question it answers:** *"Your server won't restart — `Address already in use` — but
-nothing is listening on the port. What's happening?"* This is a standard screening question.
+**The general lesson:** when a server will not restart with `Address already in use` but
+nothing is listening on the port, look for connections lingering in `TIME_WAIT` (`ss -tan`), and
+set `SO_REUSEADDR` before `bind`.
 
 ---
 
@@ -246,7 +257,7 @@ FILE_INFO alice/testfile.bin 300000 OWNER alice <hash> SEEDERS alice@alice@127.0
 
 ### Root cause
 
-[`tracker.cpp:233`](../tracker.cpp#L233), in the `upload_file` handler:
+`tracker.cpp` line 233 in the coursework tree (`pre-resurrection`), in the `upload_file` handler:
 
 ```cpp
 string user = user_info;                    // user_info == "alice@127.0.0.1:6881"
@@ -280,8 +291,8 @@ splits on the *first* `'@'`, takes everything after it as `ip:port`, splits on `
 Four things conspired, and each one is a general lesson.
 
 1. **The two variables differ by one suffix.** `user` and `user_info` sit two lines apart and
-   read almost identically. R10's "two similar-looking values that mean different things" is
-   exactly this case.
+   read almost identically — two similar-looking values that mean different things, the
+   classic shape of this kind of bug.
 2. **`npos + 1 == 0` turns a bug into plausible output.** Had the wraparound produced a huge
    number, `substr` would have thrown `std::out_of_range` and the tracker would have died at
    the exact line at fault. Instead the one value that could not be more wrong is the one value
@@ -342,21 +353,21 @@ This did not cause R2 — hypothesis 1 was refuted. It is fixed because it makes
 occurrence of this symptom take one minute instead of an hour. **A silent `return` on a failed
 `bind` is a bug even when it is not today's bug.**
 
-### Interview questions it answers
+### The general lessons
 
-- *"Tell me about a bug you found and how you debugged it."* — the strongest answer available:
-  a wrong-variable typo, an unsigned wraparound that suppressed the crash that would have
-  located it, and a symptom three components downstream.
-- *"What is `std::string::npos` and what happens if you add one to it?"*
-- *"How do you debug a distributed system where the failure appears in a different process from
-  the cause?"* — bisect the pipeline by speaking each protocol by hand. The manual `GET_PIECE`
-  cleared the entire serving side in one command.
+- A wrong-variable typo, an unsigned wraparound that suppressed the crash that would have
+  located it, and a symptom three components downstream: each makes the others harder to see.
+- `std::string::npos` is `SIZE_MAX`, and `npos + 1` is 0 — the one value `substr` treats as
+  completely normal.
+- When the failure appears in a different process from the cause, bisect the pipeline by
+  speaking each protocol by hand. The manual `GET_PIECE` cleared the entire serving side in one
+  command.
 
 ---
 
 ## R3 — permanent request/response desync after the first successful download (found this session)
 
-**Symptom:** found by an adversarial size sweep (R10) rather than by the happy path. Seven
+**Symptom:** found by an adversarial size sweep rather than by the happy path. Seven
 files at piece-size boundaries, uploaded and downloaded in sequence. `PIECE_SIZE` is 524288.
 
 ```
@@ -375,7 +386,7 @@ multi               3000000    1048576  FAIL
 That is not a size-handling bug. That is a stream desync, and the shift being exactly one is
 the diagnosis.
 
-**Root cause:** at [`client.cpp:822`](../client.cpp#L822), after a download completes:
+**Root cause:** at `client.cpp` line 822 of the coursework client, after a download completes:
 
 ```cpp
 string update_cmd = "update_seeder " + groupid + " " + logged_in_user + " " + filename;
@@ -383,7 +394,7 @@ send_line(sock, update_cmd);          // sends. never reads the reply.
 ```
 
 The tracker **does not implement `update_seeder`** — it is not in the command chain, so it
-falls through to `else return "Unknown command";` at [`tracker.cpp:358`](../tracker.cpp#L358).
+falls through to `else return "Unknown command";` at line 358 of the coursework `tracker.cpp`.
 The tracker sends that reply. Nobody reads it. It sits in the socket receive buffer, and the
 *next* `recv_line` on that socket consumes it instead of the response actually being waited
 for. From that moment the client is permanently one response behind, on every command, for the
@@ -399,13 +410,13 @@ transfers one file passes forever. This is why the size sweep exists.
 
 **Relationship to the known defect D2:** D2 is the 30-second heartbeat thread writing down the
 main loop's socket. R3 is the *same class* — a send with no matching receive — on the main
-thread, with no concurrency involved at all. That makes R3 the better teaching example: it
-proves the defect is not a race. A mutex around the socket would not have prevented it, because
+thread, with no concurrency involved at all. That makes R3 the clearer example: it proves
+the defect is not a race. A mutex around the socket would not have prevented it, because
 nothing here is concurrent. The broken invariant is *send-then-receive as a pair*, and no lock
 expresses that.
 
-**Status: FIXED, 2 Sep 2026.** The fix was taken as a decision rather than silently
-(R6, R11) — `ARCHITECTURE.md` D-007 and D-008. The options were:
+**Status: FIXED, 2 Sep 2026.** The fix was taken as a recorded decision rather than silently —
+`ARCHITECTURE.md` D-007 and D-008. The options were:
 
 | Option | What it means | Cost |
 |---|---|---|
@@ -421,7 +432,7 @@ given its **own connection** instead of a bigger lock.
 **Two things found while fixing it, both of which changed the fix:**
 
 - `sock_mtx` was taken in **exactly one place** — the heartbeat's `send`. The main loop's
-  send/recv pair took no lock at all. The lock that looked like the socket's defence was
+  send/recv pair took no lock at all. The lock that looked like the socket's protection was
   serialising the heartbeat against nothing.
 - There is **no `seeders.erase` anywhere** in the tracker. Nothing ever removes a seeder, so
   the 30-second re-announcement achieved nothing at all. *A heartbeat with no timeout on the
@@ -441,9 +452,9 @@ reported correctly, and which looks exactly like a product bug. Cleanup now kill
 waits for the ports to actually free. **A test suite that leaks processes manufactures failures
 that cost more to diagnose than the bugs it finds.**
 
-**Interview question it answers:** *"You have a mutex on the socket and the protocol still
-desynchronised. Why?"* — because a mutex makes each *send* atomic, and the invariant that
-matters is *send-then-receive* atomic as a pair. R3 sharpens it further: here there was no
+**The general lesson:** a mutex on the socket does not stop a protocol desynchronising,
+because a mutex makes each *send* atomic, and the invariant that matters is *send-then-receive*
+atomic as a pair. R3 sharpens it further: here there was no
 second thread at all, so no lock could ever have helped. The general form: **a mutex protects
 state; this is a rule about sequence.**
 
@@ -471,8 +482,8 @@ importantly it is the boundary case for "how many pieces does a file of size S h
 other direction. The general rule is that a length-prefixed protocol has to be able to say
 "zero" and mean it.
 
-**Status:** OPEN. Deferred to the Phase 5 transfer rewrite, where chunking is redesigned anyway.
-Logged so it is never re-found.
+**Status on 1 Sep:** OPEN. Deferred to the Phase 5 transfer rewrite, where chunking was to be
+redesigned anyway. Logged so it would never be re-found.
 
 **Fixed, 8 Oct 2026, by the Phase 5 transfer path (D-054, D-060).** A file is described by a
 manifest whose `entries` line may say 0: a zero-byte file is a data manifest with no entries,
@@ -481,8 +492,8 @@ Nothing special-cases zero. `scripts/e2e-edge.sh`, which pinned this defect by f
 since 1 Sep, now passes all seven cases through the ring; `test-transfer` checks the zero-byte
 manifest, its build and a zero-byte round trip in process.
 
-**Interview question it answers:** *"What does your system do with a zero-byte file?"* — a
-standard probe for whether boundary cases were actually tested or merely assumed.
+**The general lesson:** a zero-byte file is the boundary case that shows whether boundaries
+were actually tested or merely assumed.
 
 ---
 
@@ -496,7 +507,7 @@ practice; it does not stop it happening when a transfer genuinely fails.
 arrive, so workers can write pieces at their offsets in any order. When pieces fail, nothing
 removes the file. A sparse, zero-filled file remains, indistinguishable from a real one by size.
 
-**Status:** OPEN — a design fork (F7 in `ARCHITECTURE.md`), not a typo:
+**Status on 1 Sep:** OPEN — a design fork (F7 in `ARCHITECTURE.md`), not a typo:
 
 | Option | What it means | Cost |
 |---|---|---|
@@ -514,9 +525,8 @@ Tested in process (`test-transfer`: a lost chunk, an older file at the destinati
 that lies about a chunk's length, the handler's cleanup mid-download) and on real processes
 (`e2e-transfer.sh`: a chunk deleted from every replica, `SIGKILL` and `SIGTERM` mid-download).
 
-**Interview question it answers:** *"Your transfer fails halfway. What is on disk, and how does
-the next run know not to trust it?"* — the answer people want is atomic rename, plus the
-observation that size alone is never evidence of completeness.
+**The general lesson:** after a transfer fails halfway, nothing on disk should look like the
+finished file. Atomic rename gives that, and size alone is never evidence of completeness.
 
 ---
 
@@ -646,7 +656,7 @@ not, and the tracker waits for a heartbeat rather than inventing a peer.
 `scripts/e2e-smoke.sh` PASS. `scripts/e2e-edge.sh` 6/7, unchanged — the remaining failure is R4,
 the zero-byte file, which is a client-side defect and out of scope here.
 
-**The live path is unchanged.** `scratchpad/protocol_diff.py` drives the old binary (built from
+**The live path is unchanged.** A throwaway script drove the old binary (built from
 `66ea0ff`) and the new one through the same **20-command conversation**, covering every command
 and every error case, with blocking reads and no `sleep` anywhere. The two transcripts are
 **byte-identical, including the state log each tracker wrote.** This mattered because the host's
@@ -723,9 +733,9 @@ One case, `create_group`, *passed* on the broken build — a stream two replies 
 land on a line containing `Use:`. **A check can pass on a corrupted stream by coincidence**,
 which is why the suite also asserts that nothing is left unread at the end.
 
-**Interview question it answers:** *"You found a bug in code you wrote a year ago — why had
-nobody noticed?"* and its follow-up, *"so you fixed the five strings?"* — no: the strings were a
-symptom, the invariant had no owner.
+**The general lesson:** a latent defect survives because nothing exercises its path. Fixing
+the five strings would have treated the symptom; the real defect was that the invariant had no
+owner.
 
 ## R9 — any client could kill the tracker by hanging up
 
@@ -735,7 +745,7 @@ symptom, the invariant had no owner.
 process, taking every other client's session with it. No error is printed, because the process
 is gone before it can print one.
 
-**How it was found:** by reading `send_all` aloud for teaching. The send loop checks
+**How it was found:** by reading `send_all` line by line in a code review. The send loop checks
 `if(n <= 0) return false`, which is correct — so the question was what happens *before* that
 check gets a chance to run. `grep` for `SIGPIPE` and `MSG_NOSIGNAL` found neither in either
 binary.
@@ -770,23 +780,36 @@ added — one miss reinstates the defect.
 answering a fresh connection. With the fix commented out the same suite fails both checks and
 names the exit status.
 
-**Interview question it answers:** *"Show me a bug where the error handling was already
-correct."* The check was right; it never ran.
+**The general lesson:** the error handling can be correct and still never run. The check was
+right; a signal ended the process before it was reached.
+
+**Since Phase 5:** the rewritten tracker stops at the first failed send, and Linux raises
+`SIGPIPE` only on the second send after a reset, so `e2e-hangup.sh` can no longer tell a tracker
+with the ignore from one without it. It still proves the tracker survives an abrupt disconnect
+and keeps serving; the ignore stays as defence in depth, and the change is recorded in the
+suite's header.
 
 ## Reproducing all of this
+
+The regression suite written for each defect still runs. Since Phase 5 they run against the
+programs that replaced the coursework code (D-060), and they guard the same property:
 
 ```sh
 make clean && make                       # B1, B2: builds and links with no warnings
 scripts/e2e-smoke.sh                     # R2: one file, SHA-1 compared end to end
-scripts/e2e-edge.sh                      # R4: piece-boundary sweep. Currently FAILS by design
+scripts/e2e-edge.sh                      # R3, R4: chunk-boundary sweep, zero bytes included — 7/7
 scripts/e2e-persistence.sh               # R1: state must survive a restart
 scripts/e2e-framing.sh                   # R6: one command, one reply, one line
 scripts/e2e-hangup.sh                    # R9: a client that vanishes must not kill the tracker
 ```
 
-`scripts/e2e-edge.sh` is expected to fail until R4 is closed. **A failing test that
-documents a known open defect is more useful than a passing test that avoids it** — it is what
-turns the entry above into a regression check rather than a memory.
+`scripts/e2e-edge.sh` was committed failing on purpose on 1 Sep, pinning R4, and passed all
+seven cases once R4 was fixed on 8 Oct. **A failing test that documents a known open defect is
+more useful than a passing test that avoids it** — it is what turned the entry above into a
+regression check rather than a memory.
+
+To see the defects themselves, check out the coursework code: `pre-resurrection` for the state
+before any fix, and `e381179` for the fixed coursework system the transfer baseline was measured on.
 
 The B3/B4 compile errors in the original committed code are still reproducible:
 

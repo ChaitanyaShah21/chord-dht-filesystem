@@ -1,10 +1,8 @@
 # Benchmarks — chord-dht-filesystem
 
-**Every number here carries its method and the commit it was measured at.**
-
-Every entry carries its method and its commit fingerprint. A number that cannot be tied to a
-commit is a number that cannot be reproduced, and one that cannot be reproduced cannot be
-defended.
+**Every number here carries its method and the commit it was measured at.** A number that
+cannot be tied to a commit cannot be reproduced, and one that cannot be reproduced cannot be
+checked.
 
 **Estimates are allowed and are labelled `ESTIMATE`.** An estimate is never presented as a
 measurement.
@@ -17,8 +15,7 @@ measurement.
 
 ## Measurement environment
 
-Recorded once, so every number below is comparable and so the honest answer to "on what
-hardware?" is already written down.
+Recorded once, so every number below is comparable and the hardware behind it is written down.
 
 | | |
 |---|---|
@@ -39,14 +36,13 @@ With every peer on one host, these numbers measure protocol overhead, not networ
 | **Loopback, not a network.** No propagation delay, no packet loss, no reordering, MTU is 64 KB not 1500 bytes. | Throughput is **optimistically high** and latency **optimistically low**, by a wide margin. Anything sensitive to round trips — like iterative lookup, which costs one round trip per hop — looks far cheaper here than on a LAN, let alone a WAN. | Transfer throughput; lookup latency; anything per-hop |
 | **All peers share 8 cores.** N peers means N processes contending for the same CPUs. | Beyond roughly 8 concurrent workers, added parallelism costs rather than gains — a scaling curve will bend for reasons that have nothing to do with the protocol. | Throughput vs peer count |
 | **All peers share one page cache.** A "remote" peer serving a file often reads it from RAM that the requesting process already warmed. | Disk I/O is largely eliminated. Real seeders would hit disk. | Transfer throughput |
-| **~3.4 GiB of free RAM caps ring size.** | Per-node resident set size is measured in Phase 2 and the maximum ring size is **derived from it, not guessed**. If a hop-count curve needs more nodes than memory allows, that limit is reported alongside the plot. | Hop count vs ring size |
+| **~3.4 GiB of free RAM caps ring size.** | Per-node memory is measured (§2) and the maximum ring size is **derived from it, not guessed**. If a hop-count curve needs more nodes than memory allows, that limit is reported alongside the plot. | Hop count vs ring size |
 | **aarch64, not x86-64.** | SHA-1 throughput differs; OpenSSL uses ARMv8 crypto extensions where available. | Hashing cost as a fraction of transfer time |
 | **`-O2`, not `-O3` or PGO.** | Deliberate: matches what a reviewer building from the README would get. | All |
 
-**What would fix this:** deployment-kit item 5 puts the ring on free-tier cloud virtual
-machines, which turns these from caveats into a comparison. That is optional future
-work, so the expectation is that these distortions stand and are disclosed rather than
-eliminated.
+**What would fix this:** running the ring on separate machines, which would turn these from
+caveats into a comparison. That has not been done, so these distortions stand and are
+disclosed rather than eliminated.
 
 ---
 
@@ -743,7 +739,7 @@ argue with. Prefer a plot wherever the parameter can be varied.
 | Lookup hops vs ring size, plotted against log₂N | Shows the O(log N) claim **empirically** instead of asserting it. This is the plot that proves Chord was actually implemented and not just described. | 2 |
 | Key distribution (keys per node) with and without virtual nodes | Justifies virtual nodes existing at all. Without them the spread is wide; the point is the *shape* of the histogram, not a single evenness figure. **Measured, §6.** | 4 |
 | Reconvergence time vs number of nodes killed simultaneously | Turns "it recovers" into a bounded claim, and exposes where the successor list runs out. **Measured, §4.** | 3 |
-| Throughput vs peer count, **with p50 and p99 chunk latency** | The tail is what gets asked about. A mean hides the one slow peer that dominates a chunked transfer. **Measured, §5.** | 5 |
+| Throughput vs peer count, **with p50 and p99 chunk latency** | The tail is what matters: a mean hides the one slow peer that dominates a chunked transfer. **Measured, §5.** | 5 |
 | **Throughput vs chunk size, swept across at least three values** | Justifies the 512 KB chunk size with a curve rather than a precedent. The headline before/after comparison stays pinned at 512 KB, so the improvement is attributable to one variable (decision D-016). **Measured, §5.** | 5 |
 | Before/after for every optimisation | An optimisation with no "before" number is a claim, not a result. | all |
 
@@ -757,7 +753,7 @@ Recorded deliberately, with what each would be expected to show.
 
 | Not measured | Why not | What I would expect |
 |---|---|---|
-| Behaviour under real network loss and delay | Everything is on loopback; injecting loss with `tc netem` is a half-day I have not budgeted | Iterative lookup would degrade roughly linearly in round-trip time × hops — which is exactly the cost fork F1 trades away. On a 1 ms LAN a 7-hop lookup goes from microseconds to ~7 ms. |
+| Behaviour under real network loss and delay | Everything is on loopback; injecting loss with `tc netem` has not been done | Iterative lookup would degrade roughly linearly in round-trip time × hops — which is exactly the cost fork F1 trades away. On a 1 ms LAN a 7-hop lookup goes from microseconds to ~7 ms. |
 | Rings larger than free RAM allows, **as processes** | The measured ceiling is 2048 processes (§2). Beyond it the same routing code is replayed in one process to 2²⁰ nodes, so the curve is measured, but not over sockets | Nothing different: §2 shows the replay and the real ring agree on every lookup where both exist. |
 | Throughput above ~8 concurrent workers | 8 cores; past that the curve measures scheduler contention, not the protocol | A bend that is an artefact of the host, and reporting it as a protocol result would be wrong. |
 | SHA-1 hashing cost isolated from transfer cost | Low value — OpenSSL on ARMv8 crypto extensions is far faster than loopback transfer | `ESTIMATE`: under 5% of transfer time. Worth confirming with one measurement if hashing is ever suspected in a profile. |

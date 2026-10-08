@@ -1,8 +1,7 @@
 # Architecture — chord-dht-filesystem
 
-The current design, and the log of every decision that produced it. This file is the source the
-README's **Key Design Rationales** section is written from, and the source `DEFENCE.md` draws
-its questions from.
+The current design, and the log of every decision that produced it. The README's **Key Design
+Rationales** section and `docs/design.md` are written from it.
 
 > **State as of 8 Oct 2026.** Since Phase 5 the code implements the target design: files are cut
 > into content-addressed chunks stored three times on a Chord ring, and a small tracker maps names to
@@ -89,15 +88,15 @@ a user.
 
 ## The target diagram — the system the five forks describe
 
-Drawn **after** the forks were resolved, per R11: a diagram made earlier would have decided them
-by implication. Kept as diagram-as-text so it diffs in review and cannot drift from the design.
+Drawn **after** the forks were resolved: a diagram made earlier would have decided them by
+implication. Kept as diagram-as-text so it diffs in review and cannot drift from the design.
 
 ```mermaid
 flowchart TB
     C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
 
     subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
-        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Block 2"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · a Raft group is the planned next step"]
     end
 
     subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
@@ -144,7 +143,7 @@ call to the successor from any code path (D-013). Nothing is event-driven; every
 re-derived, so the ring converges from any state.
 
 **What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (Block 2, subject to the 1 Nov trip-wire). Since Phase 4 each node in the drawing is a
+behind the tracker (planned, not built). Since Phase 4 each node in the drawing is a
 process with several ring members — virtual nodes, D-047 — and a chunk's three copies are on three different
 processes (D-048).
 
@@ -163,34 +162,34 @@ processes (D-048).
 
 ## Open forks
 
-**Nothing here is implemented until it is decided (R11).** Each fork moves to the decision log
-below once resolved. All five are held open until the Chord paper has been read — a fork
-decided before the paper is one that cannot be defended in December.
+**Nothing here is implemented until it is decided.** Each fork moves to the decision log
+below once resolved. The first five were held open until the Chord paper had been read, so that
+none was decided by habit.
 
 | # | Fork | Why it changes things downstream | Status |
 |---|---|---|---|
 | **F1** | **Iterative or recursive lookup?** Iterative: I ask a peer, it replies "closer node is N3", I ask N3 myself. Recursive: I ask a peer and it forwards on my behalf, the answer comes back down the chain. | Iterative makes hop counting trivial and failures easy to attribute, at one round trip per hop. Recursive is lower latency but timeouts and partial failures get much harder — **and it costs the easy hop measurement the headline benchmark depends on.** | **RESOLVED** — D-012 |
 | **F2** | **Does the tracker know where chunks are, or only what chunks exist?** | Manifest-only keeps the ring the single source of truth and the Raft log small. Tracker-holds-placement means one lookup instead of O(log N) hops — but creates **two systems that can now disagree** about where a chunk lives. | **RESOLVED** — D-017 |
-| **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design and the one the project round will land on.** | **RESOLVED** — D-014, D-015 |
+| **F3** | **Replication — the consistency/availability knob.** Synchronous write to all three successors; or write-one-and-propagate; or quorum with W=2, R=2. | Sync-to-all: any replica is correct, writes as slow as the slowest successor (consistent + partition-tolerant). Write-one: fast writes, stale reads, **needs read repair**. Quorum: more to implement, much more to talk about. **This is the most consequential decision in the design.** | **RESOLVED** — D-014, D-015 |
 | **F4** | **Who decides a peer is dead, and how long does it take?** Stabilisation period alone, or active heartbeats between successors. | Stabilisation alone is simplest and detection time is bounded by the period. Heartbeats detect faster but add background traffic and **force handling of a peer that is slow rather than dead** — which is the hard case. | **RESOLVED** — D-013 |
 | **F5** | **Chunk size — what is a chunk, and why that number?** | Small chunks parallelise better and recover more cheaply but multiply lookups and metadata; large chunks mean fewer lookups but one slow peer dominates the transfer. **Pick a number now, then measure throughput at three sizes and let the plot justify it.** "512 KB because the assignment said so" and "64 KB because BitTorrent uses it" are both weak answers; a curve is a strong one. | **RESOLVED** — D-016 |
 
 | **F6** | **The `update_seeder` desync — what should a peer do after it finishes downloading?** The client announces "I can seed this now" and never reads the reply; the tracker does not implement the command. Every reply after the first download is one behind. | This is not a typo, it is a missing piece of the protocol. Whatever is chosen sets the rule for **every** fire-and-forget message in the system — and the same shape recurs in D2's heartbeat. Deciding it once, deliberately, settles both. | **RESOLVED** — D-007 |
-| **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6 and stopped for (R6). | **RESOLVED** — D-008 |
-| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns in Block 2, where Raft replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
+| **F6a** | **The heartbeat thread sends on the main loop's socket and ignores the reply**, so fixing F6 alone would re-create the desync every 30 seconds. | Sub-fork surfaced mid-implementation of F6, and decided on its own rather than in passing. | **RESOLVED** — D-008 |
+| **F8** | **How does the tracker recover its state?** Replay re-ran every logged command through the live handler, which rejected all of them (defect R1). Options: a replay flag that makes the guards skip themselves; splitting admission from effect so recovery cannot reach a guard; or logging the effect rather than the request (event sourcing). | Sets whether the *class* of bug is avoided by remembering something or made impossible by structure — and the same question returns with a Raft-replicated tracker, which replicates log entries that other nodes must apply with no client attached. | **RESOLVED** — D-009 |
 | **F9** | **How many lines is a reply?** Five tracker replies contain an embedded newline, so one command produces two lines and every later reply on that connection is one behind (defect R6). Options: fix the five strings; make the framing layer enforce the invariant; or length-prefix replies so the delimiter stops mattering. | Settles whether the rule lives in the framing layer or in every author's memory — and the same question returns on every new control message Chord adds. | **RESOLVED** — D-010 |
 | **F10** | **What happens when the peer is gone?** Neither binary ignored `SIGPIPE`, so a `send` to a departed peer killed the process outright (defect R9). Options: ignore the signal process-wide; pass `MSG_NOSIGNAL` at every call site; or both. | Decides whether a remote party's ordinary behaviour can end this program — and the same question returns for every socket Chord adds. | **RESOLVED** — D-011 |
 | **F7** | **What is on disk after a failed transfer?** Before Phase 5: a full-size, zero-filled file, indistinguishable from a real one by size. A temporary part file renamed into place; writing to the final name and deleting on failure; or holding the file in memory. | Sets whether the system is safe to use without reading its output carefully, and whether resumable downloads are possible later. | **RESOLVED** — D-055 |
 | **F11** | **Is a ring member its own process, or is a participant one process?** A standalone `node` daemon with `client` as the originator outside the ring, or the existing `client` peer-server thread grown into the ring node. | Sets per-node resident set size, and therefore the **maximum ring size** that fits in 3.4 GiB — which is the x-axis of the Phase 2 hop-count plot. Also decides whether Phase 2 edits a working 1013-line transfer path. | **RESOLVED** — D-018 |
 | **F12** | **How wide is the identifier space?** Full 160-bit SHA-1 with hand-written modular arithmetic, a 64-bit truncation using the machine word's own wrap-around, or 128 bits via a compiler extension. | Sets every data structure and every line of arithmetic in Phase 2 — and decides whether the code underneath the hop-count measurement is hand-written or free. | **RESOLVED** — D-019 |
 | **F14** | **The node's wire protocol.** Where the framing code comes from, what a lookup carries, and whether a node may claim ownership from its predecessor. | Decides whether invariant-enforcing code exists once or three times, whether Phase 3 needs a second message type, and whether a second pointer becomes correctness-critical. | **RESOLVED** — D-021 |
-| **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and defend it in Chord's sense. | Decides whether the first word of the resume survives questioning, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
-| **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector in Block 2, cut before Raft |
+| **F17** | **What is this system, in one line?** Phase 1's decisions turned a BitTorrent-style swarm into distributed storage. Options: say so; make "peer-to-peer" true again; or keep the wording and justify it in Chord's sense. | Decides whether the one-line description is accurate, and exposed a real alternative never weighed in Phase 1: trackerless BitTorrent. | **RESOLVED** — D-022 |
+| **F18** | **Is deletion in scope, and when?** Unnaming a file, reclaiming unreferenced chunks, both, or neither. | Deduplication means deleting a file's chunks can destroy another file, and with no access control a delete command is a vandalism tool — so the obvious implementation is wrong twice. | **RESOLVED** — D-023: not in the MVP; owner-token unnaming plus a mark-and-sweep collector designed, not built |
 | **F15** | **How is a node-identifier collision detected and recovered from?** Detect at join by asking `find_successor(my_id)` and comparing addresses, then re-hash with a salt; or detect at ring construction only; or rely on the birthday bound alone, as the Chord paper does. | Salting trades away the property that an identifier is a function of its address. | **RESOLVED** — D-028: refused at join, and never adopted |
 | **F13** | **What does a node know when it starts, on a fixed ring with no joins?** Full membership as a construction input; successor only, with tables built by real lookups; or the harness computing every table offline. | Decides whether the hop-count plot measures routing alone or routing tangled with bootstrap — and whether total routing state is O(N log N) or O(N²), which bounds the ring size the plot can reach. | **RESOLVED** — D-020 |
-| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication (R6). | **RESOLVED** — D-027 |
+| **F16** | **How far does the hop-count curve go?** Real processes only, capped by RAM; or real processes extended by an in-process simulation over the same pure functions, plotted together so they can be shown to agree where they overlap. | Hop count is a deterministic function of the routing tables, so a simulation can reach N = 10⁶. Logged rather than decided by implication. | **RESOLVED** — D-027 |
 | **F19** | **The lookup originator.** (a) Where the loop lives; (b) connection handling across hops; (c) timeouts; (d) bounding a lookup that does not terminate; (e) what counts as a hop. | (a) decides whether the hostile cases can be tested without sockets; (b) decides how many failure signals one dead node produces; (e) shifts every point on the hop-count plot by one. | **RESOLVED** — D-024; part e in D-026 |
-| **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building step 2.3: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
+| **F20** | **Are the originator's socket timeouts set before or after `connect`?** Surfaced while building the lookup tool: D-024 fixed the values but not the order. | On Linux a blocking `connect` honours `SO_SNDTIMEO`, so the order decides whether a host that never answers the handshake costs 5 s or about 127 s. | **RESOLVED** — D-025 |
 | **F21** | **How does a node start and join?** Joins only; joins plus the Phase 2 fixed ring kept as a mode; and whether a joining node listens before or after it has a successor. | Decides whether the reconvergence benchmark starts from a known state, whether the Phase 2 suites survive, and what a node restarted at its old address answers. | **RESOLVED** — D-029 |
 | **F22** | **How is a node's routing state protected now that a background thread writes it?** One mutex; a reader-writer lock; or copy-on-write snapshots. | Phase 2 needed no lock because all writes preceded the first reader. Copying a string while it is assigned is undefined behaviour, so this is correctness, not tuning. | **RESOLVED** — D-030 |
 | **F23** | **Which messages does stabilisation add, and what do they carry?** The paper's separate predecessor and successor-list queries, or one combined query; identifiers carried or recomputed; how a client's failure report reaches a node; how a harness reads fingers. | Sets round trips per period, whether a client can evict a node, and whether finger convergence can be observed at all. | **RESOLVED** — D-031 |
@@ -235,69 +234,68 @@ decided before the paper is one that cannot be defended in December.
 ## Decision log
 
 The heart of this file. One entry per resolved fork. Every entry names the rejected alternative
-and its cost — an entry without one is not finished, because "what else did you consider?" is
-the follow-up to every design answer.
+and its cost — an entry without one is not finished, because a decision is only understood once
+the alternatives and their costs are.
 
 ### D-001 — Repository named `chord-dht-filesystem`
 **Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** pending rename
 
-**The fork:** the repository was called `os-assignment3`, which on a resume reads as coursework
-and invites "so this was a class project?" as the opening question of the round.
+**The fork:** the repository was called `os-assignment3`, a name that describes the course it came
+from rather than the system it was becoming.
 
 **Options considered:**
 
 | Option | What it means in practice | Cost |
 |---|---|---|
-| `chord-dht-filesystem` | Names the algorithm up front | Invites "why Chord and not Kademlia?" — but that is a prepared question, so the cost is negative |
+| `chord-dht-filesystem` | Names the algorithm up front | Invites "why Chord and not Kademlia?" — a comparison the design is ready to make |
 | `distributed-p2p-filestore` | Names the domain, not the algorithm | Safer if the design drifts from strict Chord, but does not signal that a *named protocol* was implemented |
-| `chord-raft-filesystem` | Names both planes | Strongest signal — but **promises Raft, which is item 1 in the cut order.** If Raft is cut the name writes a cheque the repository does not cash |
-| `ringfs` | Short, product-like | Loses the free keyword match on "Chord" and "DHT" |
+| `chord-raft-filesystem` | Names both planes | Most descriptive of the plan — but **promises Raft, the component most likely to be deferred.** If Raft is not built the name claims something the repository does not contain |
+| `ringfs` | Short, product-like | Says nothing about the algorithm; "Chord" and "DHT" are what someone searching for this would type |
 
 **Chosen:** `chord-dht-filesystem`
 
-**Reasoning:** it states the scope in three words and commits only to what the MVP guarantees
-by 28 Sep. The Kademlia comparison it invites is one to *want* — it is a question with a
-prepared answer about XOR metric versus successor-ring topology.
+**Reasoning:** it states the scope in three words and commits only to what the minimum viable
+product guarantees. The Kademlia comparison it invites is a useful one — XOR metric versus
+successor-ring topology.
 
-**Rejected because:** `chord-raft-filesystem` names a component that the pre-agreed cut order
-sacrifices first. A repository name is not the place to promise the most cuttable feature.
+**Rejected because:** `chord-raft-filesystem` names a component that might not be built. A
+repository name is not the place to promise the most deferrable feature.
 
-**What would change my mind:** if Raft ships and is solid by mid-October, renaming is one
-command and the history survives.
+**What would change my mind:** if Raft ships and is solid, renaming is one command and the
+history survives.
 
 **Evidence:** none — naming, decided on reasoning.
-**Defence entry:** `DEFENCE.md` D-001
 
 ---
 
 ### D-002 — Phase 0 is a minimum viable resurrection, not a full repair
 **Date:** 23 Aug 2026 · **Phase:** 0 · **Commit:** `e5a52fb`
 
-**The fork:** the inherited system has at least fifteen identified defects (`PROGRESS.md`
-§ Audit). How many get fixed before Chord work starts?
+**The fork:** the inherited system has at least fifteen identified defects (the audit of
+23 Aug 2026; the ones reproduced are in `docs/failures.md`). How many get fixed before Chord work
+starts?
 
 **Options considered:**
 
 | Option | What it means in practice | Cost |
 |---|---|---|
 | Minimum viable resurrection | Fix the build (B1, B2), fix state replay (R1), fix the download path (R2). Stop when one file transfers end-to-end and verifies. | ~6–8 h. Leaves D1–D8 open — but most are in code the Chord rewrite deletes anyway |
-| Full repair | Also restore multi-tracker sync, fix the desync properly, close the traversal hole, make downloads non-blocking | ~14–16 h. **Eats W1 and most of W2 and pushes Chord routing past the point where W5 is reachable** |
-| Build-only, then straight to Chord | Fix compilation, write the postmortem, move on | ~2–3 h. But with no working download there is **no baseline throughput number**, and R13 says a before number is not optional |
+| Full repair | Also restore multi-tracker sync, fix the desync properly, close the traversal hole, make downloads non-blocking | ~14–16 h. **Roughly doubles the time before Chord routing work can start** |
+| Build-only, then straight to Chord | Fix compilation, write the postmortem, move on | ~2–3 h. But with no working download there is **no baseline throughput number**, and every later improvement needs a before number to be measured against |
 
 **Chosen:** minimum viable resurrection.
 
-**Reasoning:** the point of Phase 0 is not a good legacy system — it is (a) a debugging story
-that actually happened and (b) a **before** number that every later benchmark is measured
-against. Both need the download path working. Neither needs multi-tracker sync.
+**Reasoning:** the point of Phase 0 is not a good legacy system — it is (a) a working,
+debugged path whose failures are understood and (b) a **before** number that every later
+benchmark is measured against. Both need the download path working. Neither needs multi-tracker sync.
 
 **Rejected because:** full repair spends 8 extra hours hardening code that Phase 5 rewrites.
 Build-only saves 4 hours and forfeits the baseline, which is the more expensive loss.
 
 **What would change my mind:** if isolating R2 turns out to need the desync fixed first, D2
-gets promoted into Phase 0 and the extra hours come out of the 13 h of Block 1 slack.
+gets promoted into Phase 0.
 
-**Evidence:** `BENCHMARKS.md` §1 — pending, that is the deliverable of this decision.
-**Defence entry:** `DEFENCE.md` D-002
+**Evidence:** `BENCHMARKS.md` §1 (measured 9 Sep 2026 at `e381179`), the deliverable of this decision.
 
 ---
 
@@ -318,18 +316,16 @@ and `peer_reconnect_thread`.
 
 **Chosen:** commit as-is, tagged `pre-resurrection`.
 
-**Reasoning:** history is evidence (R18). An ugly-but-true commit is worth more than a tidy
-invented one, and the regression is itself part of the debugging story — "I found my own
-working tree had silently dropped three handlers" is a real answer about why uncommitted work
-is a liability.
+**Reasoning:** history is evidence. An ugly-but-true commit is worth more than a tidy invented
+one, and the regression is itself part of the record — a working tree that had silently dropped
+three handlers is a concrete example of why uncommitted work is a liability.
 
-**Rejected because:** reconstructing would have made the diff look deliberate when it was not.
-Under questioning that is a story that has to be maintained.
+**Rejected because:** reconstructing would have made the diff look deliberate when it was not,
+and the history would then record something that did not happen.
 
 **What would change my mind:** nothing. This is settled.
 
 **Evidence:** none — process decision.
-**Defence entry:** `DEFENCE.md` D-003
 
 ---
 
@@ -344,27 +340,26 @@ requests and an approval workflow. Does that survive the pivot to Chord?
 | Option | What it means in practice | Cost |
 |---|---|---|
 | Drop groups and auth | The ring stores content-addressed chunks; the tracker owns the manifest | Deletes working code — but it stays in git history, so nothing is actually lost |
-| Keep both, Chord underneath | Preserves working code, the pivot looks continuous | **Every** new subsystem — replication, stabilisation, read repair, anti-entropy — must respect group membership. Four subsystems taxed by a concern no interviewer credits |
-| Keep auth, drop groups | Auth is cheap and answers "how do you stop anyone joining the ring?" | One extra concept to defend that the Chord literature has no opinion about |
+| Keep both, Chord underneath | Preserves working code, the pivot looks continuous | **Every** new subsystem — replication, stabilisation, read repair, anti-entropy — must respect group membership. Four subsystems taxed by a concern outside the system's purpose |
+| Keep auth, drop groups | Auth is cheap and answers "how do you stop anyone joining the ring?" | One extra concept to maintain that the Chord literature has no opinion about |
 
 **Chosen:** drop both.
 
 **Reasoning:** they were a coursework requirement, not a distributed-systems one. Removing them
-makes every paper and interview question about DHTs map straight onto the code, and shrinks the
-surface that has to be defended for an hour.
+makes the DHT literature map straight onto the code, and shrinks the surface that has to be
+kept correct.
 
 **Rejected because:** keeping them costs hours in four separate subsystems for a feature that
-earns no credit in a systems round.
+does not bear on routing, replication or failure handling.
 
 **⚠ Sequencing constraint:** **this removal happens after the Phase 0 baseline is recorded, not
 before.** The download path runs through `upload_file`, which checks group membership; deleting
 that code first would destroy the "before" number that D-002 exists to produce.
 
-**What would change my mind:** if an interviewer's stated focus were access control rather than
-distributed systems — which, given the target companies, it is not.
+**What would change my mind:** if the system's purpose became access control rather than
+distributed storage.
 
 **Evidence:** none — scoping decision.
-**Defence entry:** `DEFENCE.md` D-004
 
 ---
 
@@ -477,12 +472,11 @@ rule then, when it is true. A dependency added early "because we'll need it" is 
 nobody can later explain.
 
 **Rejected because:** the global-`CXXFLAGS` version is indistinguishable from not having
-thought about it, and "why does your tracker link OpenSSL?" is a question with no good answer.
+thought about it, and a tracker that links OpenSSL without using it has no reason to.
 
 **What would change my mind:** the moment `tracker.cpp` hashes anything, which is Phase 2.
 
 **Evidence:** `docs/failures.md` B1, B2. `make clean && make` builds both binaries with zero warnings.
-**Defence entry:** `DEFENCE.md` D-005
 
 ---
 
@@ -512,8 +506,7 @@ paragraph cannot tell you when the bug comes back.
 **What would change my mind:** if the repository ever gets continuous integration that gates
 merges, this moves behind an explicit `expected-failure` marker rather than a plain red.
 
-**Evidence:** `docs/failures.md` R3, R4. `PROGRESS.md` error log E3.
-**Defence entry:** `DEFENCE.md` D-006
+**Evidence:** `docs/failures.md` R3, R4.
 
 ---
 
@@ -549,7 +542,6 @@ earn its complexity.
 **Evidence:** `scripts/e2e-edge.sh` — 6/7 cases pass, up from 1/7; the one-row size shift that
 was R3's signature is gone. Seeder set verified to grow: `alice@...:6881` before bob's
 download, `bob@...:6882 alice@...:6881` after.
-**Defence entry:** `DEFENCE.md` D-007
 
 ---
 
@@ -557,7 +549,7 @@ download, `bob@...:6882 alice@...:6881` after.
 **Date:** 2 Sep 2026 · **Phase:** 0 · **Fork:** F6a
 
 **The fork:** surfaced while implementing D-007 and stopped for, rather than decided in
-passing (R6). The heartbeat thread wrote `update_seeder` down the **main loop's** socket and
+passing. The heartbeat thread wrote `update_seeder` down the **main loop's** socket and
 ignored the reply (defect D2). Fixing F6 without touching it would have re-created the desync
 on a 30-second timer.
 
@@ -586,10 +578,10 @@ discipline.
 
 **Rejected because:** widening the lock makes the bug unreachable while leaving the bad shape
 in place, and it is the fix that looks correct in review while still being one careless commit
-away from breaking. Deleting the heartbeat is defensible today but throws away the mechanism
+away from breaking. Deleting the heartbeat is reasonable today but throws away the mechanism
 F4 needs.
 
-**Implementation notes worth defending:**
+**Implementation notes:**
 
 - The announcer **reads and discards the tracker's `TRACKERS` greeting** on connect. Leaving it
   would put the new connection one reply behind from its first request — the same bug, on the
@@ -607,8 +599,8 @@ F4 needs.
 connection drops; the peer then stops being re-advertised. Acceptable while nothing expires
 seeders — it becomes real work the moment F4 lands.
 
-**Evidence:** `BENCHMARKS.md` — pending. Verified functionally three consecutive runs.
-**Defence entry:** `DEFENCE.md` D-007, D-009
+**Evidence:** no benchmark; verified functionally on three consecutive runs. (The coursework
+transfer path this applied to was retired in Phase 5, D-060.)
 
 ---
 
@@ -651,7 +643,7 @@ that produced R1.
 would record `GROUP_CREATED g1 alice` instead of the client's `create_group g1 alice`, and
 recovery would apply effects that have no notion of a requester at all. **This is the better
 system and it is worth saying so.** It costs ~3 hours and a new on-disk format, spent on a
-control plane that Block 2 replaces with a Raft-replicated tracker — and Raft brings the same
+control plane that a Raft-replicated tracker would replace — and Raft brings the same
 structure back for a stronger reason, because a follower applies log entries with no client
 attached at all.
 
@@ -695,9 +687,10 @@ everyone remembering, rather than made unreachable.
 **Rejected: option C, length-prefixed replies** (`LEN <n>\n` then exactly n bytes). This is the
 better protocol and the one the data path already uses for pieces, because it makes the
 delimiter irrelevant rather than forbidden. It costs a change to every send and every receive
-on both sides, in a week that belongs to Chord, and buys nothing until replies start carrying
-arbitrary payloads. **Chosen for Phase 5, where the transfer layer is rewritten anyway** — and
-recorded here so that "why not length-prefix everything?" has an answer with a date on it.
+on both sides, at a time when the Chord work came first, and buys nothing until replies start
+carrying arbitrary payloads. **Planned for Phase 5, where the transfer layer is rewritten anyway**
+— and recorded here so that "why not length-prefix everything?" has an answer with a date on it.
+(In Phase 5 it was withdrawn instead: no tracker reply carries a payload any more — D-060.)
 
 **Deliberately not applied to the client.** `client.cpp`'s `send_all` is the raw-byte sender
 that carries piece contents, which contain newline bytes constantly. Stripping delimiters there
@@ -763,7 +756,7 @@ build with the fix commented out, the same suite fails both, reporting exit 141 
 
 ### D-012 — Lookups are iterative: the originator drives every hop
 
-**Fork:** F1. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2), all Chord routing code.
+**Fork:** F1. **Date:** 12 Sep 2026. **Gates:** Phase 2, all Chord routing code.
 
 **The decision.** `find_successor` is a **single-step** remote call. A node answers either "I am
 the owner" or "here is a node closer than me", and returns immediately. The **originator** runs
@@ -776,9 +769,8 @@ request/response exchanges initiated by the client, not one call that fans out t
    deliverable is *hop count versus ring size, plotted against log₂N*. Under iterative routing
    the client counts its own loop iterations — the measurement instrument sits **outside** the
    thing being measured. Under recursive routing the ring reports its own hop count in a field
-   threaded through the messages, and the plot shows what the system says about itself. "How do
-   you know that number is real?" has a good answer in the first case and a bad one in the
-   second.
+   threaded through the messages, and the plot shows what the system says about itself. Whether
+   the number can be trusted has a good answer in the first case and a weak one in the second.
 2. **Phase 3 is entirely about killing nodes.** Iterative gives exact failure attribution: a node
    times out and the originator knows precisely which one, and can retry immediately with the
    next finger it already holds. Recursive gives a timeout with no attribution — the worst
@@ -823,15 +815,15 @@ the originator cannot reach hop 2. Noting that this scenario breaks the **data p
 than the control plane — unreachable peers cannot accept transfers either — so it would need
 STUN/TURN and hole punching regardless, and is not a routing decision.
 
-**Evidence:** none yet — decided at design time (R11), before any Chord code exists. The hop
-count plot in Phase 2 is the first evidence and is the reason for the choice.
-**Defence entry:** `DEFENCE.md` D-012
+**Evidence:** decided at design time, before any Chord code existed. The hop-count plot
+(`BENCHMARKS.md` §2, `e042857`) is the evidence and the reason for the choice: 380,928 lookups
+counted by the originator itself.
 
 ---
 
 ### D-013 — Failure detection is opportunistic, and a refused connection is not a timeout
 
-**Fork:** F4. **Date:** 12 Sep 2026. **Gates:** Phase 3 (W3), the reconvergence benchmark.
+**Fork:** F4. **Date:** 12 Sep 2026. **Gates:** Phase 3, the reconvergence benchmark.
 
 **The decision.** Two parts.
 
@@ -863,7 +855,7 @@ constant heartbeats buys speed during the periods when nobody would have noticed
 `k` misses). It buys detection time `k × H`, decoupled from the stabilisation period. Rejected on
 four costs: permanent background traffic of `N/H` messages per second whether or not anything is
 wrong; **two more tuning constants that both need justifying**, and "3 misses at 1 second" is a
-weak answer in a room; **designed-in false positives** — a slow node is evicted while still alive
+precedent rather than a reason; **designed-in false positives** — a slow node is evicted while still alive
 and still serving, and since it is never told, there is a window where two nodes believe they own
 the same range; and, decisively, **this machine would manufacture those false positives**, because
 every peer in a test ring shares the same 8 cores and 3.4 GiB, so at any interesting ring size
@@ -880,15 +872,15 @@ of reply latencies and emit a continuous suspicion level rather than a binary ve
 the threshold adapt as the network slows). It is the better detector on a real network, and it is
 rejected only because of where this is measured: **loopback has essentially no jitter**, so
 phi-accrual degenerates to a fixed timeout wrapped in statistics. Significant work for no
-improvement in the only environment that produces numbers. **Kept as the answer to "what would
-you do differently on a real network?"** — the honest weakness of a fixed timeout is that it
-assumes a stationary latency distribution, and a wide-area network does not have one.
+improvement in the only environment that produces numbers. **It is what a real-network
+deployment should use** — the weakness of a fixed timeout is that it assumes a stationary
+latency distribution, and a wide-area network does not have one.
 
 **Cost accepted.** Two.
 
 1. **Detection time becomes a distribution rather than a constant**, because it depends on
    workload. Reconvergence under load and reconvergence when idle are two different measured
-   numbers. That is less convenient for a resume line and more honest; both get published, with
+   numbers. That is less convenient than one figure and more accurate; both get published, with
    the explanation of why they differ.
 2. **Every call site touching the successor must report its failures**, which is the
    "must-remember-at-every-call-site" shape rejected in D-009, D-010 and D-011. **Mitigated the
@@ -899,8 +891,8 @@ assumes a stationary latency distribution, and a wide-area network does not have
 **Two sub-decisions that come with it.**
 
 - **`T`, the stabilisation period, is a measured number, not a guess.** It does double duty: it
-  bounds worst-case detection *and* sets the repair rate at one node per round (see the C8
-  derivation in `PROGRESS.md`), so it appears twice in the reconvergence figure. Phase 3 plots
+  bounds worst-case detection *and* sets the repair rate at one node per round, so it appears
+  twice in the reconvergence figure. Phase 3 plots
   reconvergence against `T` and the value is picked off the curve — the same discipline as F5's
   chunk size.
 - **An evicted node is never told it was evicted.** If it was only slow, it re-inserts itself on
@@ -913,9 +905,9 @@ assumes a stationary latency distribution, and a wide-area network does not have
 network with genuine latency variance. Then the fixed timeout underlying the "suspect" state is
 the weak component, and phi-accrual earns its complexity.
 
-**Evidence:** none yet — decided at design time (R11). Phase 3's reconvergence-versus-`T` plot,
-taken both idle and under load, is the first evidence.
-**Defence entry:** `DEFENCE.md` D-013
+**Evidence:** decided at design time. `BENCHMARKS.md` §4 (`b171554`): one node killed in a 64-node
+ring is repaired in a median 0.63 s idle; under lookup load, finger repair falls from 3.99 s to
+0.29 s because clients report the dead node (D-036).
 
 ---
 
@@ -944,15 +936,15 @@ list of its chunk hashes — which the existing system already computes and alre
 a read set overlaps a write set **so that a read sees the latest version**. With immutable
 content-addressed values there is no latest version, so the inequality is not satisfied or
 violated — **it is inapplicable**, and `W` and `R` stop being coupled. `W` buys **durability**;
-`R` buys **availability**; they are set independently. Being able to say why the rule does not
-apply is a stronger position than applying it by reflex.
+`R` buys **availability**; they are set independently. Knowing why the rule does not apply is
+better than applying it by reflex.
 
 **Rejected: key = `(file_id, chunk_index)`.** A smaller change — the current protocol already
 requests pieces by index (`GET_PIECE <group> <file> <i>`). Rejected because the value at a key
 then **changes** when the file is overwritten, which reintroduces mutability, and with it
 conflicting replicas, versioning, clock skew, read repair and the full quorum machinery. It would
-mean *choosing to have* a consistency problem, and paying for it in a Phase 4 budget of 9 h that
-already contains virtual nodes.
+mean *choosing to have* a consistency problem, and paying for it in a phase that already
+contains virtual nodes.
 
 This is the same structural move as **D-009** (make the bug unreachable rather than avoidable),
 **D-010** (put the invariant in the framing layer rather than in every author's memory) and
@@ -961,35 +953,32 @@ project now share that reasoning, and that consistency is itself worth stating.
 
 **Cost accepted.**
 - **No in-place update.** A changed file produces new keys; the superseded chunks are garbage
-  until something collects them. No garbage collector is planned — stated as a scope boundary
-  rather than hidden.
+  until something collects them. No garbage collector is built (D-023 designs one).
 - **Placement is not influenceable.** A chunk goes where its hash sends it, by construction.
 - **The lookup path changes** from index-keyed to hash-keyed, so the legacy `GET_PIECE` protocol
   does not survive Phase 5 unchanged.
 
-**What this does to the CAP conversation — it moves it, and improves it.** The data plane no
-longer has a consistency problem to discuss. The **metadata** does: the manifest and the seeder
-list are mutable, and that is the plane Raft replicates. So the answer to "where does this sit on
-the consistency/availability trade-off" becomes *"deliberately in two different places — the data
-plane is content-addressed and immutable, so it is tuned purely for durability and availability;
-the control plane is mutable, so it gets consensus. Two planes, two answers, chosen rather than
-inherited."*
+**What this does to the consistency/availability question — it moves it.** The data plane no
+longer has a consistency problem. The **metadata** does: the name-to-manifest mapping is mutable,
+and that is the plane a Raft group would replicate. So the system sits deliberately in two
+different places: the data plane is content-addressed and immutable, so it is tuned purely for
+durability and availability; the control plane is mutable, so it is the one that needs
+consensus.
 
 **Naming note.** Standard quorum notation uses `N` for the replication factor, and this project
 already uses `N` for **ring size**. All documents use **`RF`** for replication factor and never
-`N`, because two similar-looking values meaning different things is the R10 hazard that has
-already bitten this codebase.
+`N`, because two similar-looking values meaning different things is a hazard that has
+already bitten this codebase (defect R2).
 
 **Evidence (`BENCHMARKS.md` §5, `2e7c445`):** identical content shares every chunk, an in-place edit all but
 one; an insertion near the start shares almost nothing, and so did 20 real commits of this repository (1 chunk of 97).
-**Defence entry:** `DEFENCE.md` D-014
 
 ---
 
 ### D-015 — `RF = 3`, `W = 2`, `R = 1`, and `W` is a runtime parameter
 
 **Fork:** F3. **Date:** 12 Sep 2026. **Depends on:** D-014 (content addressing).
-**Gates:** Phase 4 (W4).
+**Gates:** Phase 4.
 
 **The decision.** Three copies of every chunk — the owner plus its first two successors, which
 D-014 and the successor list make the same set. A write is acknowledged when **the owner and at
@@ -1026,37 +1015,35 @@ failure by making writes fail during every *first* one.
 **Cost accepted.**
 - **The advertised `RF = 3` is briefly untrue on every write**, not only after a failure: between
   acknowledgement and background propagation there are two copies, so the system tolerates one
-  further failure rather than two. This is the C9 degraded-window property, and the response is
-  to **measure the window** rather than assume it away.
+  further failure rather than two. This is the degraded window, and the response is to
+  **measure it** rather than assume it away.
 - **If both successors are unreachable, `W = 2` is unsatisfiable and the write fails loudly.**
   That is the availability cost and it is the correct behaviour, since the alternative is `W = 1`
   lying about it.
 
 **Why `W` is configurable — this is half the decision.** Making `W` a parameter costs a variable
 instead of a literal and converts the fork into a measurement: sweep `W ∈ {1, 2, 3}` and plot
-**write latency** and **write success rate while a node is being killed**. That plot closes the
-`WEAK` entry standing in `DEFENCE.md` since before the portfolio work began — *"where does this
-sit on the consistency/availability trade-off, and how would you flip it?"*, marked
-`WEAK — blocked on F3`. With a configurable `W` the answer stops being an opinion: **here, this
-is the knob, and this is the measured cost of each setting.**
+**write latency** and **write success rate while a node is being killed**. That plot answers
+*"where does this sit on the consistency/availability trade-off, and how would you move it?"*
+with a measurement instead of an opinion: **here is the knob, and here is the measured cost of
+each setting.**
 
 **Named but not built: hinted handoff** (Dynamo's technique — if a successor is down, write the
 copy to the next node along with a note saying who it really belongs to, and forward it when that
-node returns). It raises write availability without lowering `W`. It is the answer to "what would
-you do if `W = 2` writes were failing too often?", and it is deliberately out of a 9 h Phase 4
-that already contains virtual nodes.
+node returns). It raises write availability without lowering `W`. It is the next step if
+`W = 2` writes were failing too often, and it was deliberately kept out of a phase that already
+contains virtual nodes.
 
 **Evidence:** `BENCHMARKS.md` §6 (`7d99fc0`): with one replica dead W = 2 acknowledged 300/300 writes and W = 3
 244/300; W = 1 answers in 14 ms against 31 ms, and its acknowledged chunk is on one disk for a median 18 ms (the
 degraded window); killing the coordinator at the acknowledgement left no other copy in 20 of 20 W = 1 trials and at
 least two in every W = 2 and W = 3 trial. W = 2 and W = 3 cost the same with healthy replicas on loopback.
-**Defence entry:** `DEFENCE.md` D-015
 
 ---
 
 ### D-016 — 512 KB chunks, held constant for the headline claim and swept separately
 
-**Fork:** F5. **Date:** 12 Sep 2026. **Gates:** Phase 5 (W5).
+**Fork:** F5. **Date:** 12 Sep 2026. **Gates:** Phase 5.
 
 **The decision.** Chunks are **512 KB** — the size the existing code already uses. Phase 5 sweeps
 `{64 KB, 256 KB, 512 KB, 2 MB, 8 MB}` as a **separate experiment**, with parallelism held
@@ -1066,7 +1053,7 @@ constant, and the curve is published whatever it shows.
 **71.2 MB/s at 100 MB, commit `e381179`** — was measured at 512 KB. Phase 5's headline claim is
 parallel transfer against that baseline. **If Phase 5 changed chunk size *and* added parallelism,
 the improvement could not be attributed to either.** Two variables moved, and the resulting number
-is indefensible. So chunk size is pinned at 512 KB for the before/after, and swept afterwards with
+would explain nothing. So chunk size is pinned at 512 KB for the before/after, and swept afterwards with
 parallelism fixed. One controlled variable per claim.
 
 **Five sweep points, not three**, roughly log-spaced, because three points cannot distinguish a
@@ -1104,21 +1091,21 @@ barely matters on loopback, here is why, and here is what would change on a real
 honest result, and reporting a flat curve as flat is worth more than tuning until something looks
 interesting.
 
-**Touches an open defect.** R4, the zero-byte file, is still the one deliberate failure in
-`scripts/e2e-edge.sh`. A 0-byte file is 0 chunks, and under D-014 the empty chunk has a perfectly
-well-defined hash. F5 and R4 meet in Phase 5, where the transfer layer is rewritten anyway.
+**Touches an open defect (at the time).** R4, the zero-byte file, was the one deliberate failure
+in `scripts/e2e-edge.sh`. A 0-byte file is 0 chunks, and under D-014 the empty chunk has a
+perfectly well-defined hash. F5 and R4 met in Phase 5, where the transfer layer was rewritten and
+R4 was fixed (D-054).
 
 **Evidence (`BENCHMARKS.md` §5, `2e7c445`):** at 512 KiB the new path is 5.4× the baseline re-run the same
 day, 3.7× from parallelism alone. The sweep is **not** flat, against the prediction above: 100 MB/s at 64 KiB to
 536 MB/s at 8 MiB, because each chunk pays a lookup and fresh connections whatever its size. 512 KiB stays, for the
 reasons in §5: the comparison is pinned to it, and the costs of large chunks are the ones loopback cannot show.
-**Defence entry:** `DEFENCE.md` D-016
 
 ---
 
 ### D-017 — The tracker is a mutable namespace over an immutable store
 
-**Fork:** F2. **Date:** 12 Sep 2026. **Depends on:** D-014. **Gates:** Block 2, and the Raft work.
+**Fork:** F2. **Date:** 12 Sep 2026. **Depends on:** D-014. **Gates:** the tracker, and any Raft work.
 
 **The decision.** The tracker holds exactly one thing: **`filename → manifest hash`**, about
 40 bytes per file. The **manifest itself is a content-addressed object stored in the ring**, like
@@ -1135,7 +1122,7 @@ ring:     each chunk hash →  the chunk           (concurrent lookups)
 
 **Why.** It makes the **mutable surface of the whole system as small as it can possibly be** — a
 filename and a hash. The mutable surface is precisely what needs consensus, what can be
-inconsistent, and what Block 2's Raft work has to replicate. Everything beneath it is immutable
+inconsistent, and what a Raft-replicated tracker has to replicate. Everything beneath it is immutable
 and therefore conflict-free.
 
 **This is Git's data model**, and the parallel is exact and worth stating: content-addressed
@@ -1143,9 +1130,9 @@ immutable objects (blobs, trees) with a small mutable namespace layered on top (
 names). Only the namespace needs consensus.
 
 **What it buys.**
-- **Tracker state is `O(files) × 40 bytes`**, not `O(total chunks)`. The Raft log stays small,
-  which is exactly what the original fork text predicted manifest-only would buy — and given the
-  1 Nov Raft trip-wire, a small log materially improves the odds Raft survives at all.
+- **Tracker state is `O(files) × 40 bytes`**, not `O(total chunks)`. A future Raft log stays
+  small, which is exactly what the original fork text predicted manifest-only would buy, and a
+  small log makes replicating the tracker much cheaper.
 - **It removes `SCALE_NOTES.md` bottleneck #2 structurally rather than mitigating it.** That entry
   reads *"tracker builds a multi-MB string under `state_mtx`; response may exceed what the
   client's line reader tolerates."* Under D-017 no multi-MB string is ever built, anywhere.
@@ -1172,21 +1159,20 @@ payload-sized responses.
   should not assume a fixed size.
 - **The tracker becomes required for discovery.** A manifest hash means nothing to a human, so
   there is no browsing the system without the namespace. The trade is deliberate: that is the
-  component being made highly available with consensus.
+  component to make highly available with consensus.
 
-**The answer this produces to "what is the tracker for?"** — *"It is a mutable namespace over an
+**In one line, what the tracker is for:** *"It is a mutable namespace over an
 immutable store. Human names change; content does not. The only thing that needs consensus is the
 mapping between them."*
 
 **Evidence (`BENCHMARKS.md` §5, `2e7c445`):** 77 bytes of log and about 230 bytes of memory per name at 10,000
 and 100,000 names, independent of file size — the `O(files)` claim, measured.
-**Defence entry:** `DEFENCE.md` D-017
 
 ---
 
 ### D-018 — A ring member is its own process, and the routing primitives are pure functions
 
-**Fork:** F11. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2) and every file added from here on.
+**Fork:** F11. **Date:** 12 Sep 2026. **Gates:** Phase 2 and every file added from here on.
 
 **The decision, in two parts.**
 
@@ -1219,10 +1205,10 @@ and 100,000 names, independent of file size — the `O(files)` claim, measured.
   header declaring "a node has an identifier and a finger table" is a promise Phase 4 breaks.
   A class with a published interface would have to be rewritten; free functions just get called
   with different arguments.
-- **It gives step 2.4 an in-process test for the wrap-around interval test** — the single piece of
+- **It gives the routing phase an in-process test for the wrap-around interval test** — the single piece of
   Phase 2 most likely to be silently wrong, and precisely the class of structural bug that only
   *constructed* data finds, never sampled or random data.
-- **D-012 is what makes this cheap, and that is the part worth saying aloud.** Under iterative
+- **D-012 is what makes this cheap.** Under iterative
   routing the node-side answer is pure local computation — "I own it, or here is someone closer" —
   so the tested functions never touch a socket and need no fake network. Under recursive routing
   `find_successor` would call the next node, and testing it in-process would have required an
@@ -1237,11 +1223,11 @@ point; and the risk of breaking a working transfer path while building routing.
 
 **Rejected: everything in one `node.cpp`.** Commits to no interface at all, which is a genuine
 advantage, and extracting a seam later is cheap in a single-consumer repository. Rejected only
-because step 2.4 wants the in-process test *anyway*, and the narrowed split — pure functions, no
+because the routing tests want the in-process seam *anyway*, and the narrowed split — pure functions, no
 type — costs about twenty minutes of `Makefile` work and carries none of the design commitment
 that a class would.
 
-**A correction worth recording, because it is the kind that gets caught in a room.** These two
+**A correction worth recording.** These two
 were first posed as three peer options: separate binary, extend `client`, and "a Chord library".
 The first and third are **not rival architectures** — they produce the same binary, the same
 process model and the same numbers, and differ only in which file the code sits in. The genuine
@@ -1253,7 +1239,7 @@ consumer exists, which is a different thing from splitting a file.
 **Cost accepted, stated up front.**
 
 - **A participant runs two processes**, so there is no single "join the network" command. The
-  deployment kit and any `docker compose` file must start both.
+  deployment and any `docker compose` file must start both.
 - **`client`'s peer server and the node's chunk store will overlap in Phase 5**, when transfer
   moves onto the ring, and one of them has to move or die. That is a scheduled duplication, not
   an oversight — it is named here so it is not rediscovered as a surprise.
@@ -1265,15 +1251,14 @@ consumer exists, which is a different thing from splitting a file.
 be sensibly split across two processes — in which case the merge is `client` linking `chord.o`,
 which part 2 already leaves open.
 
-**Evidence:** none yet — design time (R11). Per-node RSS, and the maximum ring size derived from
-it, are the first evidence and are measured in Phase 2.
-**Defence entry:** `DEFENCE.md` D-018
+**Evidence:** `BENCHMARKS.md` §2 (`e042857`): about 0.95 MiB proportional set size per node at
+2048 nodes, which sets the real-process ceiling of the hop-count plot at 2048.
 
 ---
 
 ### D-019 — The ring is 64 bits wide; keys stay 160 bits wide
 
-**Fork:** F12. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2), every identifier-handling line in
+**Fork:** F12. **Date:** 12 Sep 2026. **Gates:** Phase 2, every identifier-handling line in
 the project.
 
 **The decision.** `m = 64`. A **routing identifier** is the top 8 bytes of a SHA-1 digest, held in
@@ -1300,8 +1285,8 @@ does not weaken verification, because verification never looks at the truncation
   therefore none to get wrong.
 - At `m = 160` the finger offset `n + 2^i mod 2^160` is a hand-written carry-propagation loop over
   a 20-byte array — about ten lines, plus the tests that prove it.
-- **The size of that code is not the argument; what a bug in it does is.** 7.3 established that
-  the finger table is *self-validating*: every entry is checked against `(my_id, k)` before use, so
+- **The size of that code is not the argument; what a bug in it does is.** The finger table is
+  *self-validating*: every entry is checked against `(my_id, k)` before use, so
   a wrong finger can only cost hops, never correctness. That is a gift everywhere else and a trap
   here. A carry bug produces wrong finger entries, routing still returns the right node, nothing
   crashes, no test fails — and **the hop count silently inflates.** Hop count is the entire output
@@ -1315,8 +1300,8 @@ does not weaken verification, because verification never looks at the truncation
   identities in a 2⁶⁴ space. A 64-bit ring is what the most widely deployed consistent-hashing
   system in production actually ships.
 
-**Rejected: option A, the full 160 bits.** What the Chord paper specifies, and unimpeachable on
-"did you use the whole hash". Rejected on the failure mode above: it puts hand-written carry
+**Rejected: option A, the full 160 bits.** What the Chord paper specifies, and it uses the whole
+hash. Rejected on the failure mode above: it puts hand-written carry
 propagation directly underneath the phase's only measurement, where a bug is invisible. The
 honest accounting of the extra work is smaller than it first appears — comparison is `memcmp`
 (byte order is numeric order, the digest being big-endian), printing already exists in `sha1.h`,
@@ -1346,20 +1331,19 @@ downgrades a collision from "one node swallows the ring" to "two nodes disagree 
 and costs nothing, because the operating system already guarantees `ip:port` uniqueness far more
 strongly than a hash does.
 
-**Cost accepted.** "You didn't use the whole hash" is a question that will be asked, and the
-identity-versus-placement answer has to be *given* rather than assumed. Detection and recovery from
+**Cost accepted.** "You didn't use the whole hash" is a natural objection, and the
+identity-versus-placement distinction has to be stated rather than assumed. Detection and recovery from
 a node-identifier collision is real work, deferred to Phase 3 as **F15** rather than settled here by
 implication.
 
-**Evidence:** none yet — design time (R11). The hop-count plot is the first evidence; a per-node
-RSS measurement in 2.5 sets the maximum ring size the plot can reach.
-**Defence entry:** `DEFENCE.md` D-019
+**Evidence:** decided at design time. The hop-count plot (`BENCHMARKS.md` §2) is the evidence; the
+per-node memory measurement there sets the maximum ring size the plot can reach.
 
 ---
 
 ### D-020 — In Phase 2 the ring is wired from a membership file that no node keeps
 
-**Fork:** F13. **Date:** 12 Sep 2026. **Gates:** Phase 2 (W2), the hop-count experiment.
+**Fork:** F13. **Date:** 12 Sep 2026. **Gates:** Phase 2, the hop-count experiment.
 
 **The decision.** Every node is launched with a file listing every `ip:port` in the ring. At
 startup it hashes them, sorts, locates itself, and computes its predecessor, successor and all 64
@@ -1385,8 +1369,8 @@ field of the node. A node's persistent state is only ever the five Chord fields.
    be scanned directly by `find_successor` to return the true owner in O(1) — correct, passing
    every test, and silently reducing the measured hop count to 1. Lifetime removes the
    possibility; discipline only forbids it. Same principle as D-009.
-4. **It answers the obvious attack factually.** *"Your nodes know the whole membership, so the hop
-   count is theatre."* → at the moment any lookup is served, the process does not hold the
+4. **It answers the obvious objection factually.** *"Your nodes know the whole membership, so the
+   hop count is theatre."* → at the moment any lookup is served, the process does not hold the
    membership. That is checkable; "we have it but we don't use it" is not.
 
 **Rejected: option B, successor only, tables built by real lookups.** No node ever holds global
@@ -1408,19 +1392,18 @@ be the thing being checked, for the same reason D-012 put the measuring instrume
 measured system.
 
 **Cost accepted.** The bootstrap path is Phase 2-only scaffolding, deleted in Phase 3 when joins
-and `fix_fingers` replace it — roughly 20 lines written to be thrown away. And the *"you know the
-whole membership"* question has to be answered rather than avoided; the answer is good, but it has
-to be given.
+and `fix_fingers` replace it — roughly 20 lines written to be thrown away. (In the event it was
+kept as the `--wired` start mode, D-029.) And the *"you know the whole membership"* objection has
+to be answered rather than avoided.
 
-**Evidence:** none yet — design time (R11). The hop-count plot is the evidence, and the real
-membership test is the harness oracle in step 2.4.
-**Defence entry:** `DEFENCE.md` D-020
+**Evidence:** the hop-count plot (`BENCHMARKS.md` §2) is the evidence, and the membership check
+is the harness oracle in `scripts/e2e-node.sh` and `scripts/bench-hops.py`.
 
 ---
 
 ### D-021 — The node's wire protocol: one framing copy, identifiers on the wire, successor-only ownership
 
-**Fork:** F14 (three parts). **Date:** 13 Sep 2026. **Gates:** step 2.1c, every Chord message.
+**Fork:** F14 (three parts). **Date:** 13 Sep 2026. **Gates:** the node's first messages, and every Chord message after them.
 
 **F14a — framing lives in a new `net.h` / `net.cpp`, used by the node only.** One tested copy
 enforcing D-010 (a reply is exactly one line) and D-011 (a departed peer is an error value, not a
@@ -1450,21 +1433,21 @@ rule.
   closest-preceding routing always stops short of the owner. The price is that the **predecessor
   becomes correctness-critical**, so a stale predecessor would confidently claim keys it does not
   own.
-- It would break the 7.1 invariant that only the successor pointer must be right, for a negligible
+- It would break the invariant that only the successor pointer must be right, for a negligible
   gain.
 
-**Evidence:** none yet — design time (R11).
-**Defence entry:** `DEFENCE.md` D-021
+**Evidence:** decided at design time. F14a's deferred migration happened in Phase 5 (D-060): every
+program now uses `net.cpp`.
 
 ---
 
 ### D-022 — The system is described as distributed storage, not peer-to-peer file sharing
 
-**Fork:** F17. **Date:** 13 Sep 2026. **Gates:** the README headline, the pitch in `CLAUDE.md`
-and `PROMPT.md`, and the resume line.
+**Fork:** F17. **Date:** 13 Sep 2026. **Gates:** the README headline and every one-line
+description of the project.
 
-**What prompted it.** Chaitanya asked what the project is turning into. The honest answer is that
-Phase 1's decisions moved it from a BitTorrent-style swarm to **distributed storage**. No single
+**What prompted it.** The question of what the project was turning into. The accurate answer is
+that Phase 1's decisions moved it from a BitTorrent-style swarm to **distributed storage**. No single
 decision did it; four did together:
 - **D-014:** a chunk's location is computed from its hash.
 - **D-015:** every chunk has exactly three copies, whatever its popularity.
@@ -1472,24 +1455,23 @@ decision did it; four did together:
 - **D-018:** downloaders sit outside the ring and serve nobody.
 
 The closest real systems are **Dynamo** for placement and **Git** for the data model. The old
-pitch opened with "peer-to-peer", which invites an interviewer who means BitTorrent to argue about
-the first word of the resume.
+description opened with "peer-to-peer", which to a reader who means BitTorrent describes a
+different system.
 
 **The decision (option A).** Describe it as what it is: fault-tolerant distributed file storage,
 with content-addressed chunks on a Chord ring and three-way replication. The BitTorrent origin
-stays in the README as history. "Is it P2P?" gets a prepared follow-up: *in Chord's sense, yes —
+stays in the README as history. "Is it P2P?" has a precise answer: *in Chord's sense, yes —
 symmetric nodes, no central index; in BitTorrent's sense, no — placement is by hash with a fixed
 replica count, and popularity-scaled capacity was traded for durability.*
 
 **Rejected: B — make "peer-to-peer" true in the BitTorrent sense.** Downloaders would run nodes and
 serve chunks they have fetched, so popular files gain sources. Content addressing makes that cache
 trivially safe. Rejected because discovering those extra holders needs a placement index — the
-thing D-017 rejected — and it is Phase 5+ work below the cut line.
+thing D-017 rejected — and it is work beyond the minimum viable product.
 
-**Rejected: C — keep the wording, defended in Chord's sense.** The Chord paper's title is literally
-*"A Scalable Peer-to-peer Lookup Service"*, so it is true. Rejected because it spends line one of
-the resume on a definitional argument, and R15 says the most conspicuous item should be the thing
-he most wants to be asked about.
+**Rejected: C — keep the wording, justified in Chord's sense.** The Chord paper's title is
+literally *"A Scalable Peer-to-peer Lookup Service"*, so it is true. Rejected because it spends the
+first line of every description on a definitional argument instead of on what the system does.
 
 **What the shift cost, stated plainly.** BitTorrent's defining property: **serving capacity that
 grows with demand.** A file downloaded a million times still has three copies.
@@ -1516,17 +1498,16 @@ passed off as deliberation.
 - *The price:* popularity no longer adds capacity, as above.
 
 **Evidence:** none — this is a positioning decision. The durability claim it rests on is measured
-in Phase 4 (reads succeeding after replica owners are killed).
-**Defence entries:** `DEFENCE.md` D-022, and the trackerless-BitTorrent entry marked `WEAK`.
+in `BENCHMARKS.md` §6 (reads succeed after replica owners are killed; three copies restored in a
+median 2.2 s). The trackerless-BitTorrent comparison remains the least examined part of it.
 
 ---
 
-### D-023 — No deletion in the MVP; owner-token unnaming and a mark-and-sweep collector in Block 2
+### D-023 — No deletion in the MVP; owner-token unnaming and a mark-and-sweep collector designed for later
 
-**Fork:** F18. **Date:** 13 Sep 2026. **Gates:** the Phase 5 scope, the Block 2 plan, and the cut
-order.
+**Fork:** F18. **Date:** 13 Sep 2026. **Gates:** the Phase 5 scope and the work after it.
 
-**What prompted it.** Chaitanya pointed out that deletion is needed for two reasons: storage would
+**What prompted it.** Deletion is needed for two reasons: storage would
 otherwise grow forever, and a user should be able to remove a file uploaded by mistake. Until now
 it had only been settled by accident. D-014 listed "superseded chunks are garbage, no collector" as
 a cost, and user-facing delete was never presented as a fork.
@@ -1545,12 +1526,12 @@ a cost, and user-facing delete was never presented as a fork.
    ownership of the name.
 
 **The decision (option A now, B and C later).**
-- **MVP, 28 Sep:** no deletion. Storage grows, and an accidental upload stays downloadable. Both
-  are stated limitations, not hidden ones.
-- **Block 2, option B — unnaming with an owner token.** At upload the tracker returns a random
+- **MVP:** no deletion. Storage grows, and an accidental upload stays downloadable. Both are
+  stated limitations, not hidden ones.
+- **Later, option B — unnaming with an owner token.** At upload the tracker returns a random
   secret, and delete requires it. This proves ownership without reintroducing user accounts.
   Deleting a name orphans its chunks rather than freeing them.
-- **Block 2, option C — a mark-and-sweep collector, in the style of `git gc`.**
+- **Later, option C — a mark-and-sweep collector, in the style of `git gc`.**
   - *Mark:* every chunk hash reachable from any live name's manifest, manifests included.
   - *Sweep:* each node deletes the chunks it holds that are not in that set.
   - *Grace period:* only chunks **older than a grace period** are deleted. An upload in flight has
@@ -1558,14 +1539,15 @@ a cost, and user-facing delete was never presented as a fork.
     deleted mid-upload. Git's prune expiry exists for exactly this race.
   - *A node that is down during a sweep* simply keeps its orphans until the next one. That is a
     leak, never data loss — the safe direction to fail in.
-- **Cut order:** B and C go in **before Raft**, so they are cut first. Raft is the stronger
-  interview item, and a collector designed but not built is defensible on paper.
+- **Order:** B and C come before Raft in the plan, and are the first work to be deferred if time
+  runs short: a collector designed but not built is still a complete design, while a replicated
+  tracker is the larger gain in fault tolerance.
 
-**Rejected: option B in the MVP.** About 2–3 h added to Phase 5, already the most loaded phase at
-12 h, while the plan runs about two weeks behind and the MVP is on the never-cut list.
+**Rejected: option B in the MVP.** About 2–3 h added to Phase 5, already the largest phase, at a
+time when the schedule was behind.
 
-**Rejected: B and C both in the MVP.** About 8–11 h. It would almost certainly displace protected
-work.
+**Rejected: B and C both in the MVP.** About 8–11 h. It would almost certainly have displaced
+the transfer path and its measurements.
 
 **Rejected outright: per-chunk reference counts.** It puts a mutable counter on every chunk,
 replicated three times, which brings back the replica-disagreement problem D-014 removed. A crash
@@ -1575,14 +1557,13 @@ use — and the second failure is data loss, the unsafe direction.
 **Evidence:** none — design time. If built, the numbers owed are storage reclaimed per sweep, sweep
 duration against total chunk count, and a test proving a chunk shared by two files survives
 deleting one of them.
-**Defence entry:** `DEFENCE.md` D-023
 
 ---
 
 ### D-024 — The lookup originator: a transport-agnostic module, and a fresh connection per hop
 
-**Fork:** F19, parts a–e. **Date:** 13 Sep 2026. **Gates:** step 2.3, the Phase 2 benchmark
-harness, and Phase 5's client. Part c is refined by D-025 (the timeouts are set before `connect`),
+**Fork:** F19, parts a–e. **Date:** 13 Sep 2026. **Gates:** the `lookup` tool, the Phase 2
+benchmark harness, and Phase 5's client. Part c is refined by D-025 (the timeouts are set before `connect`),
 and the count left open in part e is fixed by D-026.
 
 **F19a — the loop is a module, `lookup.h` / `lookup.cpp`, with the request/reply exchange passed
@@ -1641,8 +1622,8 @@ connect deadline is scheduled into Phase 3.**
   value is measured and where killed nodes make it testable.
 - *Rejected — no timeout:* a stuck node hangs a benchmark silently, and an outer `timeout` kills the
   run without saying which node stalled.
-- *Rejected — a non-blocking connect with a deadline now:* about 45 min added to a phase already over
-  budget, a deadline value chosen before Phase 3 can measure one, and probably untestable here,
+- *Rejected — a non-blocking connect with a deadline now:* about 45 min added to a phase already
+  behind schedule, a deadline value chosen before Phase 3 can measure one, and probably untestable here,
   because it needs an address that silently drops packets.
 
 **F19d — every reply is checked for progress, and a lookup is capped at 65 requests.**
@@ -1665,7 +1646,7 @@ connect deadline is scheduled into Phase 3.**
 - *Rejected — a visited set:* it catches a repeated node exactly, but not a node that keeps naming
   new addresses, and it reports a symptom rather than the node at fault.
 
-**F19e — the loop records every node it queried; which count is plotted is decided in step 2.5.**
+**F19e — the loop records every node it queried; which count is plotted is decided before the hop-count benchmark (D-026).**
 - Requests sent and node-to-node jumps differ by exactly one on every lookup, so both derive from the
   recorded path.
 - The plotted definition is fixed before the first benchmark number is taken, against the Chord
@@ -1675,14 +1656,15 @@ connect deadline is scheduled into Phase 3.**
 - *Rejected — fixing one count now:* it would choose a definition before checking the one it is
   compared against, and an off-by-one shifts every point on the plot.
 
-**Evidence:** none yet — design time. Step 2.4's in-process tests with constructed replies are the
-first evidence for F19a and F19d.
+**Evidence:** `test-lookup`'s in-process tests with constructed replies (70 checks, including
+backwards, self-naming, overshooting and garbled replies and a ring that needs exactly 65 requests)
+are the evidence for F19a and F19d.
 
 ---
 
 ### D-025 — The originator's timeouts are set before `connect`, so one 5 s deadline also bounds the handshake
 
-**Fork:** F20, surfaced while building step 2.3. **Date:** 7 Oct 2026. **Gates:** the socket
+**Fork:** F20, surfaced while building the lookup tool. **Date:** 7 Oct 2026. **Gates:** the socket
 transport in `net.cpp`, and the connect-deadline item D-024 scheduled into Phase 3.
 
 **The decision.** The transport creates the socket, sets `SO_RCVTIMEO` and `SO_SNDTIMEO` to 5 s,
@@ -1777,8 +1759,8 @@ paper does not count it.
 - **The paper's wording is looser than its explanation.** "Nodes traversed", read literally, could
   include the start node. The decision follows the paper's own derivation of ½ log₂ N, and the
   simulation agrees with that reading. The ambiguity is stated here rather than hidden.
-- **Earlier test outputs counted requests.** The step 2.2 figures (mean 2.37 on 8 nodes, 5.90 on
-  1024 in-process) were requests. Test output now labels those counts "requests", so the two
+- **Earlier test outputs counted requests.** The first routing-test figures (mean 2.37 on 8 nodes,
+  5.90 on 1024 in-process) were requests. Test output now labels those counts "requests", so the two
   counts never share a name.
 
 **Evidence:** the 1024-node simulation figure above; the full curve is `BENCHMARKS.md` §2, where
@@ -1789,7 +1771,7 @@ hops at every point.
 
 ### D-027 — The hop-count curve: real processes to a measured memory ceiling, then the same code in one process to 2²⁰ nodes
 
-**Fork:** F16. **Date:** 7 Oct 2026. **Gates:** step 2.5, the hop-count benchmark.
+**Fork:** F16. **Date:** 7 Oct 2026. **Gates:** the hop-count benchmark.
 
 **The decision.** The plot carries two series, each drawn from the same kind of workload:
 
@@ -1815,7 +1797,7 @@ the two curves overlap on the plot wherever both exist.
 - **The replay is not a model.** It is the shipped routing code with a different transport, so a
   disagreement with the real ring would be a real bug, not a modelling error.
 
-**Rejected: real processes only.** No simulation to defend, but the curve stops at the memory
+**Rejected: real processes only.** No simulation to justify, but the curve stops at the memory
 ceiling, which is a property of this laptop rather than of the design.
 
 **Rejected: simulation only.** It reaches any N cheaply, but the plot would then never touch the
@@ -1939,8 +1921,8 @@ for the reason above.
 - A join gives up after 30 attempts. A ring that cannot answer one lookup for that long is
   reported, not waited on forever.
 
-**Evidence:** none yet — design time. The join, rejoin and concurrent-join cases are tested in
-`scripts/e2e-churn.sh` and in process.
+**Evidence:** the join, rejoin and concurrent-join cases are tested in `scripts/e2e-churn.sh` and
+in process (`test-stabilize`).
 
 ---
 
@@ -2456,12 +2438,12 @@ silently.
 moment is lost for good.
 
 **Rejected: let orphans elect one of themselves to re-create the ring.** That needs the orphans to
-agree on which one, the agreement problem the Raft work in Block 2 exists for, and under a partition
+agree on which one, the agreement problem consensus protocols such as Raft exist for, and under a partition
 it would build exactly the second ring this decision prevents.
 
 **Rejected for now: a configured seed list** (Cassandra's approach: a few well-known addresses every
 node can always rejoin through). It is the operational answer to a stranded orphan, and belongs with
-the deployment kit, where there is an operator to configure it.
+deployment tooling, where there is an operator to configure it.
 
 **Cost accepted.**
 - **A stranded orphan — one whose every remembered address is dead or orphaned — stays out of the
@@ -2564,8 +2546,8 @@ steps.
 accurate, and it needs instrumentation in the node's hot path to fix a rule, when a robust statistic fixes
 it without touching the node.
 
-**Cost accepted.** This is the second change to a rule after seeing data (D-041 was the first). The defence is
-what triggered it: the same rule, on the same code, produced two different answers, which is a reproducibility
+**Cost accepted.** This is the second change to a rule after seeing data (D-041 was the first). The justification
+is what triggered it: the same rule, on the same code, produced two different answers, which is a reproducibility
 failure rather than a disliked value. Every version of the rules, and both runs' data, are kept. The new rules
 were fixed before the final run, which is the one reported.
 
@@ -3375,7 +3357,7 @@ versions that accumulate with nothing to delete them.
 **Rejected: overwrite only when asked (`--replace`).** The same vandalism with one more word on the command line,
 until ownership exists.
 
-**Cost accepted.** A mistaken upload holds its name until deletion with an owner token is built (D-023, Block 2).
+**Cost accepted.** A mistaken upload holds its name until deletion with an owner token is built (D-023).
 Changing a file means uploading it under a new name.
 
 **Evidence (8 Oct):** `test-names` and `e2e-transfer.sh`: the same file under the same name again is `OK`, a different one is refused naming the first key, eight concurrent registrants of one name produce one winner and seven `EXISTS` naming it. A finding from the first run: the same bytes uploaded with a different fan-out are a different manifest, and so a different key — idempotence holds for the same parameters only.
@@ -3540,7 +3522,7 @@ in flight). Two builds to keep straight: the harness records the limit and both 
 **The decision.**
 1. **`scripts/cluster.sh up | down | status`** starts a tracker and N nodes on this host — the first `--create`,
    the rest `--join` it — each with its own store under one directory, and stops exactly the processes it started
-   (by the PIDs it recorded, never a machine-wide `pkill`, error log E6). The smoke suite drives it, so it is tested
+   (by the PIDs it recorded, never a machine-wide `pkill`). The smoke suite drives it, so it is tested
    on every run.
 2. **A `Dockerfile` and a `compose.yaml`** are written: a two-stage build from source on `ubuntu:24.04` (the image is
    built for whatever architecture builds it, arm64 or amd64), and a compose file with a tracker and five nodes on a

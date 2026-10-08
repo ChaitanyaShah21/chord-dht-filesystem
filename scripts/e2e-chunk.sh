@@ -28,7 +28,7 @@ BASE_PORT="${BASE_PORT:-7700}"
 LAST_PORT=$((BASE_PORT + 9))
 
 # Kill only this suite's nodes, matched by port -- never a machine-wide pkill
-# (error log E6). The pattern lives in this file, not on a shell's command line.
+# (two suites once killed each other's nodes that way). The pattern lives in this file, not on a shell's command line.
 reap() {
   local p i
   for p in $(seq "$BASE_PORT" "$LAST_PORT"); do

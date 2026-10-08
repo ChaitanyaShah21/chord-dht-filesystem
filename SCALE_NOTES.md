@@ -1,9 +1,8 @@
 # Where This Breaks at Scale — chord-dht-filesystem
 
-"What breaks first at 10x?" is asked in essentially every systems-design round, and it is
-answered far better from observations recorded while building than from speculation in the room.
-
-Captured **as they happen**, not reconstructed at the end.
+"What breaks first at 10x?" is answered far better from observations recorded while building
+than from speculation afterwards. These were captured **as they happened**, not reconstructed at
+the end, so the early entries describe the coursework system this repository began as.
 
 Format: what was observed → what it implies at scale → what would be done about it.
 
@@ -38,8 +37,8 @@ large win); then bound the thread count with a pool; only then consider splittin
 per-group, which needs a stated lock order to stay deadlock-free and should not be done on
 suspicion.
 
-**Confidence:** `REASONED` — read off the code, **not measured**. The genuinely useful version of
-this entry comes after the Phase 0 baseline.
+**Confidence:** `REASONED` — read off the code, **not measured**. That tracker was replaced in
+Phase 5; its successor's flush-per-registration ceiling is measured in the 8 Oct entry below.
 
 ---
 
@@ -73,16 +72,17 @@ for the life of the download.
 
 ---
 
-### Pending — after the Phase 0 baseline
+### 9 Sep 2026 — the Phase 0 baseline
 
-The first `MEASURED` entry lands with `BENCHMARKS.md` §1.
+The first `MEASURED` number is `BENCHMARKS.md` §1: 71.2 MB/s for 100 MB from one seeder, sequential
+because a single seeder gives the coursework client exactly one worker — the worker cap described
+above, observed.
 
 ---
 
 ## The bottleneck ladder
 
-Kept current. The order in which things fall over as load rises — the strongest possible answer
-to the 10x question, because it shows the system was thought about rather than just built.
+Kept current. The order in which things fall over as load rises.
 
 **The coursework system (retired in Phase 5). All `REASONED`; kept as the record of what was predicted.**
 
@@ -93,27 +93,27 @@ to the 10x question, because it shows the system was thought about rather than j
 | 3 | **Per-piece `open`/`close`** on the destination | ~1 GB files | syscall time becomes visible next to transfer time | hold the fd for the download |
 | 4 | **`state_mtx` global lock** | ~100s of concurrent clients | command latency rises uniformly for everyone | per-group locks, with a stated lock order |
 | 5 | **Thread per client** | ~1,000 clients | memory exhaustion from thread stacks before CPU saturates | `epoll` + bounded worker pool |
-| 6 | **Single tracker** | — | not a load limit — an *availability* limit. It is a single point of failure at any scale | Raft group (Block 2) |
+| 6 | **Single tracker** | — | not a load limit — an *availability* limit. It is a single point of failure at any scale | a Raft group (planned, not built) |
 
-**Target system (Chord). Predictions, to be checked against measurement — and recorded now
-precisely so they can be checked.**
+**The Chord system. Recorded first as predictions so they could be checked; measurements are
+added to each row as they were taken.**
 
 | Order | What saturates first | At roughly | Symptom | Fix |
 |---|---|---|---|---|
-| 1 | **Lookup round trips** (if fork F1 chooses iterative) | large rings | latency grows as hops × round-trip time; on loopback invisible, on a real network dominant | recursive lookup, or cache finger entries aggressively |
+| 1 | **Lookup round trips** (iterative routing, D-012) | large rings | latency grows as hops × round-trip time; on loopback invisible, on a real network dominant | recursive lookup, or cache finger entries aggressively |
 | 2 | **Stabilisation traffic** | large rings, high churn | background traffic grows with N × frequency, competing with transfers. **Measured 7 Oct (`b171554`): 0.44 % of a core per idle node at a 1 s period, 5.0 % at 50 ms; 256 nodes at 50 ms saturates this 8-core machine (load average 66)** | back off the period adaptively |
-| 3 | **Replication write amplification** (if F3 chooses sync-to-all-3) | write-heavy load | every write is as slow as the slowest of three successors | quorum W=2. **Measured 8 Oct (`7d99fc0`): with healthy replicas W = 2 and W = 3 cost the same on loopback (31 vs 32 ms per 512 KiB write, both flushed); with one replica dead W = 3 failed 56 of 300 writes until eviction, W = 2 none** |
+| 3 | **Replication write amplification** (had F3 chosen sync-to-all-3; it chose W = 2, D-015) | write-heavy load | every write is as slow as the slowest of three successors | W = 2. **Measured 8 Oct (`7d99fc0`): with healthy replicas W = 2 and W = 3 cost the same on loopback (31 vs 32 ms per 512 KiB write, both flushed); with one replica dead W = 3 failed 56 of 300 writes until eviction, W = 2 none** |
 | 3a | **Virtual-node maintenance** | V × N members | every member stabilises on its own, so background CPU grows with V. **Measured 8 Oct: about 0.5 % of a core per member at T = 1 s (3.75 % per process at V = 8)** | a shared routing table per process (D-047's rejected option) |
 | 3b | **The client's worker pool on one host's cores** | 8 workers | **Measured 8 Oct (`2e7c445`): 377 MB/s at 8, falling to 324 at 32 while per-chunk p50 rises 9.7 → 51 ms** | size the pool per deployment; more hosts |
 | 3c | **Tracker registration flush** | ~200–250 names/s | **Measured 8 Oct: one `fdatasync` per name under one lock** | group commit |
-| 4 | **Free RAM on this host** | **2048 node processes** within a 3.4 GiB budget (measured 7 Oct: about 1 MiB per node at that size, growing with N — see the 7 Oct entry) | cannot start more nodes; **this is a measurement artefact, not a system property, and is labelled as such on the plot** | in-process replay past the ceiling (D-027); cloud VMs — cut-order item 3 |
+| 4 | **Free RAM on this host** | **2048 node processes** within a 3.4 GiB budget (measured 7 Oct: about 1 MiB per node at that size, growing with N — see the 7 Oct entry) | cannot start more nodes; **this is a measurement artefact, not a system property, and is labelled as such on the plot** | in-process replay past the ceiling (D-027); separate machines (not done) |
 
 ---
 
 ## Why not full membership? — the rejected O(1)-hop design
 
 Recorded 9 Sep 2026. This is the "why not just tell everyone about
-everyone, and do one-hop lookups?" question, which is asked about every distributed hash table.
+everyone, and do one-hop lookups?" question, which applies to every distributed hash table.
 
 **The design:** every node keeps the complete membership list. A lookup is a local computation
 plus one network hop to the owner. No routing, no finger tables, no stabilisation.
@@ -154,9 +154,9 @@ pass, forever, and the choice would look vindicated.
 
 **At Phase 4 (virtual nodes, ~100 identities per process):** a 1000-node ring is ~100,000 ring
 identities. In 2³² the birthday bound gives **p ≈ 0.69** — a collision is the *expected* outcome,
-not the tail. The subsystem that breaks it is one this project has already scheduled and has not
-built yet, which is exactly why the observation is worth recording now rather than rediscovering
-in W4.
+not the tail. The subsystem that breaks it is one this project had already scheduled and had not
+built yet, which is exactly why the observation was worth recording then rather than rediscovering
+it in Phase 4.
 
 **The general shape, which is the transferable part:** the parameter did not become wrong because
 load grew. It became wrong because a **later feature multiplied the number of identities by 100
@@ -168,8 +168,8 @@ users.
 symptom (D-019). At 64 bits the same 100,000 identities collide with probability ≈ 3 × 10⁻¹⁰, and
 the next line of defence is structural rather than probabilistic: invariant **I8** makes the "am I
 alone?" test compare addresses rather than identifiers, which downgrades a collision from "one
-node swallows the ring" to "two nodes disagree about a boundary". Detection and recovery is
-fork **F15**, scheduled for Phase 3 with the join path.
+node swallows the ring" to "two nodes disagree about a boundary". Detection and recovery was
+fork **F15**, resolved in Phase 3 with the join path (D-028: a collision is refused at join).
 
 ---
 
@@ -201,6 +201,7 @@ real ceiling is processes and memory (D-018), not threads.
 value is the same dead-versus-slow question as fork F4 / D-013, so it is **not** being set silently
 here; it belongs with Phase 3's failure detection. A bounded worker pool, or `epoll`, is the fix for
 connection rate, and it is only worth doing if a measurement shows thread creation matters.
+*(Resolved in Phase 5 by a per-request read deadline, D-061 — see the 8 Oct entry on threads.)*
 
 ---
 
@@ -243,8 +244,7 @@ every file ever uploaded, times three**, rather than the current files times thr
 softens it for unchanged chunks. Because chunk boundaries are fixed offsets, though, inserting one
 byte near the start of a file shifts every later chunk and dedup saves almost nothing.
 
-**Would do.** D-023's mark-and-sweep collector with a grace period, scheduled for Block 2 and first
-in the cut order. The insertion problem is separate. It is solved by **content-defined chunking**,
+**Would do.** D-023's mark-and-sweep collector with a grace period, designed and not built. The insertion problem is separate. It is solved by **content-defined chunking**,
 where boundaries are chosen by a rolling hash of the content rather than by fixed offsets, so an
 insertion only disturbs nearby chunks. That is a change to D-016 and is noted here, not scheduled.
 

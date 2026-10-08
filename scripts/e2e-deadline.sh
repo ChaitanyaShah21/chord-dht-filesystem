@@ -22,7 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${TMPDIR:-/tmp}/p2p-deadline-$$"
 PORT="${PORT:-7760}"
 
-# Kill only this suite's node, matched by its port -- never a machine-wide pkill (E6).
+# Kill only this suite's node, matched by its port -- never a machine-wide pkill.
 reap() {
   pkill -CONT -f "node[-a-z]* 127.0.0.1 $PORT " 2>/dev/null
   pkill -9 -f "node[-a-z]* 127.0.0.1 $PORT " 2>/dev/null

@@ -23,7 +23,7 @@ WORK="${TMPDIR:-/tmp}/p2p-persist-$$"
 TRACKER_PORT="${TRACKER_PORT:-7101}"
 
 reap () {
-  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null     # this port only (E6)
+  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null     # this port only, never machine-wide
   local i
   for i in $(seq 40); do
     ss -ltn 2>/dev/null | grep -qE ":${TRACKER_PORT}[[:space:]]" || return 0

@@ -22,7 +22,7 @@ N="${N:-16}"
 LAST_PORT=$((BASE_PORT + N - 1))
 
 # Kill only this suite's nodes, by exact command line and port -- never a
-# machine-wide pkill (error log E6). The trailing space stops port 7500 from
+# machine-wide pkill, which once let two suites kill each other's nodes. The trailing space stops port 7500 from
 # also matching 75001.
 reap() {
   local p i

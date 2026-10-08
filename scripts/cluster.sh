@@ -19,7 +19,7 @@
 # passed, so the ring has settled before the first upload.
 #
 # `down` kills only the PIDs `up` recorded -- never a machine-wide pkill, which once
-# made two test suites kill each other's processes (error log E6).
+# made two test suites kill each other's processes.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

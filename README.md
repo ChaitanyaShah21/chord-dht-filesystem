@@ -271,7 +271,7 @@ flowchart TB
     C["<b>client</b><br/>drives every hop itself — iterative, D-012<br/>verifies every chunk against the key it asked for"]
 
     subgraph control["CONTROL PLANE — small, mutable, consensus-backed"]
-        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · Raft group in Block 2"]
+        T["<b>tracker</b><br/>filename → manifest hash · ~40 bytes per file<br/>D-017 · a Raft group is the planned next step"]
     end
 
     subgraph ring["DATA PLANE — Chord ring · immutable · content-addressed, D-014"]
@@ -318,7 +318,7 @@ call to the successor from any code path (D-013). Nothing is event-driven; every
 re-derived, so the ring converges from any state.
 
 **What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (Block 2, subject to the 1 Nov trip-wire). Each node in the drawing is a process with several
+behind the tracker (planned, not built). Each node in the drawing is a process with several
 ring members (virtual nodes), and a chunk's three copies are on three different processes.
 
 ## Key Design Rationales
@@ -1225,8 +1225,7 @@ months.
 system actually developed — including a commit that regressed three handlers, which is a lesson
 worth keeping visible.
 
-*More rationales are added as the open forks resolve. Each names the alternative it rejected —
-an entry without one is not finished.*
+*Each rationale names the alternative it rejected — an entry without one is not finished.*
 
 ---
 
@@ -1411,8 +1410,8 @@ Linux only raises the signal on the second; it still proves the tracker survives
 
 Stated limits read as engineering judgement. Unstated ones read as things that were missed.
 
-- **The tracker is a single point of failure.** Replicating it with Raft is planned for Block 2
-  (Oct–Nov); it is second in the cut order, after deletion, if the schedule slips.
+- **The tracker is a single point of failure.** Replicating it with Raft is the planned next step;
+  it is not built.
 - **Files cannot be deleted, and storage only grows** (D-023). Removing a file's name needs proof of
   ownership, because there is no access control. Freeing its chunks needs a collector, because
   deduplication means another file may share them. Both are designed and scheduled after the MVP;
