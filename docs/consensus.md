@@ -124,3 +124,15 @@ second time (D-059).
 | **Client sessions** (identifier, sequence number, last reply per client) | replicates a table to deduplicate an operation that is already idempotent |
 | **Answer at commit** | `OK` or `EXISTS` is only known once applied in order |
 | **Answer retries from local state** | a second path that is right only while names can never change |
+
+### Reads — [D-076](../ARCHITECTURE.md#d-076--reads-are-linearizable-through-readindex-at-the-leader-no-leases-no-follower-reads)
+
+ReadIndex at the leader: once it has committed its own no-op, it notes its commit index, confirms it still leads by a
+majority answering heartbeats sent after the read arrived, waits until it has applied that far, and answers. No disk
+write and no clock assumption. Followers redirect.
+
+| Alternative | Why not |
+|---|---|
+| **Reads through the log** | a flush on a majority for every read |
+| **Leader leases** | correct only with bounded clock drift and pauses; this host has stalled for seconds |
+| **Follower reads of found names** | right only while names can never change |

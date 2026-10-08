@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-075: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-076: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-075 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-076 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 67 recorded here (F1–F66 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 68 recorded here (F1–F67 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -304,6 +304,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F64** | **Election timeout, heartbeat and call deadline.** The paper's example values; a large constant; or one base swept, with the default chosen by a rule fixed before measuring. | Sets failover time and whether a healthy group elects for no reason. | **RESOLVED** — D-073 (rule); value from `BENCHMARKS.md` §7 |
 | **F65** | **How does a replica persist its term, vote and log?** One file of self-checking records; a separate file for term and vote; and what replay does with damage. | Decides what survives a crash, how many flushes a step costs, and whether damage is cut, skipped or refused. | **RESOLVED** — D-074 |
 | **F66** | **When is a registration acknowledged, and what makes a retry safe?** After its own entry is applied, with no sessions; client sessions; at commit; or from local state. | Decides what `OK` promises across a leader change, and whether a retried registration can apply twice. | **RESOLVED** — D-075 |
+| **F67** | **How are reads made linearizable?** Through the log; ReadIndex; leader leases; or follower reads of found names. | Decides what a read costs and whether a deposed or paused leader can answer stale. | **RESOLVED** — D-076 |
 
 ---
 
@@ -4072,3 +4073,42 @@ records effects. If an operation that is not idempotent is ever added — deleti
 needed.
 
 **Evidence:** pending — the linearizability checker in `test-raft`, `test-replica`, `e2e-raft.sh`.
+
+---
+
+### D-076 — Reads are linearizable through ReadIndex at the leader; no leases, no follower reads
+
+**Fork:** F67. **Date:** 8 Oct 2026. **Depends on:** D-072, D-075. **Gates:** what `RESOLVE` and `LIST` cost, and
+whether they can return stale answers.
+
+**The decision.** `RESOLVE` and `LIST` are answered only by the leader, by **ReadIndex** (Raft thesis §6.4):
+
+1. the leader must have committed an entry of its own term — the no-op every new leader appends — so that its commit
+   index covers everything committed before it was elected;
+2. it records its commit index as the read's index;
+3. it sends a round of heartbeats, and waits until a majority (itself included) has answered calls **sent after the
+   read arrived**, still in its term — proof that no newer leader existed when the read was received;
+4. it waits until it has applied up to the read's index, and answers from its state.
+
+A follower answers every client request with `REDIRECT <leader>` or `UNAVAILABLE`.
+
+**Why.** It is linearizable with no assumption about clocks: a read cannot miss a write that completed before it
+started, and a deposed leader cannot answer at all — it cannot collect a majority in its old term. It costs a round
+trip and no disk write.
+
+**Rejected: reads through the log** (each read an entry). Trivially linearizable, and every read then costs a flush on
+a majority of replicas and a slot in the log forever.
+
+**Rejected: leader leases** (answer locally while a majority acknowledged within a lease shorter than the election
+timeout). No round trip at all, and correct only if clocks advance at bounded rates and no process pauses for longer
+than the lease's margin. This host has shown multi-second stalls (`BENCHMARKS.md` §4a): a leader paused across its
+lease's end would serve a stale read with no error.
+
+**Rejected: follower reads of found names.** Because a name never changes once applied, a `FILE` answer from any
+replica's state is permanently right; only `MISSING` would need the leader. Cheap, and correct only while names are
+write-once — deletion (D-023) would make it silently wrong.
+
+**Cost accepted.** Every read costs a heartbeat round to a majority, and all client traffic lands on one replica. A
+new leader serves no reads until its no-op commits — one round trip after it wins.
+
+**Evidence:** pending — the linearizability checker in `test-raft` (with planted stale reads), `BENCHMARKS.md` §7.

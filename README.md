@@ -146,6 +146,7 @@ has every alternative considered and what it would have cost.
 | **Timers from one base, chosen by a rule** (D-073) | E is the smallest value with no spurious election under load; failover is measured at every candidate | the paper's 150–300 ms by precedent |
 | **One file of self-checking records per replica** (D-074) | one flush per step; a crash's torn tail is cut, older damage refuses to start | skipping damaged records, which leaves a hole in the log |
 | **`OK` after the entry is applied; no client sessions** (D-075) | a write-once registration is idempotent, so a retry after a leader change is safe | sessions to deduplicate what already deduplicates itself |
+| **ReadIndex reads** (D-076) | linearizable with no clock assumption; a round trip, no flush | leases, which a paused leader can outlive |
 
 ## Project structure
 
