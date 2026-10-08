@@ -21,9 +21,9 @@ trade-off accepted → how recurrence is prevented → the interview question it
 | B5 | Tracker cannot restart within the TIME_WAIT window (`EADDRINUSE`) | High | **FIXED** |
 | R2 | Every download fails; a full-size file of zeros is left on disk | Critical | **FIXED** (root cause) |
 | R3 | Permanent request/response desync after the first successful download | Critical | **FIXED** 2 Sep 2026 |
-| R4 | A zero-byte file cannot be uploaded at all | Medium | **OPEN** |
-| R2b | A failed download still leaves a full-size zero-filled file behind | High | **OPEN** — fork below |
-| R1 | Tracker state does not survive a restart | Critical | **OPEN** — next |
+| R4 | A zero-byte file cannot be uploaded at all | Medium | **FIXED** 8 Oct 2026 — by the Phase 5 transfer path (D-054) |
+| R2b | A failed download still leaves a full-size zero-filled file behind | High | **FIXED** 8 Oct 2026 — part file and atomic rename (D-055) |
+| R1 | Tracker state does not survive a restart | Critical | **FIXED** 6 Sep 2026 (D-009) |
 
 Session date: 1 Sep 2026 · baseline commit `219a9b8` · g++ 13.3.0, C++17, aarch64 under WSL2.
 
@@ -474,6 +474,13 @@ other direction. The general rule is that a length-prefixed protocol has to be a
 **Status:** OPEN. Deferred to the Phase 5 transfer rewrite, where chunking is redesigned anyway.
 Logged so it is never re-found.
 
+**Fixed, 8 Oct 2026, by the Phase 5 transfer path (D-054, D-060).** A file is described by a
+manifest whose `entries` line may say 0: a zero-byte file is a data manifest with no entries,
+`size 0`, stored in the ring like any chunk, and the tracker registers its key like any other.
+Nothing special-cases zero. `scripts/e2e-edge.sh`, which pinned this defect by failing on purpose
+since 1 Sep, now passes all seven cases through the ring; `test-transfer` checks the zero-byte
+manifest, its build and a zero-byte round trip in process.
+
 **Interview question it answers:** *"What does your system do with a zero-byte file?"* — a
 standard probe for whether boundary cases were actually tested or merely assumed.
 
@@ -496,6 +503,16 @@ removes the file. A sparse, zero-filled file remains, indistinguishable from a r
 | Delete the destination on incomplete download | Three lines. No corrupt file survives | Loses partial progress; a resumable download becomes impossible |
 | Download to `dest.part`, rename to `dest` only on success | `rename()` within a filesystem is atomic, so the final name never exists in a partial state. This is what real downloaders do | Partial file left behind unless cleaned up; needs a resume story to justify keeping it |
 | Leave it, print loudly | Zero work | An unreliable system that must be read carefully to be used safely. Rejected |
+
+**Fixed, 8 Oct 2026 (D-055), with the second option.** A download first fetches and checks the
+whole manifest, then writes verified chunks into `<dest>.part-<pid>-<n>` in the destination's own
+directory (created with `O_EXCL`), flushes it, renames it over the destination and flushes the
+directory. Any failure deletes the part file and leaves an existing destination untouched;
+`SIGINT` and `SIGTERM` delete it from a signal handler (`unlink` is async-signal-safe). Only
+`SIGKILL` or a crash can leave a part file, and its name says it is partial. Resume is not built.
+Tested in process (`test-transfer`: a lost chunk, an older file at the destination, a manifest
+that lies about a chunk's length, the handler's cleanup mid-download) and on real processes
+(`e2e-transfer.sh`: a chunk deleted from every replica, `SIGKILL` and `SIGTERM` mid-download).
 
 **Interview question it answers:** *"Your transfer fails halfway. What is on disk, and how does
 the next run know not to trust it?"* — the answer people want is atomic rename, plus the

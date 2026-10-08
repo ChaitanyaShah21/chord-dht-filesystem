@@ -4,11 +4,12 @@
 > replicated three ways, under a small tracker that holds only file names.
 
 > [!NOTE]
-> **Under active reconstruction: the legacy BitTorrent-style layer works; the Chord ring routes
-> lookups and stores, replicates, verifies and repairs chunks, but whole files do not move through it
-> yet — the chunked file transfer through the ring is the next phase.** This repository began as an operating-systems course
-> assignment — a BitTorrent-style file sharer — and is being rebuilt into distributed storage. Every row in the table below was verified by a script
-> at the commit it names — nothing is claimed to work that has not been run.
+> **Files now move through the ring end to end:** a file is cut into chunks, stored three times on a
+> Chord ring, named in the tracker, and fetched back in parallel with every chunk verified. This
+> repository began as an operating-systems course assignment — a BitTorrent-style file sharer — and
+> was rebuilt into distributed storage one recorded decision at a time; the coursework code is in the
+> history. Every row in the table below was verified by a script at the commit it names — nothing is
+> claimed to work that has not been run.
 >
 > An earlier version of this file claimed multi-tracker synchronisation. That feature was never
 > implemented — `connect_to_peer()` was defined and never called. It was removed rather than
@@ -19,24 +20,23 @@
 ## Status
 
 Verified by running the scripts in the Evidence column on the machine described in
-[`BENCHMARKS.md`](BENCHMARKS.md): the legacy suites at `a9c69cc` (9 Sep 2026), the routing suites
-at `29a829c` (13 Sep 2026), the lookup and churn suites on 7 Oct 2026, the chunk-plane suites on 8 Oct 2026.
+[`BENCHMARKS.md`](BENCHMARKS.md): the routing suites at `29a829c` (13 Sep 2026), the lookup and churn
+suites on 7 Oct 2026, the chunk-plane suites on 8 Oct 2026, and the file-transfer suites on 8 Oct 2026.
 
 | Component | State | Evidence |
 |---|---|---|
-| Build | **Works.** `tracker`, `client`, `node`, `lookup` and `chunk` build clean, zero warnings | `make clean && make` |
-| Tracker — users, groups, metadata | **Works** in memory | `scripts/e2e-smoke.sh` |
-| Tracker — persistence across restart | **Works.** Replay applies effects directly rather than re-running commands, so recovery cannot be refused by an authorisation guard it never reaches | `scripts/e2e-persistence.sh` — 4/4 |
-| Tracker — multi-tracker sync | **Never existed.** Dead code; superseded by the planned Raft group | — |
-| Legacy BitTorrent-style transfer | **Works**, verified by SHA-1 end to end across a piece-boundary sweep | `scripts/e2e-smoke.sh` PASS · `scripts/e2e-edge.sh` 6/7 |
-| Chunking + SHA-1 manifests | **Works**, including the short final piece | `scripts/e2e-edge.sh` — the `minus1`, `exact_1piece` and `plus1` cases |
-| Zero-byte file | **Broken.** An empty file produces an empty manifest, the tracker rejects the upload, and the client reports success anyway | `scripts/e2e-edge.sh` — case `empty`, a deliberately failing test |
-| Tracker — survives an abrupt client disconnect | **Works.** `SIGPIPE` is ignored, so a peer that vanishes mid-reply is an error value rather than a fatal signal | `scripts/e2e-hangup.sh` |
+| Build | **Works.** `tracker`, `node`, `client`, `chunk` and `lookup` build clean, zero warnings | `make clean && make` |
+| Files through the ring | **Works.** Upload cuts a file into 512 KiB chunks, stores each through its owner with `W` confirmed copies, stores the manifest (a tree of manifests above 4 GiB), then registers the name. Download fetches and checks the manifest, fetches every chunk in parallel with replica fall-through, writes a part file, flushes it and renames it into place | `make check` — `test-transfer`, 87 checks · `scripts/e2e-transfer.sh` — 8 processes: a node killed mid-download, a corrupt copy, a chunk lost everywhere, the client killed mid-download, two identical uploads at once · `scripts/e2e-edge.sh` — 0 bytes to 3 MB across the chunk boundary, 7/7 |
+| Tracker — the namespace | **Works.** Name → manifest key, written once; an effect log flushed before every `OK`, self-checking records, torn records detected and cut off at start-up | `make check` — `test-names`, 39 checks · `scripts/e2e-persistence.sh` · `scripts/e2e-framing.sh` · `scripts/e2e-hangup.sh` |
+| A slow or silent peer | **Handled.** A node or the tracker gives every request line and every body a deadline, enforced against the time remaining, so a peer trickling bytes cannot hold a memory slot or a thread | `make check` — `test-net`, 37 checks · `scripts/e2e-deadline.sh` |
+| One-command local cluster | **Works** | `scripts/cluster.sh up`, driven by `scripts/e2e-smoke.sh` |
+| Container image and compose file | **Written, not yet run** — the development machine has no Docker | `Dockerfile`, `compose.yaml` |
+| Continuous integration | **Written, not yet run** — runs once the repository is pushed | `.github/workflows/ci.yml` |
 | Chord identifier arithmetic, finger tables, closest-preceding-finger routing | **Works** on a fixed ring. Every lookup reaches the correct owner, and every hop count matches an independent model of the finger rule | `make check` — 127 + 15 unit checks · `scripts/e2e-node.sh` — real 8-node ring, 1808 lookups |
 | Chord lookup originator (`lookup`) | **Works** on a fixed ring. Follows `NEXT` to `OWNER`, checks every reply for progress, and reports a refused, timed-out or garbled node by name | `make check` — 70 lookup checks against correct, lying and broken rings · `scripts/e2e-chord.sh` — real 16-node ring, 4000 lookups, one node killed, one frozen |
 | Chord joins, stabilisation, failure handling | **Works.** Nodes join through any member, a background thread runs stabilise, notify and finger repair, a refused node is evicted at once and a silent one after two strikes, and a node that loses everyone it knew stops routing and rejoins | `make check` — 97 in-process checks: every round order of two joins between the same pair, kills, freezes, a fast restart, collisions, 200 random churn histories · `scripts/e2e-churn.sh` — 22 checks on real processes, also run under ThreadSanitizer · repair time measured in [`BENCHMARKS.md`](BENCHMARKS.md) §4 |
 | Chunk storage, replication, virtual nodes, repair | **Works.** Chunks are files written atomically and flushed; a write is coordinated by the owner and acknowledged after `W` copies on distinct processes; reads check the hash and fall through to the next replica; a process is 8 ring members by default; a dead process's chunks are re-replicated by their new owners, and a scrub replaces copies that rot on disk | `make check` — 102 chunk-plane checks · `scripts/e2e-chunk.sh` — 6 processes × 4 members: corruption, two of three replicas killed, hostile requests, repair · also under ThreadSanitizer · [`BENCHMARKS.md`](BENCHMARKS.md) §6 |
-| Files through the ring (chunked transfer, manifests, tracker names) | **Not built yet** — next phase | — |
+| Coursework tracker, users, groups, peer-to-peer piece transfer | **Retired in Phase 5.** In the history; its transfer baseline is reproducible at `e381179` | [`BENCHMARKS.md`](BENCHMARKS.md) §1 |
 
 Known open defects are listed under [Limitations](#limitations-and-future-work); full
 reproduction steps for every one are in [`docs/failures.md`](docs/failures.md).
@@ -191,37 +191,32 @@ peer on one laptop — are recorded there **before** any number is taken.
 
 ```mermaid
 flowchart TB
-    subgraph control["CONTROL PLANE — metadata only, never file bytes"]
-        T["tracker :8000<br/>manifests · seeder addresses<br/>append-only update log"]
+    C["<b>client</b><br/>put / get · a pool of workers · verifies every chunk<br/>part file → fsync → rename"]
+
+    subgraph control["CONTROL PLANE"]
+        T["<b>tracker</b><br/>name → manifest key, nothing else<br/>effect log, flushed before every OK"]
     end
 
-    subgraph peerA["peer A"]
-        A1["main loop"]
-        A2["peer server :6881"]
+    subgraph ring["DATA PLANE — node processes, 8 ring members each"]
+        direction LR
+        P1["<b>process A</b><br/>chunk store"] --> P2["<b>process B</b><br/>chunk store"] --> P3["<b>process C</b><br/>chunk store"] --> P4["<b>process D</b><br/>chunk store"] --> P1
     end
 
-    subgraph peerB["peer B"]
-        B1["main loop"]
-        B3["download workers"]
-    end
-
-    A1 -- "1 upload_file — manifest only" --> T
-    B1 -- "2 get_file_info" --> T
-    T -- "3 piece hashes + seeder list" --> B1
-    B3 -- "4 GET_PIECE i" --> A2
-    A2 -- "5 PIECE n + n raw bytes" --> B3
+    C -- "1 · RESOLVE name / REGISTER name key" --> T
+    T -- "2 · FILE manifest-key" --> C
+    C -- "3 · FIND_SUCCESSOR, hop by hop (iterative)" --> ring
+    C -- "4 · GET manifest, then GET every chunk in parallel" --> P2
+    P2 -- "5 · CHUNK n + n bytes, hashed by the client" --> C
+    P2 -. "PUT: the owner stores, then STORE to two other processes" .-> P3
 ```
 
-**Request path:** ① the uploading peer hashes its file in 512 KB pieces and sends the manifest —
-never the bytes — to the tracker. ② the downloading peer asks for that manifest and ③ receives
-the piece hashes plus a list of seeders as `ip:port`. ④ its workers connect **directly** to those
-peers and request pieces by index. ⑤ each reply is a length-prefixed header then raw bytes; the
-SHA-1 is verified before the piece is written at its offset, and a mismatch re-requests from a
-different seeder.
-
-The target Chord architecture is drawn once its open design questions are resolved — see
-[`ARCHITECTURE.md`](ARCHITECTURE.md) § Open forks. Drawing it earlier would decide those
-questions by implication.
+**Upload:** the client cuts the file into 512 KiB chunks and stores each through its owner, which keeps a
+flushed copy and forwards two more to the next two distinct processes, answering once `W` copies exist.
+Then the manifest is stored the same way, and only then is the name registered — a name never points at a
+file that is not all there. **Download:** ① ② the name becomes a manifest key; ③ ④ ⑤ the client routes to the
+manifest and then to every chunk concurrently, hashing each; a chunk whose copy is corrupt or whose holder is
+dead is read from the next replica. Chunks are written into a part file that is flushed and renamed into
+place only when complete.
 
 Diagram-as-text on purpose: it renders on the repository host, it diffs in review, and it cannot
 silently drift out of date the way an exported image does.
@@ -1108,10 +1103,11 @@ to be one process after all.
 
 ### Two framing schemes, not one
 
-Client↔tracker messages are newline-delimited; client↔client piece transfers are
-length-prefixed. TCP is a byte stream and gives no message boundaries, so framing is the
-application's job — but a delimiter is impossible for file data, which contains the delimiter
-byte by chance.
+Requests and replies are newline-delimited lines; a chunk travels as a header line whose last word
+is its length, followed by exactly that many bytes. TCP is a byte stream and gives no message
+boundaries, so framing is the application's job — but a delimiter is impossible for file data, which
+contains the delimiter byte by chance. Both schemes live in one file, `net.cpp`, used by every
+program.
 
 **Rejected:** a single scheme for both. Newline-delimiting everything corrupts binary payloads;
 length-prefixing everything makes the human-readable control protocol harder to debug by hand,
@@ -1145,10 +1141,10 @@ reply: it strips interior delimiters, logs when it has to, and appends exactly o
 
 **Rejected:** fixing the five strings and moving on. It removes today's instances and adds no
 rule, so the next such string reintroduces the defect — and the failure is silent, on a
-connection that stays open and keeps answering wrongly. **Also rejected, for now:**
-length-prefixed replies, which make the delimiter irrelevant rather than forbidden. That is the
-better protocol, it is what the piece transfer already uses, and it is scheduled for Phase 5
-when the transfer layer is rewritten; it buys nothing until a reply needs structured output.
+connection that stays open and keeps answering wrongly. **Also rejected:** length-prefixed
+replies, which make the delimiter irrelevant rather than forbidden. They were planned for when the
+transfer layer was rewritten, and withdrawn then: no tracker reply carries a payload any more, and
+length prefixes are used where payloads are, for chunks.
 
 Regression test: `scripts/e2e-framing.sh`, which drives a raw socket rather than the client —
 the client reads one line per reply and would hide which side emitted the extra one.
@@ -1197,8 +1193,10 @@ chord-dht-filesystem/
 ├── lookup.h, lookup.cpp   # The originator's loop: follows NEXT to OWNER, checks every reply for progress
 ├── lookup_main.cpp        # `lookup`: runs one lookup per identifier on stdin, prints owner, hops and path
 ├── sim_hops.cpp           # `sim-hops`: the same routing code and loop with the ring in one process
-├── tracker.cpp            # Legacy metadata index and peer discovery; thread per client
-├── client.cpp             # Legacy peer: main loop, peer server, download workers, heartbeat
+├── transfer.h, transfer.cpp # Whole files: chunking, manifests and their tree, the worker pool, the part file
+├── client.cpp             # `client`: put, get, ls, info -- files through the ring, names through the tracker
+├── names.h, names.cpp     # The namespace: name -> manifest key, written once, with a self-checking log
+├── tracker.cpp            # `tracker`: the namespace on a socket, one thread per connection
 ├── sha1.h                 # Header-only wrapper over OpenSSL SHA1(), hex-encoded
 ├── test_chord.cpp         # Unit tests: hand-built rings, independent oracles, routing simulation
 ├── test_net.cpp           # Unit tests: framing edge cases, and refused/timeout/closed over real sockets
@@ -1206,6 +1204,11 @@ chord-dht-filesystem/
 ├── test_stabilize.cpp     # Unit tests: a whole ring in one process, with joins, deaths and freezes timed by hand
 ├── test_chunk.cpp         # Unit tests: the store, body framing, virtual nodes, replica sets, writes, reads,
 │                          #   repair -- several processes' stores and members in one process
+├── test_transfer.cpp      # Unit tests: manifests (and hostile ones), trees, the pool, whole transfers against a
+│                          #   ring in memory that loses, delays and lies
+├── test_names.cpp         # Unit tests: the namespace, its log, torn and damaged records, a disk that refuses writes
+├── Dockerfile, compose.yaml # A tracker and five nodes in containers -- written, not yet run
+├── .github/workflows/ci.yml # Build, unit tests and the fast end-to-end suites on x86-64 and arm64 -- not yet run
 ├── Makefile               # Hand-written; `make` builds the binaries, `make check` runs the unit tests
 ├── scripts/
 │   ├── e2e-node.sh        # A real ring: owners and hop counts checked against independent models
@@ -1221,12 +1224,17 @@ chord-dht-filesystem/
 │   ├── chunkcheck.py      # The placement oracle and a raw chunk client, independent of the C++ code
 │   ├── bench-chunks.py    # Load balance vs virtual nodes, the W sweep, coordinator crashes, re-replication
 │   ├── plot-chunks.py     # Summarises those into docs/figures/chunks*.{csv,png}
-│   ├── e2e-smoke.sh       # Happy path: one file transferred, SHA-1 compared end to end
-│   ├── e2e-edge.sh        # Piece-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-piece
-│   ├── e2e-persistence.sh # Builds state, restarts the tracker, asks for the same facts back
-│   ├── e2e-framing.sh     # One command, one reply, one line -- on a raw socket
+│   ├── cluster.sh         # A tracker and a ring of nodes on this machine: up, status, down, wipe
+│   ├── e2e-transfer.sh    # Files through a real ring: kills mid-download, corruption, lost chunks, signals
+│   ├── e2e-deadline.sh    # A peer sending slowly or not at all is cut off, and frees what it held
+│   ├── e2e-smoke.sh       # Happy path: a cluster from cluster.sh, one file round-tripped, SHA-1 compared
+│   ├── e2e-edge.sh        # Chunk-boundary sweep: 0, 1, n-1, n, n+1, 2n, multi-chunk
+│   ├── e2e-persistence.sh # Registers names, kills and restarts the tracker, damages its log, asks again
+│   ├── e2e-framing.sh     # One request, one reply, one line -- on a raw socket
 │   ├── e2e-hangup.sh      # A client that vanishes must not take the tracker with it
-│   ├── bench-baseline.sh  # The single-peer transfer baseline recorded in BENCHMARKS.md
+│   ├── bench-transfer.py  # Throughput against workers, ring size and chunk size; latency; dedup; the tracker
+│   ├── plot-transfer.py   # Summarises those into docs/figures/transfer*.{csv,png}
+│   ├── bench-baseline.sh  # The single-peer baseline of the coursework system (runs at its own commit)
 │   └── make-testdata.sh   # Deterministic test corpus; regenerates testdata/ in <1 s
 ├── docs/
 │   ├── failures.md        # Every defect: how it was found, root cause, why the fix works
@@ -1241,49 +1249,55 @@ chord-dht-filesystem/
 
 ## Quick start
 
-> This section becomes a single `docker compose up` bringing up a five-peer ring and the
-> tracker once the deployment kit lands in Phase 5. Until then, the build and the end-to-end
-> suites run directly:
-
 ```bash
-make clean && make          # tracker, client, node, lookup and chunk, no warnings
-make check                  # unit tests: routing, framing, the lookup loop, stabilisation, the chunk plane
+make clean && make          # tracker, node, client, chunk and lookup; no warnings
+make check                  # seven unit-test binaries
 
-./scripts/e2e-node.sh       # a real 8-node Chord ring: owners and hop counts vs independent models
-./scripts/e2e-chord.sh      # the C++ lookup tool on a 16-node ring, including a killed and a frozen node
-./scripts/e2e-churn.sh      # a ring built by joins, then kills, a freeze and a fast restart, checked by an oracle
-./scripts/e2e-chunk.sh      # 6 processes x 4 virtual nodes storing chunks: corruption, two replicas killed, repair
-
-# A three-process ring that stores chunks, by hand:
-./node 127.0.0.1 7001 --create --vnodes 8 --store /tmp/s1 &
-./node 127.0.0.1 7002 --join 127.0.0.1:7001 --vnodes 8 --store /tmp/s2 &
-./node 127.0.0.1 7003 --join 127.0.0.1:7001 --vnodes 8 --store /tmp/s3 &
-./chunk put 127.0.0.1:7001 --w 2 < somefile          # prints: put <key> ok <copies> ...
-./chunk get 127.0.0.1:7002 <key> > copy               # verified against <key> before it is written
-
-make tsan                   # the node built with ThreadSanitizer; run the churn suite with it:
-NODE_CMD="setarch $(uname -m) -R ./node-tsan" ./scripts/e2e-churn.sh
-./scripts/e2e-smoke.sh      # transfers a 300 KB file, compares SHA-1 end to end
-./scripts/e2e-persistence.sh # restarts the tracker, checks the state came back
-./scripts/e2e-framing.sh    # framing: malformed input must not desync the connection
-./scripts/e2e-hangup.sh     # liveness: an abrupt client disconnect must not kill the tracker
-./scripts/e2e-edge.sh       # piece-boundary sweep; 6/7 by design while R4 is open
+# A tracker and five nodes on this machine, then a file through them:
+scripts/cluster.sh up 5                                   # prints the client command line to use
+./client --tracker 127.0.0.1:7000 --ring 127.0.0.1:7001,127.0.0.1:7002 put somefile.iso movie
+./client --tracker 127.0.0.1:7000 --ring 127.0.0.1:7001,127.0.0.1:7002 get movie copy.iso
+./client --tracker 127.0.0.1:7000 ls
+scripts/cluster.sh down                                   # or `wipe` to delete the stores too
 ```
 
-Each suite reaps only its own processes, matched by port, so they can be run concurrently.
-That was not true until 9 Sep: the reaper matched the binary path alone and two suites run
-together killed each other's tracker, producing a failure that looked exactly like a product
-regression.
+`put` prints the manifest key, chunk count and timings; `get` verifies every chunk against its key and writes
+`copy.iso` only once it is complete. `--workers` sets how many chunks move at once and `--w` how many copies
+must exist before a chunk counts as stored.
 
-**Requirements:** g++ with C++17, OpenSSL development headers (`libssl-dev`), POSIX threads.
-Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
+**Containers:** `docker compose up -d --build` should bring up the same tracker and five nodes, with
+`docker compose run --rm client ...` as the client — **these files have not been run yet**; the development
+machine has no Docker. `scripts/cluster.sh` is the tested way.
+
+The end-to-end suites start their own processes on their own ports and reap only those, so they can run
+side by side:
+
+```bash
+./scripts/e2e-transfer.sh   # files through 8 processes x 4 members: kills, corruption, lost chunks, signals
+./scripts/e2e-edge.sh       # every size across the chunk boundary, zero bytes included
+./scripts/e2e-deadline.sh   # slow and silent peers are cut off
+./scripts/e2e-smoke.sh      # the cluster script, and one file round-tripped
+./scripts/e2e-persistence.sh ./scripts/e2e-framing.sh ./scripts/e2e-hangup.sh   # the tracker
+./scripts/e2e-node.sh ./scripts/e2e-chord.sh ./scripts/e2e-churn.sh ./scripts/e2e-chunk.sh   # the ring
+
+make tsan                   # the node and the client built with ThreadSanitizer:
+NODE_CMD="setarch $(uname -m) -R ./node-tsan" CLIENT_CMD="setarch $(uname -m) -R ./client-tsan" ./scripts/e2e-transfer.sh
+```
+
+Each suite reaps only its own processes, matched by port. That was not true until 9 Sep: the reaper matched the
+binary path alone and two suites run together killed each other's processes, producing a failure that looked
+exactly like a product regression.
+
+**Requirements:** g++ with C++17, OpenSSL development headers (`libssl-dev`), POSIX threads, Python 3 for the
+suites. Developed on Ubuntu 24.04 / aarch64 under WSL2 with g++ 13.3.
 
 ---
 
 ## Testing
 
-Five unit-test binaries (`make check`) and nine end-to-end suites. No continuous integration yet —
-CI lands in Phase 5.
+Seven unit-test binaries (`make check`) and eleven end-to-end suites on real processes. A continuous
+integration workflow is written (`.github/workflows/ci.yml`) but has not run yet: it runs once the repository
+is pushed.
 
 Routing is tested in two layers because each catches bugs the other cannot. The unit tests build
 rings by hand, so they can construct cases a live ring never produces, such as a stale finger
@@ -1320,10 +1334,20 @@ recorded with the reason: one is covered twice over (the receiver re-checks the 
 race on an atomic counter that neither a stress test nor ThreadSanitizer can see — it is correct by
 construction (one indivisible `fetch_add`), not by test.
 
-`e2e-edge.sh` **fails on purpose**: its `empty` case is defect R4, still open. A failing test
-that pins a known defect is more useful than a passing test that avoids it, and it turns a
-remembered bug into a regression check. Deleting the case would raise the pass rate and lower
-the information.
+The file path is tested the same two ways. `test-transfer` runs whole uploads and downloads against a ring
+that is a map in memory, so a test can lose a chunk everywhere, make one fail twice and then answer, or store a
+manifest that lies — 26 malformed manifests are refused one rule at a time, and the largest possible manifest is
+checked to fit in a chunk. `test-names` drives the namespace with request lines and a real log file: torn and
+altered records, a disk that refuses writes (`/dev/full`), eight threads racing for one name. `e2e-transfer.sh`
+runs the real client against eight processes: a node killed as a download starts, a corrupt copy on disk, a
+chunk deleted from every replica, the client killed with `SIGKILL` and stopped with `SIGTERM` mid-download, two
+identical uploads at once, the tracker down. `e2e-edge.sh` sweeps sizes across the chunk boundary; it was
+committed failing on purpose in September, pinning the zero-byte defect, and now passes all seven cases.
+Twenty-two deliberate bugs were planted in this code; twenty are caught. The two that survive remove the flush
+before acknowledging a download or a registration — a test on a running machine cannot cut the power, so those
+are correct by construction, not by test. One more finding from the same exercise: the suite that once proved
+the tracker survives `SIGPIPE` no longer can, because the rewritten tracker stops at the first failed send and
+Linux only raises the signal on the second; it still proves the tracker survives and keeps serving.
 
 ---
 
@@ -1339,17 +1363,20 @@ Stated limits read as engineering judgement. Unstated ones read as things that w
   neither is built.
 - **No wire encryption or peer authentication.** Any peer can join and any peer can be
   impersonated. Lifting this needs node identities bound to keys, not just addresses.
-- **`GET_PIECE` serves any path a requester asks for** — a directory-traversal hole. Fixed when
-  the transfer layer is rewritten; recorded rather than quietly patched, because it is a good
-  example of trusting input from a peer you did not choose.
-- **No timeouts on the peer path** (defect R8). Connection failures are handled; a peer that is
-  alive but stalled is not, and will hang a download worker indefinitely. Four such peers hang
-  a download permanently, silently, at zero progress.
-- **A peer chooses how much memory this client allocates** (defect R7). The `PIECE <n>` header
-  is used as an allocation size without being checked against the length the manifest implies.
-- **Five tracker replies contain an embedded newline** (defect R6), so one command produces two
-  lines and every later reply on that connection is one behind. The framing contract is not
-  enforced anywhere; it is assumed by every caller.
+- **One thread per connection, bounded in time but not in number.** A node or the tracker cuts off a
+  peer that sends too slowly, which frees its memory slot, but a client that keeps opening connections
+  still gets a thread for each; there are no per-source limits. An event loop is the fix.
+- **Names are written once, and anyone can register one.** There are no users, so a replaceable name
+  would be one anyone could replace; a mistaken upload holds its name until deletion with an owner token
+  exists. The same file uploaded with a different chunk size or manifest fan-out is a different
+  manifest.
+- **Fixed-size chunks deduplicate poorly after an insertion.** One byte inserted near the start of a
+  file shifts every later chunk; content-defined chunking is the known fix, not built. Measured in
+  [`BENCHMARKS.md`](BENCHMARKS.md).
+- **Registrations are serialised at the disk's flush rate.** Each new name is flushed before it is
+  acknowledged, under one lock; group commit would lift it.
+- **The container files have not been run, and continuous integration has not run** — the development
+  machine has no Docker, and the workflow runs once the repository is pushed.
 - **No clean shutdown.** Every connection handler is a detached thread that nothing joins, so
   processes are killed rather than stopped — possibly mid-write.
 - **A node that loses every node it knew stays out until one of its remembered contacts is alive.** It refuses
@@ -1365,5 +1392,5 @@ Stated limits read as engineering judgement. Unstated ones read as things that w
 
 ---
 
-*This repository began as an operating-systems course assignment (Sep–Nov 2025). It is being
-rebuilt as a distributed systems project; the original history is deliberately intact.*
+*This repository began as an operating-systems course assignment (Sep–Nov 2025) and was rebuilt as a
+distributed systems project; the original history is deliberately intact.*

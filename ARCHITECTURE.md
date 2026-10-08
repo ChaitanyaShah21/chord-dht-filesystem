@@ -4,44 +4,46 @@ The current design, and the log of every decision that produced it. This file is
 README's **Key Design Rationales** section is written from, and the source `DEFENCE.md` draws
 its questions from.
 
-> **State as of 23 Aug 2026.** What is documented below is the **legacy tracker-and-peers
-> system** that exists today, because that is what the code actually does and a diagram of
-> something unbuilt is not architecture. The **target** Chord architecture is drawn in Phase 1,
-> **after** the five open forks are resolved and the Chord paper is read. Drawing it earlier
-> would decide those forks by implication, which is exactly what R11 forbids.
+> **State as of 8 Oct 2026.** Since Phase 5 the code implements the target design: files are cut
+> into content-addressed chunks stored three times on a Chord ring, and a small tracker maps names to
+> manifest keys. The diagram below is that system. The coursework system this repository began as —
+> a tracker with users, groups and seeder lists, and peers serving pieces to each other — was retired
+> in Phase 5 (D-060); it is described in the decisions that changed it (D-004 to D-011) and in the
+> history (`pre-resurrection`, and `e381179` for the transfer baseline).
 
 ---
 
 ## What this system does
 
-A peer-to-peer file-sharing system. Files never live on a central server: each participant
-stores files on its own disk and serves them directly to other participants. A **tracker**
-process holds only metadata — which files exist, how they are split, the SHA-1 (Secure Hash
-Algorithm 1) fingerprint of each piece, and which peers currently claim to hold them. To fetch
-a file a peer asks the tracker who has it, then connects to those peers directly and pulls
-different pieces from several of them in parallel, verifying each piece against its fingerprint
-before writing it to disk.
+Distributed file storage. A file is cut into 512 KiB chunks, each named by the SHA-1 of its own
+bytes and stored on the first three distinct processes clockwise from that name on a Chord ring. A
+**manifest** — the list of a file's chunk names and sizes — is itself a chunk in the ring. A small
+**tracker** holds only `name → manifest key`. A client asks the tracker for one key, then routes to
+every chunk itself in O(log N) hops, fetches the chunks in parallel, verifies each against the name
+it asked for, and assembles the file under a temporary name that is renamed into place only when it
+is complete.
 
-**Where it is going:** the tracker's role as the single index is replaced by a **Chord
-distributed hash table (DHT)** — a ring of nodes that between them own the whole key space, so
-that finding which node holds a chunk is a routing problem solved in O(log N) hops rather than
-a lookup in one process's memory. The tracker survives in reduced form as a control plane, to
-be replicated with **Raft** in Block 2.
+**Where it came from:** a BitTorrent-style file sharer — a tracker that knew which peers held which
+files, and peers that served pieces to each other. The decisions in the log below turned it into
+storage one at a time; D-022 records the shift and what it cost. **Where it is going:** the tracker is
+the single point of failure that remains; replicating it with Raft is the planned next step.
 
 **Scope boundary — what it deliberately does not do:**
 
-- **No storage engine.** Chunks are files on disk. No log-structured merge tree, no compaction,
-  no write-ahead log. The interesting problems here are routing, replication and failure
+- **No storage engine.** Chunks are files on disk (D-045). No log-structured merge tree, no
+  compaction. The tracker's log is a plain append-only list of registrations (D-058), replayed
+  whole at start-up. The interesting problems here are routing, replication and failure
   detection, and adding a storage engine would dilute all three.
 - **No NAT traversal, no wide-area deployment.** Every peer is directly addressable. Hole
   punching and relays are a different project.
-- **No encryption or authentication on the wire.** Stated as a limitation, not hidden. See
-  `DEFENCE.md` — "what would you have to add to run this on the open internet?" is a question
-  with a real answer, and it is a better answer than a half-built TLS integration.
+- **No encryption or authentication on the wire.** Stated as a limitation, not hidden. Running
+  this on the open internet would need node identities bound to keys and authenticated channels —
+  a better answer than a half-built TLS integration.
 - **No incentive mechanism.** BitTorrent's tit-for-tat choking algorithm is deliberately out of
   scope; peers are assumed cooperative.
-- **Users, groups and authentication are being removed** (see D-004). They were a coursework
-  requirement, not a distributed-systems one.
+- **No users, groups or authentication** — removed in Phase 5, as D-004 decided. They were a
+  coursework requirement, not a distributed-systems one; the cost is that anyone who can reach the
+  tracker can register a name (D-059 limits the damage: names are written once).
 
 Non-goals matter. "Why didn't you build X?" is answered much better by a stated scope boundary
 than by an apology.
@@ -50,53 +52,38 @@ than by an apology.
 
 ## The diagram — the system as it exists today
 
-Kept as diagram-as-text so it diffs in review and cannot silently drift from the design.
+Kept as diagram-as-text so it diffs in review and cannot silently drift from the design. Since
+Phase 5 this is the target design below, built; the target diagram is kept as the record of what
+was designed before it existed.
 
 ```mermaid
 flowchart TB
-    subgraph control["CONTROL PLANE — metadata only, never file bytes"]
-        T["tracker :8000<br/>users · groups · manifests · seeder addresses<br/>append-only update_log → state_8000.log"]
+    C["<b>client</b><br/>put / get · workers pull chunk numbers from one counter (D-056)<br/>verifies every chunk · part file, fsync, rename (D-055)"]
+
+    subgraph control["CONTROL PLANE"]
+        T["<b>tracker</b><br/>name → manifest key, nothing else (D-058)<br/>effect log, flushed before every OK"]
     end
 
-    subgraph peerA["peer A — client process"]
-        A1["main loop<br/>stdin → tracker"]
-        A2["peer server :6881<br/>serves GET_PIECE"]
-        A3["heartbeat thread<br/>update_seeder / 30 s"]
+    subgraph ring["DATA PLANE — node processes, 8 ring members each (D-047, D-051)"]
+        direction LR
+        P1["<b>process A</b><br/>chunk store"] --> P2["<b>process B</b><br/>chunk store"] --> P3["<b>process C</b><br/>chunk store"] --> P4["<b>process D</b><br/>chunk store"] --> P1
     end
 
-    subgraph peerB["peer B — client process"]
-        B1["main loop"]
-        B2["peer server :6882"]
-        B3["download workers<br/>≤ 4 threads"]
-    end
-
-    A1 -- "1 upload_file g1 f 5242880 h0 h1 …" --> T
-    B1 -- "2 get_file_info g1 f" --> T
-    T -- "3 FILE_INFO … SEEDERS alice@127.0.0.1:6881" --> B1
-    B3 -- "4 GET_PIECE g1 f i" --> A2
-    A2 -- "5 PIECE n + n raw bytes" --> B3
-    A3 -.->|"shares A1's socket — this is bug D2"| T
-
-    classDef bug stroke-dasharray: 4 4
-    class A3 bug
+    C -- "1 · RESOLVE name / REGISTER name key" --> T
+    T -- "2 · FILE manifest-key" --> C
+    C -- "3 · FIND_SUCCESSOR, hop by hop (iterative, D-012)" --> ring
+    C -- "4 · GET manifest, then GET every chunk in parallel" --> P2
+    P2 -- "5 · CHUNK n + n bytes · hashed by the client (D-049)" --> C
+    P2 -. "PUT: the owner stores, then STORE to two other processes (D-046)" .-> P3
 ```
 
-**Reading the request path:**
-
-1. Peer A hashes its file in 512 KB pieces and sends the **manifest** — filename, total size,
-   and one SHA-1 per piece — to the tracker. The file bytes do not move.
-2. Peer B asks the tracker for that manifest.
-3. The tracker replies with the piece hashes and the list of seeders, each as
-   `username@ip:port`.
-4. B's download workers connect **directly to A's peer server** and request pieces by index.
-   Up to four workers run, pulling different indices concurrently.
-5. A replies with a length-prefixed header and then the raw bytes. B verifies the SHA-1 before
-   writing, and re-requests from a different seeder on mismatch.
-
-The dashed edge is not part of the design — it is defect **D2** in `PROGRESS.md`, drawn in
-because it is currently real.
-
----
+**Reading the path.** An upload stores every chunk through its owner (which forwards two more
+copies, answering after `W`), then the manifest (a tree of them for files over 4 GiB, D-054), and
+only then registers the name — so a name never points at a file that is not all there. A download
+resolves the name (steps 1–2), fetches and checks the manifest, then runs the lookup and `GET` for
+every chunk concurrently (steps 3–5); a chunk that fails its hash or whose holder is dead is read
+from the next replica. The tracker sees one short line per file and never a chunk, a node address or
+a user.
 
 ---
 
@@ -165,11 +152,11 @@ processes (D-048).
 
 | Component | Responsibility | Owns | Talks to |
 |---|---|---|---|
-| `tracker` | Metadata index and peer discovery. Never touches file bytes. | `users`, `online_users`, `groups`, `group_files` (manifests + seeder sets), `user_address_map`, the append-only `update_log` persisted to `state_<port>.log` | clients (one detached thread each) |
-| `client` — main loop | Reads stdin, sends commands, prints replies | `logged_in_user`, `current_sock` | tracker |
-| `client` — peer server | Serves `GET_PIECE` to any peer that connects | nothing; reads from disk per request | other clients |
-| `client` — download workers | Pull pieces in parallel, verify SHA-1, write at the right offset | one `DownloadTask` | other clients' peer servers |
-| `client` — heartbeat thread | Re-announces seeded files every 30 s | `seeding_files` | tracker (**via the main loop's socket — defect D2**) |
+| `tracker` (`tracker.cpp`, `names.cpp`) | The namespace: `REGISTER`, `RESOLVE`, `LIST`, `PING` (D-058) | the `name → key` map and its log, `names_<port>.log` | clients, one detached thread per connection |
+| `node` (`node.cpp`; `stabilize.cpp`, `chunk.cpp`, `repair.cpp`, `store.cpp`) | One process: several ring members, their routing state and maintenance; a chunk store; coordinating writes; repair | each member's successor list, fingers, predecessor; the store's files and index | other nodes and clients, one detached thread per connection; a maintenance thread and a repair thread |
+| `client` (`client.cpp`; `transfer.cpp`) | Upload and download of whole files; names through the tracker | nothing persistent; during a transfer, one chunk per worker and the part file | the tracker, and ring nodes over a fresh connection per exchange |
+| `chunk`, `lookup` | Tools: one chunk, or one lookup, through the ring | nothing | ring nodes |
+| `net.cpp` | The one framing layer: lines, bodies, connect deadline, server read deadline (D-010, D-044, D-025, D-061) | nothing | — |
 | `sha1.h` | Header-only wrapper over OpenSSL `SHA1()`, hex-encoding the 20-byte digest | nothing | — |
 
 ---
@@ -382,53 +369,55 @@ distributed systems — which, given the target companies, it is not.
 
 ## Invariants
 
-Things that must always hold. Each is a candidate for a test, and each is something an
-interviewer can probe. **Marked ✗ where the current code violates them** — those are the
-Phase 0 work list.
+Things that must always hold, each tested. I1–I6 were written in the Phase 0 audit against the
+coursework system, where all but I1 were violated; they are restated for the system that replaced it.
 
 | # | Invariant | Enforced by | Tested by | Holds? |
 |---|---|---|---|---|
-| I1 | A piece written to disk has a SHA-1 matching its manifest entry | check before `write_piece` in `download_piece_from_peer` | not yet | ✓ |
-| I2 | **A failed download leaves no file behind** | nothing — `ftruncate` preallocates and nothing cleans up | not yet | **✗ R2** |
-| I3 | **Tracker state after restart equals state before restart** | replay of `update_log` in `main` | not yet — `scripts/test-persistence.sh` in Phase 0 | **✗ R1** |
-| I4 | A peer only ever serves bytes from files it has explicitly shared | nothing — `GET_PIECE` opens any path given | not yet | **✗ D3** |
-| I5 | Malformed input from any peer cannot terminate a process | nothing — bare `stoull` throws in a detached thread | not yet | **✗ D4** |
-| I6 | Every reply read by the client's main loop is the reply to the request it just sent | nothing — the heartbeat shares the socket | not yet | **✗ D2** |
+| I1 | A chunk written to a file hashes to the key its manifest names | `get_chunk` hashes every chunk it accepts (D-049); its length is checked against the manifest (D-055) | `test-chunk`, `test-transfer`, `e2e-transfer.sh` (a corrupt copy) | ✓ |
+| I2 | **A failed download leaves no file behind** | the part file is the only file written; it is renamed only when complete, and deleted on failure (D-055) | `test-transfer`, `e2e-transfer.sh` | ✓ (was ✗, R2b) |
+| I3 | **Tracker state after restart equals state before restart** | the log is flushed before `OK`; replay applies the same function the live path does (D-009, D-058) | `test-names`, `e2e-persistence.sh` | ✓ (was ✗, R1) |
+| I4 | A node serves only chunks, by a key validated before any path is built | `valid_key` before every path (D-045); there is no other way to name a file | `test-chunk`, `e2e-chunk.sh` (traversal keys) | ✓ (was ✗, D3) |
+| I5 | Malformed input from any peer cannot terminate a process | strict parsers that return errors (no throwing conversions on peer input); `SIGPIPE` ignored (D-011) | `test-lookup`, `test-chunk`, `test-transfer`, `test-names`, `e2e-framing.sh` | ✓ (was ✗, D4) |
+| I6 | Every reply read is the reply to the request just sent | one exchange per fresh connection everywhere (D-024); no connection is shared between threads | by construction | ✓ (was ✗, D2) |
 | I7 | **A routing identifier decides which *node*; it never decides which *object*.** The chunk store is keyed by the full 160-bit hash | D-019 — truncation is applied to placement only; the store (D-045) names every file by the full 40-character key, validated before any path is built | `test-chunk` (keys, store), `e2e-chunk.sh` | ✓ |
 | I8 | **"Am I alone in the ring?" is answered by comparing *addresses*, never identifiers alone** — because `(n, n]` evaluates to the whole ring, so `successor.id == my_id` silently means "I own everything". With virtual nodes (D-047) a ring member is an address *and* an identifier, and a process is an address | D-019, D-047 — `same_node` compares address and identifier, `same_process` the address | `test-stabilize`, `test-chunk` (siblings) | ✓ |
+| I9 | **A name never points at a file that is not all there** | the client registers a name only after every chunk and manifest is stored (D-017, D-058) | `e2e-transfer.sh` (a failed upload leaves its name unregistered) | ✓ |
 
 ---
 
 ## Concurrency model
 
-Asked about in nearly every systems interview, and the place where honest projects come apart
-under questioning.
-
 ### Tracker
 
-| Shared state | Protected by | Held for how long | Why this and not something finer/coarser |
+| Shared state | Protected by | Held for how long | Why |
 |---|---|---|---|
-| `users`, `online_users`, `groups`, `group_files`, `user_address_map` | `state_mtx` — one global mutex | the **entire** `handle_command` body | Coarse and honest. Every command is short and in-memory, so contention is low and correctness is obvious. A per-group or per-map lock would be faster and would need a stated lock order to stay deadlock-free — **not worth it until a benchmark says so**, which is the answer to "why not finer-grained locking?" |
-| `update_log`, `next_seq`, the state file | `log_mtx` | one append | Separate from `state_mtx` so the disk write is not inside the state lock |
-| `peer_sockets`, `peer_last_seq` | `peer_mtx` | one broadcast loop | Currently vestigial — the peer list is always empty (defect C1) |
+| the `name → key` map, the log descriptor, `log_broken` | `Namespace::mu` — one mutex | one request; for a new registration that includes the append and the `fdatasync` | The log's order must be the map's order, and `OK` must follow the flush, so the append happens under the same lock. The cost is that registrations are serialised at the disk's flush rate (D-058); group commit would lift it |
 
-**Lock ordering:** `state_mtx` → `log_mtx` → `peer_mtx`, and never the reverse.
-`handle_command` takes `state_mtx` and calls `append_update_to_file`, which takes `log_mtx`.
-`broadcast_sync` takes `log_mtx` then `peer_mtx`, and is called **after** `handle_command` has
-returned and released `state_mtx`. Because every path acquires them in the same order, no cycle
-exists and deadlock is impossible. **This is the property to state out loud when asked "how do
-you know it can't deadlock?"** — the answer is a total order on locks, not "I tested it".
+**Threads:** one `accept` loop and one detached thread per connection, each ending when its peer
+closes, a send fails, or the next request line misses the read deadline (D-061).
 
-**Threads in the system:** tracker — one `accept` loop, plus one **detached** thread per
-connected client, created at `tracker.cpp:466`. Client — the main stdin loop, one detached
-peer-server `accept` loop, one detached thread per inbound peer connection, up to four
-download workers (**joined**, not detached), and one detached heartbeat thread.
+### Node
 
-**Detached versus joined, and why it matters here:** a detached thread cannot be waited on and
-cleans up its own resources when it returns. That is fine for a connection handler whose
-lifetime is the connection. It is *not* fine at shutdown: nothing joins those threads, so the
-tracker has no clean shutdown path at all — it is killed, mid-write if necessary. Worth naming
-as a known limitation before someone finds it.
+One mutex per ring member's routing state, never held across a network call (D-030); the store's index
+has its own; the body cap is one atomic counter (D-052). Threads: the `accept` loop, one detached thread
+per connection (bounded in time by the read deadline, not in number), one maintenance thread for all
+members, one repair thread. A coordinator's copy threads are joined by the request's own thread after it
+answers (D-046).
+
+### Client
+
+`--workers` threads per transfer (D-056), sharing: one atomic counter for the next chunk number
+(`fetch_add`), one atomic stop flag, the file descriptor (used only with `pread`/`pwrite`, which take
+their offset as an argument, so no shared file position), a vector of per-chunk results in which each
+worker writes only its own elements, and the first failure's message behind a mutex. The entry-point
+preference (D-057) is an atomic index. A signal handler reads one lock-free atomic flag and calls
+`unlink` (D-055).
+
+**Detached versus joined:** node and tracker connection threads are detached and nothing joins them,
+so neither program has a clean shutdown path; they are killed. Crash-only is the design (D-033), and
+every write that matters — a stored chunk (D-045), a registered name (D-058) — is flushed before it is
+acknowledged, so a kill loses nothing acknowledged. Worker threads are joined.
 
 ---
 
@@ -436,15 +425,18 @@ as a known limitation before someone finds it.
 
 | Failure | Detected how | Detection time | Recovery | Measured in |
 |---|---|---|---|---|
-| Seeder dies mid-transfer | `recv` returns ≤ 0 in the piece loop | immediate | worker tries the next seeder for that piece | not yet |
-| Seeder goes offline quietly | 30 s heartbeat stops | **never — the tracker does not expire stale seeders** | none; the peer stays in the seeder list forever | not yet |
-| Tracker dies | client `send`/`recv` fails | immediate | client retries 3× then tries other trackers — **of which there are none (C1)**, so it exits | not yet |
-| Piece arrives corrupted | SHA-1 mismatch before write | immediate | re-request from another peer | not yet |
-| Tracker restarts | — | — | **replay is broken (R1); all groups and manifests are lost** | not yet |
+| A node process dies | a refused connection, by any caller (D-013, D-035) | the next call to it; at most a stabilisation period | evicted; reads and writes fall through to the next replica (D-049); its chunks re-replicated by their new owners (D-050) | `BENCHMARKS.md` §4, §6; `e2e-transfer.sh` (killed mid-download) |
+| A node is frozen | two timed-out calls (D-035) | about two periods | as above, once evicted | §4, §6 |
+| A chunk copy rots on disk | the reader's hash check; the scrub | at read time; within a full scan | read from the next replica; the copy replaced (D-050) | `e2e-chunk.sh`, `e2e-transfer.sh` |
+| A chunk is lost from every replica | every replica fails the read | at read time | none: the download fails and writes nothing (D-055) | `e2e-transfer.sh` |
+| The tracker dies | the client's connection is refused | immediate | none until it restarts; a download by manifest key still works (D-057) | `e2e-transfer.sh` |
+| The tracker restarts | — | — | the log is replayed; torn and damaged records are skipped and reported (D-058) | `e2e-persistence.sh` |
+| A client dies mid-download | — | — | a `.part-` file is left (SIGKILL) or removed (SIGINT, SIGTERM) | `e2e-transfer.sh` |
+| A peer sends slowly or not at all | the server's read deadline (D-061) | the deadline (10 s by default) | the connection is closed; its body slot and thread freed | `e2e-deadline.sh` |
 
-**What this system does not survive:** tracker loss (it is a single point of failure — that is
-precisely what Block 2's Raft group is for); a seeder that is alive but stalled, since there
-are no timeouts anywhere on the peer path, only connection failures; and its own restart.
+**What this system does not survive:** the tracker's loss (a single point of failure — the Raft group is
+for that); losing every replica of a chunk at once; and, on one host, a machine-wide stall longer than
+the failure detector's patience (`BENCHMARKS.md` §4a).
 
 ---
 

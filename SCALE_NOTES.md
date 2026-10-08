@@ -428,3 +428,50 @@ the number of 5-second waits grows with the request rate, not with the ring.
 
 **Would do:** a shorter client deadline for routing hops than for chunk transfers, or hedging a hop that has not
 answered after a few round-trip times. **Confidence:** `MEASURED`.
+
+---
+
+### 8 Oct 2026 — every chunk is its own lookup, so routing traffic grows with chunks, not files
+
+**Observed:** `REASONED`, from the design (D-016, D-056); the per-chunk times are in `BENCHMARKS.md` §5. A download
+looks up every chunk separately — content addressing scatters consecutive chunks across unrelated owners, so
+there is nothing to reuse — and each lookup is about ½ log₂(members) requests, each on a fresh connection
+(D-024). A 100 MB file is 200 lookups; at 64 KiB chunks, 1,600.
+
+**At 10x:** ten times the files, or a tenth of the chunk size, is ten times the routing requests, all landing first
+on the entry node the client was given (D-057), and each a TCP handshake that leaves a socket in `TIME_WAIT` on the
+client.
+
+**Would do:** cache owners per arc in the client (a stale entry costs a hop, never correctness), spread first hops
+over several entry nodes, and keep one connection per node for many `GET`s. **Confidence:** `REASONED`.
+
+---
+
+### 8 Oct 2026 — a download holds its whole chunk list in memory
+
+**Observed:** `REASONED`, from the code (D-054). Before any chunk is fetched the client resolves the whole manifest
+tree into a list of (key, offset, length) — about 100 bytes per chunk with the string's allocation (`ESTIMATE`).
+
+**At 10x and beyond:** 100 GB at 512 KiB is about 200,000 chunks, 20 MB of list: fine. A petabyte would be 2 billion
+chunks and 200 GB of list. The manifest tree itself is fetched one level at a time and is small; it is the flattening
+that costs.
+
+**Would do:** stream the tree — fetch one data manifest at a time and feed its chunks to the workers — so memory is
+one manifest (≤ 512 KiB) per level. **Confidence:** `REASONED`.
+
+---
+
+### 8 Oct 2026 — a connection's thread is now bounded in time, still not in number
+
+**Observed:** `MEASURED` for the time bound (`e2e-deadline.sh`: a silent connection, a trickled line and a trickled
+body are each cut off within 1.0–1.1 s of a 1 s deadline, and 32 withheld bodies free their slots without the
+attacker closing anything); `REASONED` for the rest. This closes the "peer that connects and never sends" case of the
+13 Sep entry: every request line and body a node or the tracker reads has a deadline (D-061, 10 s by default).
+
+**At 10x:** a client opening connections faster than one per deadline still gets a thread for each. At 10 s and 8 MB
+of reserved stack per thread (virtual, not resident), 1,000 connections a second is 10,000 threads alive at once.
+
+**Would do:** an `epoll` event loop with a timer per connection, or a fixed worker pool with a bounded accept queue;
+and per-source connection limits, which need some notion of who a source is. **Confidence:** `MEASURED` for the
+deadline, `REASONED` for the thread count.
+
