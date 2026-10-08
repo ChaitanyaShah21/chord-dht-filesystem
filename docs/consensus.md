@@ -170,3 +170,13 @@ change, which is not built.
 |---|---|
 | **Joint consensus** | the most intricate part of Raft, for a group that does not change |
 | **Single-server changes** | simpler; its published form needed a later fix — next to build, not needed now |
+
+### One code path — [D-080](../ARCHITECTURE.md#d-080--one-code-path-a-one-replica-group-is-the-single-tracker-and-the-namespace-becomes-rafts-state-machine)
+
+`./tracker <port>` alone is a group of one: leader at once, committing on its own flush. `names.cpp` is the state
+machine and keeps no log of its own. The old `names_<port>.log` is not read.
+
+| Alternative | Why not |
+|---|---|
+| **The old tracker as a mode** | two persistence formats and two recovery rules, and the old one would get most of the testing |
+| **The namespace's log kept under Raft** | two logs and two flushes per write, which can disagree after a crash |

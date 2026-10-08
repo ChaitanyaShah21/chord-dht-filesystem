@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-079: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-080: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-079 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-080 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 71 recorded here (F1–F70 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 72 recorded here (F1–F71 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -308,6 +308,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F68** | **Does a leader notice it is cut off, and does a returning replica disrupt the group?** Neither; check-quorum; check-quorum and pre-vote. | Decides what clients of a cut-off leader see, and whether a healed partition costs an election. | **RESOLVED** — D-077 |
 | **F69** | **Snapshots and log compaction?** Snapshots with `InstallSnapshot`; local compaction; or none. | Decides restart and catch-up time, and whether there is a second replication path. | **RESOLVED** — D-078 |
 | **F70** | **How does the group's membership change?** Fixed, with a fingerprint; joint consensus; or single-server changes. | Decides whether a replica can be replaced live, and what a configuration mistake breaks. | **RESOLVED** — D-079 |
+| **F71** | **What happens to the single tracker?** Kept as a mode beside the group; a one-replica group; or its log kept under Raft. | Decides whether the existing suites test the replicated code, and how many persistence formats exist. | **RESOLVED** — D-080 |
 
 ---
 
@@ -4203,3 +4204,35 @@ entry of its own term before changing membership. Worth building next; not neede
 - Restarting the whole group with a new list is an operator procedure, not a tested path.
 
 **Evidence:** pending — `test-replica` (a mismatched group is refused).
+
+---
+
+### D-080 — One code path: a one-replica group is the single tracker, and the namespace becomes Raft's state machine
+
+**Fork:** F71. **Date:** 8 Oct 2026. **Depends on:** D-058, D-069, D-074. **Gates:** what `./tracker <port>` with no
+group runs, and what happens to `names.cpp` and its log.
+
+**The decision.**
+- `./tracker <port>` with no `--group` is a **group of one**. It needs no election timeout — no other replica can lead
+  — so it becomes leader as soon as its log is replayed, and commits each entry on its own flush. The single tracker
+  and the replicated one are the same code.
+- `names.cpp` becomes the **state machine**: validation, the map, `apply`, and the answers to `RESOLVE` and `LIST`. It
+  loses its log, its flush and its lock: durability is the Raft log's job (D-074), and the lock is the replica's
+  (D-072).
+- `names_<port>.log` (D-058) is not read, as D-058 did not read the coursework's `state_<port>.log`.
+
+**Why.** Two code paths for the same service means the path the existing suites exercise — the single tracker — is
+not the one that matters. With one path, every existing suite (persistence, framing, hangup, deadline, transfer,
+smoke, edge) runs against the replicated code.
+
+**Rejected: keep the single tracker as a mode beside the group.** Two persistence formats, two recovery rules, two
+sets of tests, and the simple one is the one most tests would keep using.
+
+**Rejected: keep the namespace's own log under Raft**, as the state machine's persistence. Two logs per replica, two
+flushes per write, and two files that can disagree after a crash.
+
+**Cost accepted.** The single tracker now writes term records and a no-op at every start; its replay follows D-074
+(stop at the first damaged record) rather than D-058 (skip it and continue). A log written by the old tracker is not
+imported.
+
+**Evidence:** pending — every existing suite against the new tracker.
