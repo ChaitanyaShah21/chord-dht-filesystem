@@ -228,6 +228,7 @@ decided before the paper is one that cannot be defended in December.
 | **F55** | **How does someone else start a ring, given that Docker is not installed on the development machine?** A tested local launcher plus container files marked not yet run; container files only; nothing until Docker is installed; or installing Docker now. | Decides what "how would someone run this?" can honestly be answered with, and what is claimed about containers. | **RESOLVED** — D-064 |
 | **F56** | **What does continuous integration run?** The build, the unit tests and the fast end-to-end suites on every push, with the timing-sensitive suites on demand; unit tests only; everything on every push; or none. | Decides what a green check means, and whether a flaky check teaches everyone to ignore it. | **RESOLVED** — D-065 |
 | **F57** | **How is the transfer path measured against the Phase 0 baseline?** Against a same-day re-run of the baseline at its own commit, with the clean single-variable comparison (one worker against many) beside it; or against the number recorded in September alone. And what are the curves? | The before/after is the phase's headline; moving several variables at once, or comparing across machine changes, would make it unattributable. | **RESOLVED** — D-066 |
+| **F58** | **An orphaned ring member is named as successor by its own sibling, which never evicts it, so it can never rejoin. What breaks the cycle?** An `ERR orphaned` reply evicts that member at once, siblings included; the orphan copies its predecessor's list in place; wired nodes wait for every peer before their first round; or fall back to a sibling instead of orphaning. Found by the Phase 5 benchmark, not foreseen. | A ring started all at once, or a process that loses every other process it knew, can stay wrong for good — every lookup through that sibling ends at a member that refuses to route. | **RESOLVED** — D-067 |
 
 ---
 
@@ -3638,3 +3639,52 @@ once, so the improvement could not be attributed to parallelism — the one-vari
 repetition makes the benchmark slower to run.
 
 **Evidence:** none yet — design time.
+
+---
+
+### D-067 — A member that says it is orphaned is evicted at once, by any node, its own siblings included
+
+**Fork:** F58, found by the Phase 5 benchmark rather than foreseen. **Date:** 8 Oct 2026. **Depends on:** D-035,
+D-040, D-047. **Gates:** every ring with virtual nodes.
+
+**What happened.** A fresh ring of 16 processes × 8 members, started at once by the benchmark harness, did not
+become correct within 60 s, and was still wrong minutes later. One process's first maintenance round ran before the
+other fifteen were listening. Every connection was refused, and a refusal is proof of death (D-035), so each of its
+members evicted all fifteen. One member, O, was left knowing nobody and became an orphan (D-040): it refuses to
+route and rejoins through remembered addresses. Its sibling S — a member of the same process, whose real successor
+had just been evicted too — fell back onto O as its successor. Then three rules met:
+- a member never strikes or evicts a member of its own process (D-047), so S kept O for ever;
+- S could not rediscover its real successor, because it learns of it by asking its successor — O — for its
+  predecessor, and an orphan answers every such request `ERR orphaned`;
+- every rejoin lookup of O's ended at S, which named O itself as the owner, so `join` waited "for it to be evicted"
+  (D-040's rule for a restarted node whose old entry is still in the ring).
+
+Reproduced in process (`test-chunk`): with S's real successor placed just after S, as it was on the real ring, O
+never rejoined in any of 20 round orders.
+
+**The decision.** In the one wrapper every maintenance call goes through, a reply beginning `ERR orphaned` evicts the
+member that sent it — that member only, at once, by any node, its own siblings included. It is the member's own
+statement that it has left the ring: proof, like a refused connection, not suspicion like a timeout. Siblings remain
+exempt from strikes for timeouts and from refusals, because those are evidence about the process, and if the process
+were dead the caller would be dead too (D-047).
+
+With it, the scenario heals in all 20 round orders within 12 rounds: S evicts O, falls back further, and — orphaned
+in turn if it has nobody left — rejoins; the lookups for O then end at its real predecessor.
+
+**Rejected: the orphan rejoins in place**, copying its successor list from the member that names it. Faster, but it
+adopts a list it has not verified (D-035's rule), and it keeps in the ring a member that has just said it is not in
+it.
+
+**Rejected: wired nodes wait until every listed peer is listening before their first round.** It removes this start-up
+cause, not the trap: a member can be orphaned later, when every other process it knew dies at once while its own
+process survives, and the same three rules would hold it out for good.
+
+**Rejected: fall back to a sibling instead of orphaning.** Two orphaned siblings would make a ring of their own and
+claim every key between them — the split D-040 exists to prevent.
+
+**Cost accepted.** A false `ERR orphaned` cannot be produced by a healthy member, but any peer can send that reply:
+one bad reply evicts the member it names from the caller's tables, until the member's own stabilise re-inserts it.
+That is the same trust the ring already gives a refused connection, and a member re-inserts itself the way it joined.
+
+**Evidence (8 Oct):** `test-chunk` — the scenario under 20 round orders: 0 of 20 heal without this rule, 20 of 20 with
+it. On real processes, every suite and every fresh ring of the Phase 5 benchmark (`BENCHMARKS.md` §5) came up correct.

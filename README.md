@@ -1077,6 +1077,19 @@ latency, deduplication and the tracker's footprint per name complete it. **Rejec
 number alone (the machine has changed since), and reporting only the old-against-new figure (several variables move at
 once). **Cost:** a fresh ring per repetition makes the benchmark slow to run.
 
+### A member that says it is orphaned is evicted at once, even by its own siblings
+
+Found by the transfer benchmark: in a ring started all at once, one process ran its first maintenance round before
+the others were listening, evicted them all, and left one of its members knowing nobody — an orphan, which refuses to
+route until it rejoins. Its sibling had fallen back onto it as successor and, since a process never evicts its own
+members, kept it for ever; every rejoin lookup ended at that sibling, which named the orphan itself, so the orphan
+waited for good. Now a reply of `ERR orphaned` evicts the member that sent it, from any node, siblings included: it is
+the member's own word that it is out of the ring, as strong as a refused connection. Siblings still never act on
+timeouts or refusals about their own process. **Rejected:** rejoining in place by copying an unverified list, waiting
+at start-up until every peer listens (removes this cause, not the trap), and falling back to a sibling (two orphaned
+siblings would claim the whole ring). **Cost:** one forged `ERR orphaned` reply evicts a member from one node's tables
+until its next stabilise puts it back.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
