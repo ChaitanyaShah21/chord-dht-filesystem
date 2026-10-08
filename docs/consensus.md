@@ -158,3 +158,15 @@ ordinary `APPEND` calls.
 |---|---|
 | **Snapshots and `InstallSnapshot`** | a second replication path, to save almost nothing |
 | **Local compaction** | a snapshot format and recovery, bounding the file but not catch-up |
+
+### Fixed membership — [D-079](../ARCHITECTURE.md#d-079--membership-is-fixed-every-replica-is-given-the-same-list-and-a-fingerprint-refuses-a-mismatched-one)
+
+`--group a,b,c --id i` on every replica, identical lists. A fingerprint of the list on every call refuses a replica
+started with a different one, turning a configuration mistake into a visible outage instead of two majorities.
+**A replica whose disk is lost must not be restarted empty under its old identity**; replacing it needs a membership
+change, which is not built.
+
+| Alternative | Why not |
+|---|---|
+| **Joint consensus** | the most intricate part of Raft, for a group that does not change |
+| **Single-server changes** | simpler; its published form needed a later fix — next to build, not needed now |

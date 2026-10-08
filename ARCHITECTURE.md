@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-078: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-079: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-078 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-079 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 70 recorded here (F1–F69 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 71 recorded here (F1–F70 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -307,6 +307,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F67** | **How are reads made linearizable?** Through the log; ReadIndex; leader leases; or follower reads of found names. | Decides what a read costs and whether a deposed or paused leader can answer stale. | **RESOLVED** — D-076 |
 | **F68** | **Does a leader notice it is cut off, and does a returning replica disrupt the group?** Neither; check-quorum; check-quorum and pre-vote. | Decides what clients of a cut-off leader see, and whether a healed partition costs an election. | **RESOLVED** — D-077 |
 | **F69** | **Snapshots and log compaction?** Snapshots with `InstallSnapshot`; local compaction; or none. | Decides restart and catch-up time, and whether there is a second replication path. | **RESOLVED** — D-078 |
+| **F70** | **How does the group's membership change?** Fixed, with a fingerprint; joint consensus; or single-server changes. | Decides whether a replica can be replaced live, and what a configuration mistake breaks. | **RESOLVED** — D-079 |
 
 ---
 
@@ -4170,3 +4171,35 @@ them). Bounds the file, not catch-up, and still adds a snapshot format and its r
 built, names leave the state but not the log, and snapshots become worth having.
 
 **Evidence:** pending — replay time against log size, `BENCHMARKS.md` §7.
+
+---
+
+### D-079 — Membership is fixed: every replica is given the same list, and a fingerprint refuses a mismatched one
+
+**Fork:** F70. **Date:** 8 Oct 2026. **Depends on:** D-069, D-071. **Gates:** how the group is changed.
+
+**The decision.** The group is an ordered list of addresses, `--group <ip:port>,<ip:port>,…`, identical on every
+replica, plus each replica's position in it, `--id <i>`. A replica's identity *is* its position. Every `VOTE` and
+`APPEND` carries 8 hexadecimal characters of SHA-1 of the list, and a replica refuses a call whose fingerprint
+differs from its own. Changing the group means stopping it and restarting every replica with the new list. **No
+membership change protocol** — neither joint consensus nor single-server changes — is built.
+
+**Why the fingerprint.** Majorities are computed from the list. Two replicas started with different lists can
+disagree about what a majority is, and then two leaders in one term are possible. Refusing the call makes a
+configuration mistake an outage, which is visible, instead of a safety failure, which is not.
+
+**Rejected: joint consensus** (Raft paper §6). Changes membership live through a period in which decisions need
+majorities of both the old and the new group. General, and the most intricate part of the protocol.
+
+**Rejected: single-server changes** (thesis chapter 4). Add or remove one replica at a time through a log entry —
+simpler, and the published version had a safety bug, found after publication, that needs a new leader to commit an
+entry of its own term before changing membership. Worth building next; not needed to replicate the namespace.
+
+**Cost accepted.**
+- **No live replacement.** A replica whose disk is lost **must not** be restarted empty under its old identity: an
+  empty replica can vote for a candidate missing committed entries, and a committed entry held by it and one other
+  replica would then be on only one. Replacing it safely needs a membership change. Until then the group runs one
+  short, tolerating one fewer failure.
+- Restarting the whole group with a new list is an operator procedure, not a tested path.
+
+**Evidence:** pending — `test-replica` (a mismatched group is refused).

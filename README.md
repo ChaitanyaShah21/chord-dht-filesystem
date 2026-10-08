@@ -149,6 +149,7 @@ has every alternative considered and what it would have cost.
 | **ReadIndex reads** (D-076) | linearizable with no clock assumption; a round trip, no flush | leases, which a paused leader can outlive |
 | **Check-quorum** (D-077) | a leader cut off from the majority steps down instead of stalling its clients | pre-vote (deferred; costs one election per healed partition) |
 | **No snapshots** (D-078) | names are never overwritten or deleted, so a snapshot would be as large as the log | `InstallSnapshot`, a second replication path that saves almost nothing |
+| **Fixed membership with a fingerprint** (D-079) | a replica started with a different member list is refused, not counted | joint consensus (deferred) |
 
 ## Project structure
 
