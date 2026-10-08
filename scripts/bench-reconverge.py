@@ -30,6 +30,8 @@ Modes:
                        distribution (D-039's rule for D)
   --cpu N              CPU per node over --seconds with the ring idle, for each --periods value
   (default)            the sweep given by --sizes, --periods, --kills, --load, --runs
+  --keep DIR           also keep every run's node logs and the harness's timeline (kill time,
+                       victims, every poll) under DIR, for explaining a run after the fact
 
 Writes one CSV row per run to bench/raw/reconverge-<commit>.csv (gitignored); the
 calibration and CPU modes write bench/raw/calibrate-<commit>.csv and cpu-<commit>.csv.
@@ -37,7 +39,7 @@ scripts/plot-reconverge.py turns them into the committed summary and figure. Pri
 if the working tree is dirty, because a number that cannot be tied to a commit cannot be
 reproduced.
 """
-import argparse, csv, os, random, re, signal, socket, statistics, subprocess, sys, threading, time
+import argparse, csv, json, os, random, re, shutil, signal, socket, statistics, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -159,7 +161,7 @@ class Load:
         return False
 
 
-def one_run(n, k, period, timeout, succ, run, rate, limit_s, poller, adjacent=False):
+def one_run(n, k, period, timeout, succ, run, rate, limit_s, poller, adjacent=False, keep=None, tag=""):
     members = members_for(n, run)
     rng = random.Random(f"reconverge-{n}-{k}-{period}-{run}-{adjacent}")
     hold_s = max(2 * period / 1000, 0.5)
@@ -197,6 +199,7 @@ def one_run(n, k, period, timeout, succ, run, rate, limit_s, poller, adjacent=Fa
             time.sleep(1.0)                   # let the clients reach a steady rate
 
         t_kill = time.monotonic()
+        t_kill_wall = time.time()             # the nodes' log lines carry wall-clock times
         for v in victims:
             ring.kill(v)
 
@@ -260,6 +263,17 @@ def one_run(n, k, period, timeout, succ, run, rate, limit_s, poller, adjacent=Fa
             if m in live and "orphaned:" in text:
                 orphaned += 1
         row.update(false_evictions=false_evictions, orphaned=orphaned)
+
+        if keep:
+            # Keep this run's evidence: every node's log, and the harness's own timeline
+            # (kill time on the wall clock, victims, and every poll's verdicts).
+            dest = os.path.join(keep, f"{tag}-n{n}-k{k}{'adj' if adjacent else ''}-T{period}-D{timeout}-run{run}")
+            shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(ring.logdir, os.path.join(dest, "logs"))
+            with open(os.path.join(dest, "run.json"), "w") as f:
+                json.dump({"t_kill_wall": t_kill_wall, "victims": victims, "row": row,
+                           "polls": [{"t": round(p[0], 3), "ring": p[1], "lists": p[2], "fingers": p[3],
+                                      "poll_s": round(p[4], 3)} for p in polls]}, f, indent=1, default=str)
 
         if load is not None:
             res = load.results
@@ -369,6 +383,7 @@ def main():
     ap.add_argument("--calibrate", type=int, default=0)
     ap.add_argument("--cpu", type=int, default=0)
     ap.add_argument("--seconds", type=float, default=20.0)
+    ap.add_argument("--keep", default="", help="directory to keep every run's node logs and timeline in")
     args = ap.parse_args()
     ints = lambda s: [int(x) for x in s.split(",") if x]
 
@@ -419,7 +434,7 @@ def main():
                 for k in ints(args.kills):
                     for run in range(args.runs):
                         row = one_run(n, k, period, args.timeout, args.succ, run, args.load, args.limit,
-                                      poller, args.adjacent)
+                                      poller, args.adjacent, args.keep, args.tag)
                         row["tag"] = args.tag
                         raw.writerow(row)
                         raw_file.flush()

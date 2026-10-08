@@ -165,8 +165,13 @@ int main(int argc, char **argv) {
 
     g_node = std::make_unique<NodeState>(me, successors);
     const std::string tag = "[node " + me.ip + ":" + std::to_string(me.port) + "] ";
+    // Every event carries the wall-clock time in milliseconds, so the logs of many
+    // nodes -- and a machine-wide record such as `vmstat` -- can be put on one
+    // timeline when a failure has to be explained after the fact.
     g_node->log = [tag](const std::string &event) {
-        std::fprintf(stderr, "%s%s\n", tag.c_str(), event.c_str());
+        const auto now = std::chrono::system_clock::now().time_since_epoch();
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+        std::fprintf(stderr, "%s%lld.%03lld %s\n", tag.c_str(), ms / 1000, ms % 1000, event.c_str());
     };
 
     // ---- the starting state (D-029) ----
