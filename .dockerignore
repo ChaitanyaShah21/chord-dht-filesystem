@@ -1,0 +1,15 @@
+.git
+*.o
+testdata
+bench
+cluster
+docs
+tracker
+node
+client
+chunk
+lookup
+sim-hops
+sim-balance
+test-*
+*-tsan

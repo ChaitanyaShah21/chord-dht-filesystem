@@ -1,0 +1,58 @@
+# Continuous integration (decision D-065).
+#
+# NOT YET RUN: it runs once the repository is pushed. No status badge is shown in
+# the README until a run has passed.
+#
+# Every push and pull request: the build (any compiler warning fails it), the unit
+# tests, and every end-to-end suite that is fast and does not depend on timing under
+# load, on x86-64 and on arm64 (the development machine's architecture). The churn
+# suite and the ThreadSanitizer runs kill and freeze processes on timers, so they
+# run only when started by hand.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ make libssl-dev python3 iproute2
+      - name: Build, with warnings as failures
+        run: |
+          set -o pipefail
+          make 2>&1 | tee build.log
+          if grep -qiE 'warning' build.log; then echo "the build must be warning-free"; exit 1; fi
+      - name: Unit tests
+        run: make check
+      - name: End-to-end suites
+        run: |
+          for s in e2e-node e2e-chord e2e-chunk e2e-deadline e2e-transfer e2e-smoke e2e-edge e2e-persistence e2e-framing e2e-hangup; do
+            echo "::group::$s"
+            scripts/$s.sh || { echo "::endgroup::"; echo "$s failed"; exit 1; }
+            echo "::endgroup::"
+          done
+
+  timing-sensitive:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ make libssl-dev python3 iproute2
+      - name: Build, including the ThreadSanitizer builds
+        run: make && make tsan
+      - name: Churn
+        run: scripts/e2e-churn.sh
+      - name: ThreadSanitizer through the chunk, transfer and churn suites
+        run: |
+          export NODE_CMD="setarch $(uname -m) -R ./node-tsan" CLIENT_CMD="setarch $(uname -m) -R ./client-tsan"
+          scripts/e2e-chunk.sh && scripts/e2e-transfer.sh && scripts/e2e-churn.sh

@@ -1,0 +1,80 @@
+# compose.yaml -- a tracker and a five-node ring (decision D-064).
+#
+# NOT YET RUN. Written without Docker on the development machine; see the README.
+#
+#   docker compose up -d --build
+#   docker compose run --rm client put /work/somefile somefile
+#   docker compose run --rm client get somefile /work/copy
+#   docker compose down            (add -v to delete the stores)
+#
+# The addresses are fixed because a node's dotted-quad ip:port is also its ring
+# identity -- SHA-1("ip:port") -- and --join takes an address, not a host name
+# (D-019, D-029). The subnet 172.28.0.0/24 must not collide with another Docker
+# network on the host.
+
+x-node: &node
+  image: chordfs
+  depends_on: [node1]
+  restart: unless-stopped
+
+services:
+  tracker:
+    build: .
+    image: chordfs
+    command: ["tracker", "7000", "--dir", "/data"]
+    volumes: ["tracker-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.10 } }
+
+  node1:
+    image: chordfs
+    depends_on: [tracker]
+    restart: unless-stopped
+    command: ["node", "172.28.0.11", "7001", "--create", "--store", "/data"]
+    volumes: ["node1-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.11 } }
+
+  node2:
+    <<: *node
+    command: ["node", "172.28.0.12", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    volumes: ["node2-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.12 } }
+
+  node3:
+    <<: *node
+    command: ["node", "172.28.0.13", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    volumes: ["node3-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.13 } }
+
+  node4:
+    <<: *node
+    command: ["node", "172.28.0.14", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    volumes: ["node4-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.14 } }
+
+  node5:
+    <<: *node
+    command: ["node", "172.28.0.15", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    volumes: ["node5-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.15 } }
+
+  # Not started by `up`: run it with `docker compose run --rm client <command>`.
+  client:
+    image: chordfs
+    profiles: ["client"]
+    entrypoint: ["client", "--tracker", "172.28.0.10:7000", "--ring", "172.28.0.11:7001,172.28.0.12:7001"]
+    volumes: ["./:/work"]
+    networks: [ring]
+
+networks:
+  ring:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  tracker-data:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
