@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-068: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-069: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,12 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 60 recorded here (F1–F59 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 61 recorded here (F1–F60 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -296,6 +297,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F57** | **How is the transfer path measured against the Phase 0 baseline?** Against a same-day re-run of the baseline at its own commit, with the clean single-variable comparison (one worker against many) beside it; or against the number recorded in September alone. And what are the curves? | The before/after is the phase's headline; moving several variables at once, or comparing across machine changes, would make it unattributable. | **RESOLVED** — D-066 |
 | **F58** | **An orphaned ring member is named as successor by its own sibling, which never evicts it, so it can never rejoin. What breaks the cycle?** An `ERR orphaned` reply evicts that member at once, siblings included; the orphan copies its predecessor's list in place; wired nodes wait for every peer before their first round; or fall back to a sibling instead of orphaning. Found by the Phase 5 benchmark, not foreseen. | A ring started all at once, or a process that loses every other process it knew, can stay wrong for good — every lookup through that sibling ends at a member that refuses to route. | **RESOLVED** — D-067 |
 | **F59** | **Where do sources, tests, objects and programs live?** Sources in `src/` and unit tests in `tests/`, or the flat layout kept; and where the build puts objects and programs. | Decides whether the repository reads at a glance, and whether every script, the container files and the documentation keep their paths. | **RESOLVED** — D-068 |
+| **F60** | **How many tracker replicas?** Two; three; five; or primary–backup without consensus. | Sets how many failures the namespace survives, what each write waits for, and on one host how much of the cost is contention. | **RESOLVED** — D-069 |
 
 ---
 
@@ -3753,3 +3755,50 @@ point one directory up from where the file is. The programs are still written to
 
 **Evidence:** `make clean && make`, `make check` and all eleven end-to-end suites pass unchanged after the move; touching
 `src/store.h` rebuilds exactly the nine objects that include it.
+
+---
+
+### D-069 — The tracker becomes a Raft group of three replicas; the size is a parameter, and odd
+
+**Fork:** F60. **Date:** 8 Oct 2026. **Depends on:** D-017, D-058, D-059. **Gates:** every decision in the
+replicated tracker (D-069 – D-082), and what "the tracker is down" means.
+
+**The decision.** The namespace (`name → manifest key`, D-058) is replicated by Raft across a fixed group of
+tracker replicas. **Three by default**; the group is a list of addresses given to every replica, so any size
+works, and one replica is the single tracker (D-080). Five is measured beside three, so the cost of tolerating a
+second failure is a number rather than a guess.
+
+**Why three.** A Raft group of `n` makes progress while a majority, `⌊n/2⌋ + 1`, is up and can reach each other,
+so it tolerates `⌊(n − 1)/2⌋` failures:
+
+| Replicas | Majority | Failures tolerated | A write waits for |
+|---:|---:|---:|---|
+| 1 | 1 | 0 | its own flush |
+| 2 | 2 | **0** | both flushes |
+| 3 | 2 | 1 | its own flush and the faster of two followers' |
+| 4 | 3 | 1 | the second-fastest of three followers |
+| 5 | 3 | 2 | the second-fastest of four followers |
+
+Three is the smallest group that survives a failure. It matches the data plane, which keeps three copies of a
+chunk and acknowledges a write after two (D-015): the system as a whole then tolerates one failure in each plane.
+
+**Rejected: two replicas.** The majority of two is two, so a two-replica group stops at the first failure — and
+with two machines that can fail instead of one, it stops *more* often than a single tracker. It buys a second
+copy of the data and nothing else.
+
+**Rejected: four.** Tolerates one failure, like three, with one more replica to wait for and to keep up; an even
+group can also split two against two with no majority on either side.
+
+**Rejected: five as the default.** Tolerates two failures, at four messages per heartbeat round and a write that
+waits for the second-fastest of four flushes. On one host the five replicas also share one disk and eight cores, so
+what it costs here is mostly contention — which is why it is measured rather than assumed.
+
+**Rejected: primary–backup without consensus** (one fixed primary copying to a standby). Simple until the primary
+fails: something has to decide that the standby takes over, and if that something is wrong — the primary was only
+slow — two primaries accept writes. Raft's majority rule is that decision.
+
+**Cost accepted.** A second simultaneous failure stops name registration and resolution until a majority is back.
+Downloads by manifest key still work without any tracker (D-057). Three processes, three logs and three flushes
+per write where there was one.
+
+**Evidence:** pending — `BENCHMARKS.md` §7.

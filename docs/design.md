@@ -5,7 +5,7 @@ considered** for each and what choosing differently would have cost. Each sectio
 one or more entries in the decision log in [`ARCHITECTURE.md`](../ARCHITECTURE.md), which has the
 full reasoning, the date each was decided, and the evidence that has since confirmed or contradicted
 it. Subsystem guides: [routing](routing.md) · [membership](membership.md) · [storage](storage.md) ·
-[transfer and namespace](transfer.md) · [protocol](protocol.md) · [testing](testing.md).
+[transfer and namespace](transfer.md) · [consensus](consensus.md) · [protocol](protocol.md) · [testing](testing.md).
 
 ## Goals and non-goals
 
@@ -243,7 +243,7 @@ of its uploaders going offline.
 | Item | Design | Why not now |
 |---|---|---|
 | Deletion ([D-023](../ARCHITECTURE.md#d-023--no-deletion-in-the-mvp-owner-token-unnaming-and-a-mark-and-sweep-collector-designed-for-later)) | owner token returned at upload; mark-and-sweep collector with a grace period | deleting a file's chunks can destroy another file's, and with no access control a plain delete is a vandalism tool |
-| A replicated tracker | a Raft group replicating the effect log | the largest remaining piece; not started |
+| A replicated tracker | a Raft group replicating the effect log; every decision made before its code, in [consensus.md](consensus.md) | being built |
 | Content-defined chunking | boundaries chosen by a rolling hash (FastCDC) | changes what a chunk is, and every chunk-size comparison with it |
 | Hinted handoff ([D-015](../ARCHITECTURE.md#d-015--rf--3-w--2-r--1-and-w-is-a-runtime-parameter)) | a down replica's copy is written to the next node with a note | `W = 2` was enough under the measured failures |
 | Connection reuse, owner caching | per-node connections; owners cached per arc | per-hop connections give one unambiguous failure signal; the cost is measured, not yet limiting |

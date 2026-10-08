@@ -134,6 +134,13 @@ has every alternative considered and what it would have cost.
 | **Distributed storage, not a swarm** (D-022) | a file outlives every uploader | making downloaders serve chunks, which needs an index of holders |
 | **Sources in `src/`, programs at the root** (D-068) | a readable tree; every script and document keeps its paths | binaries in `bin/` — thirty command lines changed for nothing |
 
+**The replicated tracker** — being built; depth and alternatives in
+[`docs/consensus.md`](docs/consensus.md):
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **Three tracker replicas** (D-069) | the smallest group that survives a failure, like the chunk plane's three copies | two (a majority of two is two: it survives nothing); five by default (measured, not chosen) |
+
 ## Project structure
 
 ```
@@ -178,6 +185,7 @@ chord-dht-filesystem/
 | [`docs/storage.md`](docs/storage.md) | the chunk store, replica sets, `W`, verified reads, repair |
 | [`docs/transfer.md`](docs/transfer.md) | manifests, the worker pool, the part file, the tracker's namespace |
 | [`docs/protocol.md`](docs/protocol.md) | every message, its replies and errors, framing, deadlines |
+| [`docs/consensus.md`](docs/consensus.md) | the replicated tracker: Raft, each decision with its alternatives (being built) |
 | [`docs/testing.md`](docs/testing.md) | the test layers, oracles, mutation testing, ThreadSanitizer |
 | [`docs/design.md`](docs/design.md) | each major decision with the alternatives considered |
 | [`docs/failures.md`](docs/failures.md) | every defect reproduced: how it was found, the root cause, why the fix works |
