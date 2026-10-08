@@ -1,104 +1,63 @@
 #!/usr/bin/env bash
-# e2e-edge.sh -- adversarial size sweep across the piece boundary.
+# e2e-edge.sh -- adversarial size sweep across the chunk boundary.
 #
-# PIECE_SIZE is 512*1024 = 524288. The happy path with one 300 KB file exercises
-# exactly one code path: a single short piece. This sweeps the boundaries where
-# off-by-one errors actually live -- zero bytes, one byte, exactly one piece, one
-# byte either side of a piece, exactly two pieces, and a multi-piece file.
+# The chunk size is 512*1024 = 524288. One 300 KB file exercises exactly one code
+# path: a single short chunk. This sweeps the boundaries where off-by-one errors
+# actually live -- zero bytes, one byte, exactly one chunk, one byte either side of
+# a chunk, exactly two chunks, and a multi-chunk file -- uploading each through the
+# ring and downloading it back, compared by SHA-1.
 #
-# THIS SCRIPT IS EXPECTED TO FAIL until defects R3 and R4 are closed.
-# See docs/failures.md. A failing test that pins a known open defect is worth more
-# than a passing test that avoids it.
-#
-# The signature of R3 is visible in the GOT_SZ column: every row receives the
-# PREVIOUS row's size. That one-row shift is the diagnosis, not the sizes.
+# History: written in Phase 0 against the coursework transfer path, where it found
+# defects R3 (every reply one behind after the first download) and R4 (a zero-byte
+# file could not be uploaded) and was committed failing on purpose (D-006). R3 was
+# fixed in Phase 0. Phase 5 retired that path (D-060) and this sweep now runs
+# through the ring; R4 is fixed there by design -- a zero-byte file is a manifest
+# with no entries -- so all seven cases are expected to pass.
 set -uo pipefail
-set +m   # no job-control "Killed" notices when cleanup() reaps the background processes
+set +m
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${TMPDIR:-/tmp}/p2p-edge-$$"
-TRACKER_PORT="${TRACKER_PORT:-7100}"
+export CLUSTER_DIR="$WORK/cluster" TRACKER_PORT="${TRACKER_PORT:-7105}" NODE_BASE="${NODE_BASE:-7751}" VNODES=4 PERIOD=200
 
-# Reap every process this suite starts, and wait until the ports are actually free.
-# Killing by PID was not enough: the clients run inside process substitution, so
-# killing the `tail` that feeds them leaves the client alive holding 6881/6882. The
-# next run then dies with a bind error that looks exactly like a product bug.
-reap () {
-  # Match the port, or this kills another suite's tracker too.
-  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
-  pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
-  pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null
-  local i
-  for i in $(seq 40); do
-    ss -ltn 2>/dev/null | grep -qE ":(${TRACKER_PORT}|6881|6882)[[:space:]]" || return 0
-    sleep 0.25
-  done
-  echo "WARN: ports still held after 10s:"
-  ss -ltn | grep -E ":(${TRACKER_PORT}|6881|6882)[[:space:]]"
-  return 1
-}
-
-cleanup() {
-  reap >/dev/null 2>&1
-  rm -rf "$WORK"
-}
+cleanup() { "$ROOT/scripts/cluster.sh" down >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-for b in tracker client; do
+for b in tracker node client; do
   [[ -x "$ROOT/$b" ]] || { echo "FAIL: $ROOT/$b not built. Run 'make' first."; exit 1; }
 done
+mkdir -p "$WORK/in" "$WORK/out"
+"$ROOT/scripts/cluster.sh" up 4 > "$WORK/up.out" 2>&1 || { echo "FAIL: cluster.sh up"; cat "$WORK/up.out"; exit 1; }
 
 CASES=(
-  "empty:0"               # zero pieces. ceil(0/PIECE_SIZE) == 0
-  "one_byte:1"            # one piece, one byte
-  "minus1:524287"         # one byte short of a full piece
-  "exact_1piece:524288"   # exactly one piece, no remainder
-  "plus1:524289"          # one piece plus one byte -> two pieces, second is 1 byte
-  "exact_2piece:1048576"  # exactly two pieces
-  "multi:3000000"         # six pieces, last one short
+  "empty:0"               # zero chunks: a manifest with no entries
+  "one_byte:1"            # one chunk, one byte
+  "minus1:524287"         # one byte short of a full chunk
+  "exact_1chunk:524288"   # exactly one chunk, no remainder
+  "plus1:524289"          # one chunk plus one byte -> two chunks, the second 1 byte
+  "exact_2chunk:1048576"  # exactly two chunks
+  "multi:3000000"         # six chunks, the last one short
 )
+C=("$ROOT/client" --tracker "127.0.0.1:$TRACKER_PORT" --ring "127.0.0.1:$NODE_BASE" --quiet)
 
-mkdir -p "$WORK/alice" "$WORK/bob"
-cd "$WORK" || exit 1
-reap || { echo "FAIL: ports busy, cannot start"; exit 1; }
-
-"$ROOT/tracker" "$TRACKER_PORT" >tracker.out 2>tracker.err & TPID=$!; disown
-sleep 1
-
-for c in "${CASES[@]}"; do
-  head -c "${c##*:}" /dev/urandom > "alice/${c%%:*}.bin"
-done
-
-: > a_${TRACKER_PORT}.in; : > b_${TRACKER_PORT}.in
-tail -f -n +1 a_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6881 >alice.out 2>alice.err) & ATL=$!; disown
-tail -f -n +1 b_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6882 >bob.out   2>bob.err)   & BTL=$!; disown
-sleep 2
-
-printf 'create_user alice pw\nlogin alice pw\ncreate_group g1\n' >> a_${TRACKER_PORT}.in; sleep 2
-printf 'create_user bob pw\nlogin bob pw\njoin_group g1\n'        >> b_${TRACKER_PORT}.in; sleep 2
-printf 'list_requests g1\naccept_request g1 bob\n'                >> a_${TRACKER_PORT}.in; sleep 2
-
-for c in "${CASES[@]}"; do printf 'upload_file g1 alice/%s.bin\n' "${c%%:*}" >> a_${TRACKER_PORT}.in; done
-sleep 4
-for c in "${CASES[@]}"; do
-  printf 'download_file g1 alice/%s.bin bob/%s.out\n' "${c%%:*}" "${c%%:*}" >> b_${TRACKER_PORT}.in
-  sleep 2
-done
-sleep 6
-
-echo "--- e2e-edge (PIECE_SIZE = 524288) ---"
-printf '%-16s %10s %10s  %s\n' CASE EXPECT_SZ GOT_SZ VERDICT
+echo "--- e2e-edge (chunk size = 524288) ---"
+printf '%-16s %10s %10s %7s  %s\n' CASE EXPECT_SZ GOT_SZ CHUNKS VERDICT
 fail=0
 for c in "${CASES[@]}"; do
   n="${c%%:*}"; b="${c##*:}"
-  e=$(sha1sum "alice/$n.bin" 2>/dev/null | awk '{print $1}')
-  g=$(sha1sum "bob/$n.out"   2>/dev/null | awk '{print $1}')
-  gs=$(stat -c%s "bob/$n.out" 2>/dev/null || echo "-")
-  if [[ -n "$g" && "$e" == "$g" ]]; then v=PASS; else v=FAIL; fail=1; fi
-  printf '%-16s %10s %10s  %s\n' "$n" "$b" "$gs" "$v"
+  head -c "$b" /dev/urandom > "$WORK/in/$n.bin"
+  "${C[@]}" put "$WORK/in/$n.bin" "$n" > "$WORK/out/$n.put" 2>&1
+  "${C[@]}" get "$n" "$WORK/out/$n.out" > "$WORK/out/$n.get" 2>&1
+  e=$(sha1sum "$WORK/in/$n.bin" | awk '{print $1}')
+  g=$(sha1sum "$WORK/out/$n.out" 2>/dev/null | awk '{print $1}')
+  gs=$(stat -c%s "$WORK/out/$n.out" 2>/dev/null || echo "-")
+  chunks=$(awk '{for (i = 1; i < NF; i++) if ($i == "chunks") print $(i + 1)}' "$WORK/out/$n.get")
+  expect_chunks=$(( (b + 524287) / 524288 ))
+  if [[ -n "$g" && "$e" == "$g" && "$chunks" == "$expect_chunks" ]]; then v=PASS; else v=FAIL; fail=1; fi
+  printf '%-16s %10s %10s %7s  %s\n' "$n" "$b" "$gs" "${chunks:--}" "$v"
+  [[ $v == FAIL ]] && cat "$WORK/out/$n.put" "$WORK/out/$n.get"
 done
 echo
-echo "--- bob.err ---"; cat bob.err
-[[ $fail -ne 0 ]] && echo "
-EXPECTED FAILURE while R4 is open -- see docs/failures.md"
-exit $fail
+[[ $fail -ne 0 ]] && { echo "FAIL -- a size at or near a chunk boundary did not survive the round trip"; exit 1; }
+echo "PASS -- every size across the chunk boundary round-trips, zero bytes included (R4 fixed)"
+exit 0

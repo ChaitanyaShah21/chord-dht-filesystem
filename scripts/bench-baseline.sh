@@ -2,6 +2,11 @@
 # bench-baseline.sh -- §1 of BENCHMARKS.md: how fast is the inherited system
 # before anything is optimised?
 #
+# RUNS ONLY AGAINST THE COURSEWORK PROGRAMS, which Phase 5 removed (D-060). To re-run
+# it, check out the baseline commit in a separate worktree and build there:
+#   git worktree add /tmp/baseline e381179 && make -C /tmp/baseline && /tmp/baseline/scripts/bench-baseline.sh
+# That is how the Phase 5 comparison re-measured it as a same-day control (D-066).
+#
 # This number cannot be recovered later. Once the transfer layer is rewritten in
 # Phase 5 there is no way back to "what it was before", so every claim of
 # improvement is measured against what this prints.

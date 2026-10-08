@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # e2e-persistence.sh -- does the tracker's state actually survive a restart?
 #
-# This is the regression test for defect R1 (docs/failures.md): the tracker writes
-# an append-only command log and replays it at startup, but replays every command
-# with an empty client_user, so each one is rejected by its own authorisation guard.
-# The user table survives (create_user has no such guard); everything a user ever
-# did is silently discarded.
+# Phase A registers names over a raw socket and proves they are live. The tracker
+# is then killed with SIGKILL -- no chance to tidy up -- and restarted on the same
+# port and directory, so it replays the same log. Phase B asks for the same facts
+# back. Phase C damages the log the way a crash or a bad disk would (a torn final
+# record, a record whose key was cut short, a line in the old tracker's format)
+# and checks that recovery keeps every good record, skips the bad ones, says so,
+# and accepts new registrations afterwards (D-058).
 #
-# Committed RED on purpose, same as D-006. A test that has never failed has not
-# been shown to test anything.
-#
-# Phase A builds state and proves it is live. The tracker is then killed and
-# restarted on the same port, in the same directory, so it reads the same
-# state_<port>.log. Phase B asks for the same four facts back.
+# History: written in Phase 0 as the regression test for defect R1 -- the
+# coursework tracker replayed its log through its own authorisation guards, which
+# refused every record, so nothing but the user list survived a restart -- and
+# committed failing on purpose (D-006) until D-009 fixed it. Re-pointed at the
+# namespace tracker in Phase 5 (D-060); the property is the same: what the tracker
+# acknowledged before the restart, it still knows after it.
 set -uo pipefail
 set +m
 
@@ -21,91 +23,94 @@ WORK="${TMPDIR:-/tmp}/p2p-persist-$$"
 TRACKER_PORT="${TRACKER_PORT:-7101}"
 
 reap () {
-  # Match the port, or this kills another suite's tracker too.
-  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null
-  pkill -9 -f "$ROOT/client 127.0.0.1 $TRACKER_PORT" 2>/dev/null
-  pkill -9 -f "tail -f -n [+]1 ._${TRACKER_PORT}.in" 2>/dev/null
+  pkill -9 -f "$ROOT/tracker $TRACKER_PORT" 2>/dev/null     # this port only (E6)
   local i
   for i in $(seq 40); do
-    ss -ltn 2>/dev/null | grep -qE ":(${TRACKER_PORT}|6883|6884)[[:space:]]" || return 0
+    ss -ltn 2>/dev/null | grep -qE ":${TRACKER_PORT}[[:space:]]" || return 0
     sleep 0.25
   done
-  echo "WARN: ports still held after 10s:"
-  ss -ltn | grep -E ":(${TRACKER_PORT}|6883|6884)[[:space:]]"
   return 1
 }
 cleanup() { reap >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-for b in tracker client; do
-  [[ -x "$ROOT/$b" ]] || { echo "FAIL: $ROOT/$b not built. Run 'make' first."; exit 1; }
-done
+[[ -x "$ROOT/tracker" ]] || { echo "FAIL: $ROOT/tracker not built. Run 'make' first."; exit 1; }
+mkdir -p "$WORK"
+reap || { echo "FAIL: port $TRACKER_PORT busy, cannot start"; exit 1; }
 
-mkdir -p "$WORK/alice" "$WORK/bob"
-cd "$WORK" || exit 1
-reap || { echo "FAIL: ports busy, cannot start"; exit 1; }
+python3 - "$ROOT" "$WORK" "$TRACKER_PORT" <<'PY'
+import hashlib, os, socket, subprocess, sys, time
+root, work, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+log_path = os.path.join(work, f"names_{port}.log")
+fails = 0
+def check(what, ok):
+    global fails
+    fails += 0 if ok else 1
+    print(f"  {'PASS' if ok else 'FAIL'}  {what}", flush=True)
 
-head -c 4096 /dev/urandom > alice/testfile.bin
+def start(tag):
+    err = open(os.path.join(work, f"tracker-{tag}.err"), "w")
+    p = subprocess.Popen([f"{root}/tracker", str(port), "--dir", work], stdout=subprocess.DEVNULL, stderr=err)
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+            return p
+        except OSError:
+            time.sleep(0.05)
+    return p
 
-# ---------------------------------------------------------------- phase A
-"$ROOT/tracker" "$TRACKER_PORT" >t1.out 2>t1.err & disown
-sleep 1
+def ask(line):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        s.sendall(line.encode() + b"\n")
+        return s.makefile("rb").readline().decode().strip()
 
-: > a_${TRACKER_PORT}.in; : > b_${TRACKER_PORT}.in
-tail -f -n +1 a_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6883 >a1.out 2>a1.err) & disown
-tail -f -n +1 b_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6884 >b1.out 2>b1.err) & disown
-sleep 2
+key = lambda i: hashlib.sha1(f"manifest {i}".encode()).hexdigest()
+names = {f"report-{i}.pdf": key(i) for i in range(4)}
 
-printf 'create_user alice pw\nlogin alice pw\ncreate_group g1\n' >> a_${TRACKER_PORT}.in; sleep 2
-printf 'create_user bob pw\nlogin bob pw\njoin_group g1\n'       >> b_${TRACKER_PORT}.in; sleep 2
-printf 'list_requests g1\naccept_request g1 bob\n'               >> a_${TRACKER_PORT}.in; sleep 2
-printf 'upload_file g1 alice/testfile.bin\n'                     >> a_${TRACKER_PORT}.in; sleep 3
-printf 'list_groups\nlist_members g1\n'                          >> a_${TRACKER_PORT}.in; sleep 2
+print("--- phase A: state built while the tracker is running ---")
+t = start("a")
+for n, k in names.items():
+    check(f"REGISTER {n}", ask(f"REGISTER {n} {k}") == "OK")
+check("a taken name is refused", ask(f"REGISTER report-0.pdf {key(99)}") == f"EXISTS {key(0)}")
+check("the log holds four records", open(log_path).read().count("\n") == 4)
 
-echo "--- phase A: state built while the tracker is running ---"
-grep -qE '(^|[[:space:]])g1' a1.out && echo "  live: list_groups sees g1"     || echo "  live: list_groups MISSING g1 -- phase A itself broke"
-grep -q  'bob'               a1.out && echo "  live: list_members sees bob"   || echo "  live: list_members MISSING bob -- phase A itself broke"
-[[ -s "state_${TRACKER_PORT}.log" ]] && echo "  live: state_${TRACKER_PORT}.log written, $(wc -l < "state_${TRACKER_PORT}.log") records" \
-                                     || echo "  live: NO LOG FILE WRITTEN"
+print("--- SIGKILL, then restart on the same port and directory ---")
+t.kill(); t.wait()
+t = start("b")
+print("--- phase B: the same facts, asked after the restart ---")
+for n, k in names.items():
+    check(f"RESOLVE {n} after the restart", ask(f"RESOLVE {n}") == f"FILE {k}")
+check("still written once after the restart", ask(f"REGISTER report-1.pdf {key(98)}") == f"EXISTS {key(1)}")
+check("LIST after the restart", ask("LIST") == "NAMES 4 " + " ".join(sorted(names)))
 
-# ---------------------------------------------------------------- restart
-reap >/dev/null 2>&1
-sleep 1
-echo "--- restarting tracker on the same port, same directory ---"
-"$ROOT/tracker" "$TRACKER_PORT" >t2.out 2>t2.err & disown
-sleep 1
+print("--- phase C: a damaged log ---")
+t.kill(); t.wait()
+good = open(log_path, "rb").read()
+with open(log_path, "ab") as f:
+    rec = f"REGISTER cut.pdf {key(5)}"
+    rec += " " + hashlib.sha1(rec.encode()).hexdigest()[:8]
+    f.write(rec[:40].encode() + b"\n")          # a record cut inside its key, newline intact
+    f.write(b"0 create_user alice pw\n")         # the old tracker's log format
+    f.write(b"REGISTER torn.pdf " + key(6)[:20].encode())   # torn by a crash: no newline
+t = start("c")
+report = open(os.path.join(work, "tracker-c.err")).read()
+for n, k in names.items():
+    check(f"{n} survives the damage", ask(f"RESOLVE {n}") == f"FILE {k}")
+check("the cut and the torn records are not replayed", ask("RESOLVE cut.pdf") == "MISSING" and ask("RESOLVE torn.pdf") == "MISSING")
+check("recovery says what it skipped and cut off", "2 damaged records skipped" in report and "torn final record" in report)
+check("the torn tail is cut off the file", not open(log_path, "rb").read().endswith(key(6)[:20].encode()))
+check("a registration after recovery succeeds", ask(f"REGISTER after.pdf {key(7)}") == "OK")
+t.kill(); t.wait()
+t = start("d")
+check("and survives the next restart", ask("RESOLVE after.pdf") == f"FILE {key(7)}")
+t.kill(); t.wait()
 
-# ---------------------------------------------------------------- phase B
-: > c_${TRACKER_PORT}.in
-tail -f -n +1 c_${TRACKER_PORT}.in > >("$ROOT/client" 127.0.0.1 "$TRACKER_PORT" 6883 >a2.out 2>a2.err) & disown
-sleep 2
-printf 'create_user alice pw\nlogin alice pw\n'                      >> c_${TRACKER_PORT}.in; sleep 2
-printf 'list_groups\nlist_members g1\n'                              >> c_${TRACKER_PORT}.in; sleep 2
-printf 'get_file_info g1 alice/testfile.bin\n'                       >> c_${TRACKER_PORT}.in; sleep 2
-
-fails=0
-check () { # check <description> <pattern> <file>
-  if grep -qE "$2" "$3"; then
-    printf '  PASS  %s\n' "$1"
-  else
-    printf '  FAIL  %s\n' "$1"; fails=$((fails+1))
-  fi
-}
-
-echo "--- phase B: the same four facts, asked after the restart ---"
-check "create_user replayed  (alice already exists)" 'already exists'      a2.out
-check "create_group replayed (list_groups shows g1)" '(^|[[:space:]])g1'   a2.out
-check "accept_request replayed (g1 still has bob)"   'bob'                 a2.out
-check "upload_file replayed  (manifest still known)" 'FILE_INFO'           a2.out
-
-echo
-echo "--- what the restarted tracker replayed (t2.err) ---"
-sed -n '1,12p' t2.err
-echo "--- the log it replayed from ---"
-cat "state_${TRACKER_PORT}.log"
-echo "--- phase B client transcript ---"
-cat a2.out
-
-if (( fails == 0 )); then echo; echo "PASS -- state survives a restart"; exit 0; fi
-echo; echo "FAIL -- $fails/4 facts did not survive the restart (defect R1)"
-exit 1
+print("--- what the tracker reported on each start ---")
+for tag in "abcd":
+    print(f"  [{tag}] " + open(os.path.join(work, f"tracker-{tag}.err")).read().strip().replace("\n", "\n      "))
+if fails == 0:
+    print("\nPASS -- state survives a restart")
+    sys.exit(0)
+print(f"\nFAIL -- {fails} check(s) failed")
+sys.exit(1)
+PY

@@ -5,6 +5,19 @@
 # Before the fix this killed the tracker with SIGPIPE -- exit 141 -- after about
 # twenty-six commands. No hostile intent is required: Ctrl-C on a client at the
 # wrong moment is the same event.
+#
+# Re-pointed at the namespace tracker in Phase 5 (D-060): the same attack, with
+# registrations instead of the coursework's create_user, and the same property --
+# the tracker survives and keeps serving.
+#
+# What this suite can no longer show: that the tracker ignores SIGPIPE. A tracker
+# built WITHOUT signal(SIGPIPE, SIG_IGN) also passes (checked by mutation, 8 Oct).
+# On Linux the first send after a reset fails with ECONNRESET and no signal -- the
+# socket's pending error is returned and cleared -- and only a SECOND send raises
+# SIGPIPE. The coursework tracker ignored failed sends and kept answering the
+# requests still buffered, so it made that second send and died. The new serve loop
+# stops at the first failed send, so this attack never reaches the signal. The
+# ignore stays, as a defence in depth for any path that writes twice.
 set -uo pipefail
 set +m   # no job-control "Killed" notice when cleanup reaps the tracker
 
@@ -37,7 +50,7 @@ reap || { echo "FAIL: port busy, cannot start"; exit 1; }
 # subshell prints "Killed" for its foreground child, which lands after the
 # verdict and makes a passing run read like a crash. The tracker's stderr is
 # already captured in t.err, so nothing diagnostic is lost.
-( "$ROOT/tracker" "$TRACKER_PORT" >t.out 2>t.err; echo "$?" > exit.txt ) 2>/dev/null &
+( "$ROOT/tracker" "$TRACKER_PORT" --dir "$WORK" >t.out 2>t.err; echo "$?" > exit.txt ) 2>/dev/null &
 SUB=$!
 sleep 1
 
@@ -47,7 +60,7 @@ port, n = int(sys.argv[1]), int(sys.argv[2])
 s = socket.create_connection(("127.0.0.1", port), timeout=10)
 # Pipeline commands so the tracker still has replies to write after we are gone,
 # and never read a single one: the replies pile up in its send buffer.
-s.sendall(b"".join(b"create_user u%d pw\n" % i for i in range(n)))
+s.sendall(b"".join(b"REGISTER u%d %s\n" % (i, b"a" * 40) for i in range(n)))
 # SO_LINGER with a zero timeout makes close() send RST rather than FIN, so the
 # connection is destroyed rather than half-closed -- the abrupt case.
 s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
@@ -79,9 +92,8 @@ import socket, sys
 try:
     s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
     s.settimeout(5)
-    s.recv(4096)                                  # greeting
-    s.sendall(b"create_user survivor pw\n")
-    sys.exit(0 if b"\n" in s.recv(4096) else 1)
+    s.sendall(b"PING\n")
+    sys.exit(0 if s.recv(4096) == b"PONG\n" else 1)
 except Exception:
     sys.exit(1)
 PY

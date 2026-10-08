@@ -11,6 +11,8 @@
 #      (ERR busy), and after the deadline the slots are free again without the
 #      attacker closing anything
 #   5. a whole 512 KiB body sent at once, and a slow but complete line, still work
+#   6. the tracker, started with the same deadline: an idle connection and a
+#      trickled line are cut off the same way
 #
 # NODE_CMD runs a different node binary, e.g. the ThreadSanitizer build.
 set -uo pipefail
@@ -24,9 +26,10 @@ PORT="${PORT:-7760}"
 reap() {
   pkill -CONT -f "node[-a-z]* 127.0.0.1 $PORT " 2>/dev/null
   pkill -9 -f "node[-a-z]* 127.0.0.1 $PORT " 2>/dev/null
+  pkill -9 -f "tracker $((PORT + 1)) " 2>/dev/null
   local i
   for i in $(seq 40); do
-    ss -ltn 2>/dev/null | grep -qE ":${PORT}[[:space:]]" || return 0
+    ss -ltn 2>/dev/null | grep -qE ":(${PORT}|$((PORT + 1)))[[:space:]]" || return 0
     sleep 0.25
   done
   return 1
@@ -34,7 +37,7 @@ reap() {
 cleanup() { reap >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-[[ -x "$ROOT/node" ]] || { echo "FAIL: $ROOT/node not built. Run 'make' first."; exit 1; }
+for b in node tracker; do [[ -x "$ROOT/$b" ]] || { echo "FAIL: $ROOT/$b not built. Run 'make' first."; exit 1; }; done
 mkdir -p "$WORK"
 reap || { echo "FAIL: port $PORT busy, cannot start"; exit 1; }
 
@@ -186,6 +189,37 @@ try:
     check(reply.startswith("PONG"), "a slow line that completes within the deadline is answered")
     s.close()
     check(proc.poll() is None, "the node is still running")
+
+    # 6. the tracker
+    tport = port + 1
+    tracker = subprocess.Popen([f"{root}/tracker", str(tport), "--dir", work, "--read-deadline", str(int(DEADLINE * 1000))],
+                               stdout=subprocess.DEVNULL, stderr=open(os.path.join(work, "tracker.log"), "w"))
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", tport), timeout=0.5).close()
+            break
+        except OSError:
+            time.sleep(0.05)
+    s = socket.create_connection(("127.0.0.1", tport), timeout=10)
+    t = closed_after(s)
+    check(0.8 <= t <= 2.5, f"the tracker closes a connection that sends nothing after {t:.2f} s")
+    s = socket.create_connection(("127.0.0.1", tport), timeout=10)
+    t0 = time.monotonic()
+    try:
+        for b in b"RESOLVE some-long-file-name.pdf\n":
+            s.sendall(bytes([b]))
+            time.sleep(0.15)
+    except OSError:
+        pass
+    reply = b""
+    try:
+        reply = s.recv(100)
+    except OSError:
+        pass
+    check(reply == b"" and time.monotonic() - t0 < 6, "and cuts off a request line trickled a byte every 150 ms")
+    s.close()
+    tracker.kill()
+    tracker.wait()
     sanitizer = "Sanitizer" in open(os.path.join(work, "node.log")).read()
     check(not sanitizer, "no sanitizer output in the node's log")
 finally:

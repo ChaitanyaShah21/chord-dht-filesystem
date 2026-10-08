@@ -1,5 +1,5 @@
 # -----------------------------
-# Makefile for P2P File Sharing
+# Makefile for chord-dht-filesystem
 # -----------------------------
 
 # Compiler and flags
@@ -14,11 +14,11 @@ CXXFLAGS += -DCHORDFS_MAX_CHUNK=$(CHUNK_LIMIT)
 endif
 
 # Link-time libraries.
-# client.cpp includes sha1.h, which is a header-only wrapper over OpenSSL's SHA1().
-# The declaration comes from <openssl/sha.h> at compile time, but the machine code for
-# SHA1 lives in libcrypto, so it must be named at LINK time or the linker reports
-# "undefined reference to SHA1". tracker.cpp does not hash anything today, so it does
-# not need it (defect B2; see docs/failures.md).
+# sha1.h is a header-only wrapper over OpenSSL's SHA1(). The declaration comes from
+# <openssl/sha.h> at compile time, but the machine code for SHA1 lives in libcrypto,
+# so it must be named at LINK time or the linker reports "undefined reference to
+# SHA1" (defect B2; see docs/failures.md). Every program that hashes -- now all of
+# them, the tracker included since Phase 5 -- links it.
 CRYPTO_LDLIBS = -lcrypto
 
 # Executables
@@ -137,10 +137,15 @@ all: $(TRACKER) $(CLIENT) $(NODE) $(LOOKUP) $(SIM_HOPS) $(CHUNK) $(SIM_BALANCE)
 # Build rules
 # -----------------------------
 
-$(TRACKER): $(TRACKER_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+# The tracker is the namespace (D-058) on the node's framing (D-060). It now hashes
+# its log records, so it links -lcrypto -- the change D-005 said would come when the
+# tracker started hashing.
+$(TRACKER): $(TRACKER_OBJ) $(NAMES_OBJ) $(STORE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
-$(CLIENT): $(CLIENT_OBJ)
+# The client: transfer.o moves whole files with chunk.o's put_chunk and get_chunk;
+# names.o only for valid_name, so a bad name is refused before anything is uploaded.
+$(CLIENT): $(CLIENT_OBJ) $(TRANSFER_OBJ) $(NAMES_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABILIZE_OBJ) $(LOOKUP_OBJ) $(CHORD_OBJ) $(NET_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 # The node answers requests through stabilize.o and chunk.o, and joins and repairs
@@ -190,7 +195,8 @@ $(TEST_CHUNK): $(TEST_CHUNK_OBJ) $(REPAIR_OBJ) $(CHUNK_OBJ) $(STORE_OBJ) $(STABI
 
 # Rebuild any object file if sha1.h changes. Without this, editing the header leaves
 # stale .o files behind and the next `make` links yesterday's code.
-$(CLIENT_OBJ): sha1.h
+$(CLIENT_OBJ): transfer.h names.h chunk.h store.h stabilize.h lookup.h chord.h net.h
+$(TRACKER_OBJ): names.h net.h
 $(CHORD_OBJ): chord.h sha1.h
 $(TEST_CHORD_OBJ): chord.h
 $(NODE_OBJ): repair.h chunk.h store.h stabilize.h lookup.h chord.h net.h
