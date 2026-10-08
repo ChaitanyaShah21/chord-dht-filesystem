@@ -944,6 +944,17 @@ addresses and asks each one. **Rejected:** a fresh ring per `W` (differences bet
 differences between settings), and inferring durability from the copy count at acknowledgement (true by
 construction, and silent about what a crash does next).
 
+### A manifest is a chunk; a large file gets a tree of them
+
+A file's manifest is a text chunk listing its chunk keys and byte counts, stored in the ring like any chunk and named
+by the tracker. One manifest holds 8,192 entries — 4 GiB of file at 512 KiB chunks — so a larger file gets an
+**index** manifest listing manifests, like a Git tree: the root's key commits to every byte below it, and a reader
+pays one round trip per level, not per manifest. The manifest carries no file name, so identical files share one
+manifest. The reader checks every count, sum and level before it creates the output file. **Rejected:** a binary
+format (more entries per chunk, unreadable by eye — and capacity stops mattering once there is a tree), a flat
+manifest with a 4 GiB limit, and a chain of manifests (a 40 GiB file would wait for ten sequential fetches before its
+download could go parallel). **Cost:** a fetch per level, and about 100 bytes of client memory per chunk.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

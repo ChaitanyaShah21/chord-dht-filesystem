@@ -229,6 +229,7 @@ decided before the paper is one that cannot be defended in December.
 | **F43** | **How many virtual nodes per process?** One; a large fixed number such as 256; a number read off a measured balance curve by a rule fixed first; or in proportion to capacity. | Load balance improves as 1/√V while every member adds its own stabilisation traffic. | **RESOLVED** — D-051 (rule); value in `BENCHMARKS.md` |
 | **F44** | **How much of a chunk is in memory, and is it bounded?** The whole body, shared between parallel sends, capped per process; streamed to disk while hashing; uncapped; or a waiting queue. | Sets memory per node under write load, whether a client can make a node allocate without limit, and how many processes fit on this machine. | **RESOLVED** — D-052 |
 | **F45** | **How are W, durability and re-replication measured?** A fresh ring per W, or all W on one ring under one failure; durability from copy counts, or by killing the coordinator at acknowledgement; and who judges that RF = 3 is restored. | Decides whether the W comparison is between settings or between rings, and whether a durability claim was tested or inferred. | **RESOLVED** — D-053 |
+| **F46** | **What is a file's manifest, and what happens when it does not fit in one chunk?** A text manifest, split into a tree of manifests when large; a binary manifest; one flat manifest and a file-size limit; or a chain of manifests. | Decides the largest file the system can hold, how many round trips a download makes before its chunks can be fetched in parallel, and whether a manifest can be read and checked by hand. | **RESOLVED** — D-054 |
 
 ---
 
@@ -3106,3 +3107,66 @@ as much as the protocol, and the coordinator-crash test measures a race between 
 copies on loopback, where a real network would make that window wider.
 
 **Evidence:** `BENCHMARKS.md` §6, at `7d99fc0`.
+
+---
+
+### D-054 — A manifest is a text chunk listing keys and byte counts, and a large file gets a tree of them
+
+**Fork:** F46. **Date:** 8 Oct 2026. **Depends on:** D-014, D-017, D-044. **Gates:** the upload and download
+paths, and the largest file the system holds.
+
+**The decision.** A file is cut into fixed-size chunks (512 KiB, D-016), each stored under its own hash. Its
+**manifest** is itself a chunk in the ring (D-017), in this text format, every line ending in `\n`:
+
+```
+chordfs-manifest 1
+size <bytes of the file this manifest covers>
+chunk <chunk size in bytes>
+kind data | index
+entries <n>
+<40-hex key> <bytes>          (n lines, in file order)
+```
+
+- In a **data** manifest each entry is a chunk of the file, and its byte count is the chunk size, except the
+  last, which is 1 to chunk-size bytes. A zero-byte file has a data manifest with zero entries.
+- In an **index** manifest each entry is another manifest, with the number of file bytes it covers; every entry
+  but the last covers a whole number of chunks, so chunk offsets come out the same at every level.
+- A manifest holds at most **8,192 entries**. The largest possible entry line is 62 bytes (a key, a space, a
+  20-digit number, a newline) and the header at most 83, so 8,192 entries fit in 507,987 bytes, under the 512 KiB
+  chunk limit (D-044). One data manifest covers 4 GiB; two levels, 32 TiB.
+- **Building:** if a file has more than 8,192 chunks, the data entries are cut into data manifests of 8,192, those
+  manifests become the entries of the next level, and so on until one manifest — the **root** — remains. The
+  root's key is what the tracker stores. The fan-out is a parameter of the builder, so a test can force a tree
+  with a ten-chunk file; a reader accepts any fan-out up to 8,192.
+- **Reading is strict and happens before anything is written:** the magic line, canonical numbers only, entries
+  equal to the count, sums equal to `size` (checked without overflow), the data-entry size rule, every key valid
+  (D-045), at most four levels, and each child's own `size` equal to the byte count its parent gave it. The whole
+  tree is fetched and checked — each manifest verified against its key like any chunk (D-049) — before the
+  destination file is created.
+- The manifest holds **no file name, timestamp or permissions**, so identical content produces an identical
+  manifest, and the manifest deduplicates like any chunk (D-014). The name lives only in the tracker.
+
+**Why a tree.** The root's key commits to every byte of the file: each entry is the hash of what it names, so
+checking the root against the key the tracker gave checks everything below it, one level at a time. This is the
+structure of a Git tree and of IPFS's file graph. And it costs one round trip per level, not per manifest: all the
+manifests of a level are known as soon as their parent is read.
+
+**Rejected: a binary manifest** (20 raw bytes per hash, about 26,000 entries per chunk). Two and a half times the
+capacity per manifest, but capacity stops mattering once there is a tree, and a text manifest can be read and
+checked by eye with `chunk get` — the same reason the control protocol is lines.
+
+**Rejected: one flat manifest and a size limit.** The simplest code, and an honest limit — 4 GiB at this format, a
+size a disk image or a video exceeds.
+
+**Rejected: a chain of manifests, each naming the next.** As simple as a flat list to build, but a reader learns
+each manifest only from the one before it, so a 40 GiB file waits for ten sequential fetches before its chunks can
+be fetched in parallel; a tree waits for its depth.
+
+**Cost accepted.**
+- One extra fetch per level before the chunks (none for files under 4 GiB beyond the root itself).
+- The client holds the whole chunk list in memory — key, offset and length, about 100 bytes per chunk, so
+  roughly 200 KiB per GiB of file (`ESTIMATE`).
+- The per-entry byte count is redundant in a data manifest (it follows from `size` and `chunk`); it is kept so that
+  every level has one format and one checker, and so that a wrong count is detected rather than trusted.
+
+**Evidence:** none yet — design time.
