@@ -35,3 +35,16 @@ The size is a list given to every replica, so any size runs; three is the defaul
 | **Four** | tolerates one failure, like three, with an extra replica to wait for, and can split two against two |
 | **Five by default** | two failures tolerated, at four calls per heartbeat and a write waiting for the second-fastest of four flushes |
 | **Primary–backup** | someone has to decide the backup takes over; if the primary was only slow, there are two primaries |
+
+### The protocol is a deterministic core — [D-070](../ARCHITECTURE.md#d-070--the-raft-core-is-a-deterministic-state-machine-no-sockets-no-threads-no-clock)
+
+`src/raft.cpp` has no sockets, threads or clock. A tick with the time, a received call, a reply with the call it
+answers, a proposal and a read are method calls; the calls to send, the entries to apply and the reads that can be
+answered are what comes back. Storage is an interface the core writes through before any of that is released. A test
+can therefore run five replicas over a simulated network that loses, delays, duplicates and reorders messages, crash
+a replica between any two steps, and replay any history exactly from its seed.
+
+| Alternative | Why not |
+|---|---|
+| **Raft inside the server** | the histories that break consensus could only be hoped for on real processes, never constructed or replayed |
+| **An existing library** (etcd/raft, NuRaft) | against the no-external-libraries rule, and the point |

@@ -140,6 +140,7 @@ has every alternative considered and what it would have cost.
 | Decision | Why | Rejected alternative |
 |---|---|---|
 | **Three tracker replicas** (D-069) | the smallest group that survives a failure, like the chunk plane's three copies | two (a majority of two is two: it survives nothing); five by default (measured, not chosen) |
+| **Raft as a socket-free core** (D-070) | time, storage and messages are passed in, so tests replay lost, reordered and duplicated messages and crashes from a seed | Raft written among the server's threads and sockets |
 
 ## Project structure
 

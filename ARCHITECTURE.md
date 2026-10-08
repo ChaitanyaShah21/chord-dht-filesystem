@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-069: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-070: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-070 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 61 recorded here (F1–F60 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 62 recorded here (F1–F61 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -298,6 +298,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F58** | **An orphaned ring member is named as successor by its own sibling, which never evicts it, so it can never rejoin. What breaks the cycle?** An `ERR orphaned` reply evicts that member at once, siblings included; the orphan copies its predecessor's list in place; wired nodes wait for every peer before their first round; or fall back to a sibling instead of orphaning. Found by the Phase 5 benchmark, not foreseen. | A ring started all at once, or a process that loses every other process it knew, can stay wrong for good — every lookup through that sibling ends at a member that refuses to route. | **RESOLVED** — D-067 |
 | **F59** | **Where do sources, tests, objects and programs live?** Sources in `src/` and unit tests in `tests/`, or the flat layout kept; and where the build puts objects and programs. | Decides whether the repository reads at a glance, and whether every script, the container files and the documentation keep their paths. | **RESOLVED** — D-068 |
 | **F60** | **How many tracker replicas?** Two; three; five; or primary–backup without consensus. | Sets how many failures the namespace survives, what each write waits for, and on one host how much of the cost is contention. | **RESOLVED** — D-069 |
+| **F61** | **Where does the Raft protocol live?** In the server, among threads and sockets; in a socket-free core with time, storage and messages passed in; or in an external library. | Decides whether message loss, reordering and a crash between any two steps can be constructed and replayed in a test. | **RESOLVED** — D-070 |
 
 ---
 
@@ -3802,3 +3803,41 @@ Downloads by manifest key still work without any tracker (D-057). Three processe
 per write where there was one.
 
 **Evidence:** pending — `BENCHMARKS.md` §7.
+
+---
+
+### D-070 — The Raft core is a deterministic state machine: no sockets, no threads, no clock
+
+**Fork:** F61. **Date:** 8 Oct 2026. **Depends on:** D-018, D-024, D-060. **Gates:** how consensus is tested.
+
+**The decision.** `src/raft.{h,cpp}` holds the protocol and nothing else. Every input is a method call — a tick
+carrying the current time, a request received from another replica, a reply together with the request it
+answers, a client's proposal, a read — and every output is returned: the requests to send, the entries to apply,
+the reads that may now be answered. Durable state is written through a `Storage` interface the core calls
+**before** any output is released. Time is a number passed in; randomness comes from a generator seeded at
+construction. The server (`src/replica.cpp`) wraps the core in one lock, threads and sockets (D-072).
+
+**Why.**
+- **Consensus fails in histories, not in functions.** The bugs that matter need a message lost, delayed,
+  duplicated or reordered, or a replica crashing between two particular steps. On real processes none of that
+  can be chosen, and a failure that needed a particular interleaving cannot be replayed. With a pure core, a test
+  runs any number of replicas over a simulated network and clock from a fixed seed: every history is
+  reproducible, and the safety properties can be checked after every step.
+- **It is how this project already builds everything.** Routing, stabilisation, the chunk plane, the transfer
+  engine and the namespace all take the network as a parameter (D-018, D-024, D-060), so hostile rings are built
+  in process. The same discipline applied to the part that most needs it.
+- etcd's Raft library is built the same way (the application owns the network, the disk and the clock), for the
+  same reason.
+
+**Rejected: Raft written into the server** — threads, sockets, timers and protocol interleaved, which is how most
+first implementations look. Testable only on real processes, where the interesting histories cannot be
+constructed and a failure cannot be replayed.
+
+**Rejected: an existing library** (etcd/raft, NuRaft, braft). Mature and tested, and against both this project's
+rule of no external libraries and its point.
+
+**Cost accepted.** Two layers to read instead of one. The wrapper's own concurrency — the lock, the sender threads,
+the waiting clients — is not covered by the simulation; it is covered by an in-process test with real threads, the
+end-to-end suites and ThreadSanitizer (`docs/consensus.md`).
+
+**Evidence:** pending — `test-raft`.
