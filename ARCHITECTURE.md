@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-080: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-081: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-080 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-081 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 72 recorded here (F1–F71 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 73 recorded here (F1–F72 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -309,6 +309,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F69** | **Snapshots and log compaction?** Snapshots with `InstallSnapshot`; local compaction; or none. | Decides restart and catch-up time, and whether there is a second replication path. | **RESOLVED** — D-078 |
 | **F70** | **How does the group's membership change?** Fixed, with a fingerprint; joint consensus; or single-server changes. | Decides whether a replica can be replaced live, and what a configuration mistake breaks. | **RESOLVED** — D-079 |
 | **F71** | **What happens to the single tracker?** Kept as a mode beside the group; a one-replica group; or its log kept under Raft. | Decides whether the existing suites test the replicated code, and how many persistence formats exist. | **RESOLVED** — D-080 |
+| **F72** | **How does a client find the leader?** Every address on its command line with redirects; discovery from one address; followers forwarding; or DNS. | Decides what a client must be told, and what it does during an election. | **RESOLVED** — D-081 |
 
 ---
 
@@ -4236,3 +4237,37 @@ flushes per write, and two files that can disagree after a crash.
 imported.
 
 **Evidence:** pending — every existing suite against the new tracker.
+
+---
+
+### D-081 — The client is given every replica's address, follows redirects, and retries until a deadline
+
+**Fork:** F72. **Date:** 8 Oct 2026. **Depends on:** D-057, D-075, D-076. **Gates:** how a client finds the leader
+and what it reports when there is none.
+
+**The decision.** `client --tracker <ip:port>[,<ip:port>…]`, in the order given. For each request:
+
+- a reply of `REDIRECT <ip:port>` is followed at once (at most as many redirects as there are replicas per round, so
+  two replicas pointing at each other cannot loop);
+- `UNAVAILABLE`, a refused connection or a timeout moves on to the next address;
+- after a round in which no replica gave an answer, the client waits 100 ms and starts again from the first, until
+  **10 s** have passed (`--tracker-wait <ms>`); then it fails and says what each replica answered;
+- any other reply is the answer.
+
+This lives in `src/group.cpp`, with the exchange passed in, so it is tested in process.
+
+**Why.** It is what the client already does for the ring (D-057): addresses on the command line, tried in order. A
+redirect costs one extra exchange; a dead replica costs one refused connection.
+
+**Rejected: discover the group from one address** (any replica returns the member list). One address to configure,
+one more message, and a list the client must trust from whoever answered first.
+
+**Rejected: followers forward requests to the leader.** One address always works — and a follower holds a connection
+open on someone else's behalf, the pattern iterative routing was chosen to avoid (D-012).
+
+**Rejected: a DNS name for the group.** Needs a resolver and leaves the same retry logic to write.
+
+**Cost accepted.** Every invocation carries the whole list. The client is a one-shot program, so it remembers no
+leader between runs: the first request of every run starts at the first address.
+
+**Evidence:** pending — `test-raft` (the group client), `e2e-raft.sh`.

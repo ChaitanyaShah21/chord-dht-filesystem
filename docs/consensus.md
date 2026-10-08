@@ -180,3 +180,15 @@ machine and keeps no log of its own. The old `names_<port>.log` is not read.
 |---|---|
 | **The old tracker as a mode** | two persistence formats and two recovery rules, and the old one would get most of the testing |
 | **The namespace's log kept under Raft** | two logs and two flushes per write, which can disagree after a crash |
+
+### Finding the leader — [D-081](../ARCHITECTURE.md#d-081--the-client-is-given-every-replicas-address-follows-redirects-and-retries-until-a-deadline)
+
+`client --tracker a,b,c`: try in order; follow `REDIRECT` at once; on `UNAVAILABLE`, a refusal or a timeout try the
+next; after a round with no answer wait 100 ms and go again, for up to 10 s (`--tracker-wait`). Lives in
+`src/group.cpp`, tested in process.
+
+| Alternative | Why not |
+|---|---|
+| **Discovery from one address** | a member list the client must trust from whoever answered |
+| **Followers forward to the leader** | a follower holding a connection for someone else's request |
+| **DNS** | a resolver, and the same retry logic anyway |

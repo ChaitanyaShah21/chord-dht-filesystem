@@ -151,6 +151,7 @@ has every alternative considered and what it would have cost.
 | **No snapshots** (D-078) | names are never overwritten or deleted, so a snapshot would be as large as the log | `InstallSnapshot`, a second replication path that saves almost nothing |
 | **Fixed membership with a fingerprint** (D-079) | a replica started with a different member list is refused, not counted | joint consensus (deferred) |
 | **A one-replica group is the single tracker** (D-080) | one code path, so every existing suite tests the replicated code | keeping the old tracker as a mode |
+| **Every replica's address, then redirects** (D-081) | as the client already finds the ring | followers forwarding requests to the leader |
 
 ## Project structure
 
