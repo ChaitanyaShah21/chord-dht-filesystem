@@ -989,6 +989,18 @@ file (the same list, one more file); and learning the membership from the first 
 (worth it only if the entry node's load is measured to matter). **Cost:** every lookup's first request lands on the
 same node.
 
+### The tracker holds names and nothing else
+
+Four messages: register a name for a manifest key, resolve a name, list names a page at a time, and ping. Users,
+groups, logins and seeder lists are gone — nobody serves data but the ring, so there is nothing to announce — and the
+tracker never sees a chunk or a node address. Each new name is appended to a log as a self-checking record (a short
+SHA-1 of the line) and flushed before the tracker answers `OK`, so an acknowledged name survives a crash, and a record
+torn by one is detected and skipped rather than replayed as a different key. Recovery replays records through the
+same function the live path uses. The log is a list of effects — exactly what a consensus-replicated tracker would
+replicate. **Rejected:** keeping the legacy commands alongside (soft state and authorisation rules for a path that no
+longer exists), a second tracker program, and records without a checksum. **Cost:** one flush per registration under
+one lock, so registrations are serialised at the disk's flush rate; the log only grows.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

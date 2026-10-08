@@ -232,6 +232,7 @@ decided before the paper is one that cannot be defended in December.
 | **F46** | **What is a file's manifest, and what happens when it does not fit in one chunk?** A text manifest, split into a tree of manifests when large; a binary manifest; one flat manifest and a file-size limit; or a chain of manifests. | Decides the largest file the system can hold, how many round trips a download makes before its chunks can be fetched in parallel, and whether a manifest can be read and checked by hand. | **RESOLVED** — D-054 |
 | **F47** | **How is a transfer parallelised?** A fixed pool of workers taking chunk numbers from one counter, sized at run time; a thread per chunk; an event loop; or chunks batched by owner. And what does a transfer do when one chunk fails? | Sets throughput, the memory a transfer uses, how many connections land on a node at once, and whether throughput against parallelism can be measured as a curve. | **RESOLVED** — D-056 |
 | **F48** | **How does a client find the ring?** Addresses on its command line, tried in order; addresses handed out by the tracker; a seed file; or learning the membership from a first contact. | Decides whether the tracker carries liveness state about nodes, whether a client can read a file with the tracker down, and where every lookup's first request lands. | **RESOLVED** — D-057 |
+| **F49** | **What does the tracker become?** The name-to-manifest map alone, with an effect log; the legacy commands kept beside it; or a new program beside the legacy tracker. And what happens to users, groups, `update_seeder` and the persistence log format (D-009)? | Decides the size of the mutable state that consensus will later replicate, what recovery replays, and how much legacy machinery stays alive. | **RESOLVED** — D-058 |
 
 ---
 
@@ -3284,5 +3285,63 @@ chunk.
 
 **Cost accepted.** The user must name at least one live process. Every lookup's first request lands on the same
 process.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-058 — The tracker becomes the namespace: four messages, no users, no seeders, and an effect log flushed before each answer
+
+**Fork:** F49. **Date:** 8 Oct 2026. **Depends on:** D-004, D-009, D-017, D-022. **Gates:** the tracker, its
+recovery, and what a replicated tracker would replicate.
+
+**The decision.** The tracker holds `name → manifest key` and nothing else (D-017):
+
+```
+REGISTER <name> <manifest-key>  ->  OK | EXISTS <key> | ERR <reason>
+RESOLVE <name>                  ->  FILE <key> | MISSING | ERR <reason>
+LIST [<after>]                  ->  NAMES <n> <name> ...   (sorted; as many as fit in one line; NAMES 0 = no more)
+PING                            ->  PONG
+```
+
+- **Users, groups, logins and join requests are removed** — D-004, which was held back until the Phase 0 baseline
+  had been measured through them. It has been (`e381179`).
+- **Seeders, `update_seeder` and the `TRACKERS` greeting are removed.** No client serves data any more: chunks live
+  in the ring at places computed from their hashes (D-014, D-022), so there is nobody to announce. The greeting
+  advertised a multi-tracker feature that never existed (defect C1).
+- **A name** is 1 to 200 bytes of visible ASCII — no space, no control character — so it is one word on the wire and
+  one field in the log. It is never a path on the tracker's disk. A **key** is checked as a chunk key is (D-045).
+- **Persistence is an effect log**, `names_<port>.log` in the tracker's directory, one line per registration:
+  `REGISTER <name> <key> <check>`, where `<check>` is the first 8 hexadecimal characters of the SHA-1 of the rest of
+  the line. Under the namespace lock, a new registration is appended and flushed with `fdatasync`, then applied, then
+  answered `OK` — so the log's order is the order of the map's changes, and an acknowledged name survives a crash.
+- **Recovery** replays each record through the same `apply_register` the live path uses (D-009's split, kept: there is
+  no code path from replay to anything that could refuse it). A final line without its newline — torn by a crash
+  mid-append — and any line whose check does not match are skipped and reported. Neither can be a registration
+  that was acknowledged, because the acknowledgement follows the flush. The old `state_<port>.log` is not read.
+- Line framing, the one-reply-one-line rule and the read deadline come from `net.cpp` (D-060, D-061); the
+  namespace logic lives in `names.cpp` with no sockets, so it is tested in process.
+
+**Why an effect log now.** D-009 kept the command log and split admission from effect, and named logging the effect
+(event sourcing) as the better design, deferred. With users gone there is no admission left: every record *is* an
+effect. It is also exactly what a replicated state machine replicates — an ordered list of deterministic changes —
+so a Raft-replicated tracker would ship these lines.
+
+**Rejected: keep the legacy commands beside the new ones.** Users, groups, soft seeder state and their recovery rules
+kept alive for a transfer path that no longer exists.
+
+**Rejected: a new namespace program beside the legacy tracker.** Two trackers to explain. The legacy pair is
+reproducible from git at the baseline commit, and keeping it means maintaining it.
+
+**Rejected: no checksum on records.** A record torn inside its last word — `...a3f9` cut to `...a3` — is still a
+well-formed line and would replay as a different key; the newline rule alone catches only a tear that loses the
+newline.
+
+**Cost accepted.**
+- One `fdatasync` per new registration, under one lock: registrations are serialised at roughly the disk's flush rate
+  (about 6 ms each here, from D-045's estimate, so on the order of 150 per second — `ESTIMATE`, measured in D-066).
+  Group commit is the fix.
+- The log only grows: no deletion (D-023), no compaction.
+- `LIST` is a full scan in pages; there is no search.
 
 **Evidence:** none yet — design time.
