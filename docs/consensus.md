@@ -48,3 +48,22 @@ a replica between any two steps, and replay any history exactly from its seed.
 |---|---|
 | **Raft inside the server** | the histories that break consensus could only be hoped for on real processes, never constructed or replayed |
 | **An existing library** (etcd/raft, NuRaft) | against the no-external-libraries rule, and the point |
+
+### Calls between replicas — [D-071](../ARCHITECTURE.md#d-071--replicas-talk-over-the-existing-framing-a-fresh-connection-per-call-the-clients-port-one-call-in-flight-per-follower)
+
+```
+VOTE <group> <term> <candidate> <last-index> <last-term>                                  -> VOTED <term> <0|1>
+APPEND <group> <term> <leader> <prev-index> <prev-term> <commit> <seq> <count> <length>   -> APPENDED <term> <0|1> <index>
+       followed by <length> bytes: <count> lines of "<term> <command>"
+```
+
+One fresh connection per call, on the port clients use, as every exchange in this project. At most one `APPEND` in
+flight to each follower; the next carries everything that piled up meanwhile, up to 64 KiB. `<group>` is a
+fingerprint of the member list (D-079). `<seq>` numbers the leader's calls so a read can tell which acknowledgements
+came after it arrived (D-076).
+
+| Alternative | Why not |
+|---|---|
+| **A persistent connection per pair** | reconnect logic, and a reply that may belong to an earlier call that timed out |
+| **UDP** | batches larger than a datagram need a second framing scheme |
+| **A separate port for replicas** | two addresses per replica for an isolation nothing measured needs |

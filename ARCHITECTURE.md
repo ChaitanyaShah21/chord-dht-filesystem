@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-070: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-071: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-070 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-071 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 62 recorded here (F1–F61 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 63 recorded here (F1–F62 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -299,6 +299,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F59** | **Where do sources, tests, objects and programs live?** Sources in `src/` and unit tests in `tests/`, or the flat layout kept; and where the build puts objects and programs. | Decides whether the repository reads at a glance, and whether every script, the container files and the documentation keep their paths. | **RESOLVED** — D-068 |
 | **F60** | **How many tracker replicas?** Two; three; five; or primary–backup without consensus. | Sets how many failures the namespace survives, what each write waits for, and on one host how much of the cost is contention. | **RESOLVED** — D-069 |
 | **F61** | **Where does the Raft protocol live?** In the server, among threads and sockets; in a socket-free core with time, storage and messages passed in; or in an external library. | Decides whether message loss, reordering and a crash between any two steps can be constructed and replayed in a test. | **RESOLVED** — D-070 |
+| **F62** | **How do replicas talk?** A fresh connection per call; a persistent connection per pair; UDP; and on which port, with how many calls in flight. | Decides what a lost message is, whether a reply can be mistaken for another's, and how replication batches. | **RESOLVED** — D-071 |
 
 ---
 
@@ -3841,3 +3842,47 @@ the waiting clients — is not covered by the simulation; it is covered by an in
 end-to-end suites and ThreadSanitizer (`docs/consensus.md`).
 
 **Evidence:** pending — `test-raft`.
+
+---
+
+### D-071 — Replicas talk over the existing framing: a fresh connection per call, the clients' port, one call in flight per follower
+
+**Fork:** F62. **Date:** 8 Oct 2026. **Depends on:** D-010, D-024, D-044, D-061. **Gates:** the replication wire
+format and what a lost message is.
+
+**The decision.**
+- **A fresh connection per call**, as every originator in this project does (D-024): connect, send one request,
+  read one reply, close. A connection that fails is a lost message, and Raft is built to tolerate those.
+- **Two calls.** `VOTE <group> <term> <candidate> <last-index> <last-term>` → `VOTED <term> <0|1>`, and
+  `APPEND <group> <term> <leader> <prev-index> <prev-term> <commit> <seq> <count> <length>` followed by a body of
+  `<count>` entries, one `<term> <command>` line each → `APPENDED <term> <0|1> <index>`, where `<index>` is the
+  last index the follower now matches, or on failure where the leader should back up to. `APPEND` joins `PUT`,
+  `STORE` and `CHUNK` as a verb whose last word is a body length (D-044); a body is at most 64 KiB of entries.
+- **The same port as clients.** The verb tells a replica call from a client request, so a replica is one address
+  and the client's list of replicas is the group's list.
+- **At most one `APPEND` in flight per follower.** The next carries everything that accumulated meanwhile, so
+  replication batches itself under load. A call unanswered within the call deadline (D-073) is presumed lost and
+  sent again; `APPEND` is idempotent, so a duplicate is harmless.
+- **A group fingerprint** — 8 hexadecimal characters of SHA-1 of the ordered member list — on every call, so a
+  replica started with a different list is refused rather than counted (D-079).
+
+**Why a fresh connection.** Every reply read is the reply to the request just sent, by construction (invariant
+I6), with no request identifiers and no reconnect logic. The coursework's worst bugs were replies read on a shared
+connection by the wrong reader (D-007, D-008).
+
+**Rejected: a persistent connection per pair of replicas.** Saves a handshake per call — a round trip, tens of
+microseconds on loopback. In exchange: reconnection on failure, and a reply on a reused connection that may belong
+to an earlier call that timed out, unless every call carries an identifier. The desync class of bug, back.
+
+**Rejected: UDP.** Raft tolerates loss, but a batch of entries larger than a datagram needs fragmentation and
+reassembly — a second framing scheme for one feature.
+
+**Rejected: a separate port for replica traffic.** Isolates client load from heartbeats, at the price of two
+addresses per replica and a second listener; nothing measured suggests the contention matters.
+
+**Cost accepted.** A TCP handshake per call, and a socket in `TIME_WAIT` at the sender after each: with heartbeats
+every 60 ms (D-073), about 17 per second per follower. Because one call carries every pending entry, the call rate
+is bounded by round trips, not by the write rate. No authentication: anyone who can reach a replica can send it
+`VOTE` or `APPEND` (as for every message in this system).
+
+**Evidence:** pending.
