@@ -8,9 +8,9 @@
 // ---------------------------------------------------------------------------
 // Line framing for the node's control protocol (decision D-021, part a).
 //
-// One request is one line; one reply is one line. This is the single copy the
-// node uses. client.cpp and tracker.cpp still carry their own older copies --
-// a known duplication, recorded in D-021, not an oversight.
+// One request is one line; one reply is one line. This is the single copy every
+// program uses: the node, the tracker, the client and the tools (D-060 retired the
+// older copies the coursework client and tracker carried, recorded in D-021).
 //
 // The caller must ignore SIGPIPE process-wide before using any of this
 // (decision D-011), so that writing to a departed peer returns an error value

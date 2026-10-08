@@ -62,7 +62,8 @@ const char *lookup_error_name(LookupError e);
 //
 // The bound is TIGHT: test_lookup.cpp builds a 65-node ring on which one lookup
 // needs exactly 65 requests. A 66th request therefore means a bug or a liar.
-// Phase 3's stale fingers can legitimately need more, and revisit this value.
+// Stale fingers during churn can legitimately need more; D-037 keeps the cap
+// anyway, so such a lookup fails with its reason named and is retried.
 constexpr int MAX_REQUESTS = 65;
 
 // The originator's per-socket deadline (D-024 F19c, applied before connect by
