@@ -1033,6 +1033,17 @@ defeats indefinitely), an event loop with timers (the scalable design, and a rew
 could hold a node's body slots for as long as it keeps sockets open). **Cost:** it bounds how long each connection holds
 a slot, not how many connections an attacker opens.
 
+### Deduplication is measured at the stores, including where it fails
+
+D-014 makes deduplication free: identical chunks have identical keys. How free is measured by counting chunk files in
+every store before and after an upload, on edits stated before measuring — the same file under a second name, 1 KiB
+changed in place, one byte inserted near the start, 10 MB appended — and on a real history: twenty consecutive commits
+of this repository as tar files. Fixed-size chunking predicts that an insertion shifts every later chunk and shares
+almost nothing; that case is measured, not avoided. **Rejected:** having the client report what was already stored (a
+protocol change, and the component measuring itself), a real corpus alone (one number that explains nothing), and
+content-defined chunking to fix insertions (it changes what a chunk is, and the chunk-size comparison with it).
+**Cost:** four of the five cases are arithmetic the measurement confirms.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

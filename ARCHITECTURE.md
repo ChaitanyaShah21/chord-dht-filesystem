@@ -236,6 +236,7 @@ decided before the paper is one that cannot be defended in December.
 | **F50** | **What happens when a name is registered twice?** Refuse a different key and accept the same one again; the last writer wins; keep versions; or overwrite on request. | With no access control and no deletion, decides whether one user can replace another's file, and whether a retried upload succeeds. | **RESOLVED** — D-059 |
 | **F51** | **What happens to the legacy client and tracker code, their framing copies, and the suites that test them?** Rebuild both programs on the node's framing and remove the legacy path, re-pointing its suites; bolt the ring path onto the legacy client; or keep the legacy pair beside the new one. | Decides whether the framing rules exist once or three times (D-021), whether the legacy suites still test anything, and whether the Phase 0 baseline can be re-run. | **RESOLVED** — D-060 |
 | **F52** | **How long may a peer take to send what it announced?** A deadline per request line and per body, enforced before every receive; a per-system-call timeout; an event loop with timers; or nothing. | A peer that announces a chunk and never sends it holds a memory slot and a thread; with the chunk path user-facing, any client can do it. | **RESOLVED** — D-061 |
+| **F53** | **How is deduplication measured, and on what?** Counted at the stores, on stated synthetic edits plus one real corpus; reported by the client; a real corpus only; or not measured. | D-014 claims deduplication for free; the number decides whether that claim survives, and the workload decides whether the number means anything. | **RESOLVED** — D-062 |
 
 ---
 
@@ -3459,5 +3460,42 @@ as it keeps 32 sockets open.
   the real defence; neither exists.
 - Two system calls instead of one for every received byte of a request line on the server side (`recv_line` reads
   one byte per call, D-021).
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-062 — Deduplication is counted at the stores, on stated edits of one file and on one real history
+
+**Fork:** F53. **Date:** 8 Oct 2026. **Depends on:** D-014, D-016, D-054. **Gates:** the deduplication number owed
+since D-014.
+
+**The decision.**
+- **Counted from outside.** Before and after each upload, the harness counts the chunk files in every node's store.
+  New unique chunks = new files ÷ `RF`. The client is not asked: its view is not the system's.
+- **The workload, stated before measuring,** from `testdata/huge.iso` (100 MB — exactly 200 chunks of 512 KiB):
+  1. the same bytes under a second name;
+  2. 1 KiB overwritten in place at the 50 MB mark;
+  3. one byte inserted at the 1 MiB mark;
+  4. 10 MB appended;
+  5. a real history: 20 consecutive commits of this repository, each packed with `git archive` as a tar file,
+     uploaded in order.
+- **Predicted from fixed-size chunking:** (1) no new chunk, not even the manifest; (2) one new data chunk and a new
+  manifest; (3) 198 of 200 data chunks new — every chunk after the insertion shifts by one byte; (4) 20 new chunks
+  and a manifest — 100 MB is a whole number of chunks, so no existing chunk changes; (5) close to nothing shared,
+  because the tar's first member changes in most commits and everything after it shifts.
+
+**Rejected: the client reports what was already stored.** The `PUT` reply would have to say "already held" — a
+protocol change made for a measurement, and a measurement taken by the component being measured.
+
+**Rejected: a real corpus only.** One number that depends on the corpus, and explains nothing; the synthetic edits each
+isolate one mechanism, and the real history shows which one dominates in practice.
+
+**Rejected: content-defined chunking** (Rabin fingerprints, FastCDC) to fix case 3. Chunk boundaries chosen by the
+content survive an insertion, which is why backup systems use them. It changes what a chunk is, and with it the
+512 KiB baseline comparison (D-016). Named as the fix, not built.
+
+**Cost accepted.** Cases 1 to 4 are arithmetic; measuring them checks that the implementation achieves the arithmetic,
+not that deduplication is useful. Case 5 is one corpus.
 
 **Evidence:** none yet — design time.
