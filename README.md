@@ -122,8 +122,9 @@ alone, and polls until reality matches:
 - **Under lookup load, finger repair speeds up from 4 s to 0.3 s**, because a client that reaches a dead node
   reports it to the node that named it. Of 28,790 lookups issued during and after kills, none failed, and the only
   wrong answers named the dead node in the fraction of a second before its predecessor noticed.
-- **Stated limit:** in one of five 256-node runs, live nodes were wrongly evicted at the 200 ms call deadline and
-  repair took 9 s. On this machine 256 processes share eight cores.
+- **Stated limit:** at 256 nodes, 3 of 55 runs wrongly evicted live nodes. Re-run with logs kept, each was a
+  5–9 s machine-wide stall in the kernel during which no process on the host could answer — the detector evicting
+  peers silent for seconds, as designed, on a host running 256 processes on eight cores (`BENCHMARKS.md` §4a).
 
 Method, every table, the calibration behind the deadline, and the two earlier versions of the selection rules
 that failed: [`BENCHMARKS.md`](BENCHMARKS.md) §4.
@@ -1037,8 +1038,10 @@ Stated limits read as engineering judgement. Unstated ones read as things that w
 - **A node that loses every node it knew stays out until one of its remembered contacts is alive.** It refuses
   to route rather than claim the whole ring, and rejoins when it can; with no live contact, an operator restarts
   it. There is no configured seed list yet.
-- **At 256 nodes on one machine, the 200 ms call deadline wrongly evicted live nodes in one run of five.** The
-  deadline is a fixed timeout; an adaptive (phi-accrual) detector is the known improvement.
+- **At 256 nodes on one machine, live nodes were wrongly evicted in 3 of 55 runs.** Each time the whole host
+  stalled in the kernel for 5–9 s, and peers silent that long were evicted, as the detector specifies; they
+  re-inserted themselves. A fixed deadline cannot tell a long stall from a freeze; an adaptive (phi-accrual)
+  detector is the known improvement on a real network.
 - **All benchmarking is single-host.** Loopback has no propagation delay and all peers share one
   page cache and eight cores, so throughput numbers are optimistic and round-trip-sensitive
   numbers are very optimistic. Quantified in [`BENCHMARKS.md`](BENCHMARKS.md).

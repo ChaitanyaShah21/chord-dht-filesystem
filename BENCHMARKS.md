@@ -372,12 +372,10 @@ deadline of 500 ms rather than 200 ms; kills are refused connections, which the 
 - **CPU per node falls as 1/T**, from 5.0 % of a core at 50 ms to 0.25 % at 2000 ms.
 
 **Limits of this number.**
-- **One run of 256 nodes evicted live nodes.** In the fifth 256-node run, 77 evictions of live nodes were logged
-  and the ring took 9.01 s; the other four had none, and no false eviction occurred in any of the other 129 runs.
-  The node logs of that run were not kept, so the cause is not confirmed. The likely cause is timeouts: with a
-  200 ms deadline, a scheduling stall across 256 processes on eight cores would produce two strikes against live
-  nodes. This means the deadline rule, whose "no false eviction" check covers only the 64-node period sweep, does
-  not protect the 256-node configuration on this machine. See `SCALE_NOTES.md`.
+- **Some runs of 256 nodes evicted live nodes — explained below (§4a).** In the fifth 256-node run, 77 evictions of
+  live nodes were logged and the ring took 9.01 s; the other four had none, and no false eviction occurred in any of
+  the other 129 runs. Re-run with logs and machine monitors kept, the same configuration did it again in 2 of 50
+  runs, and both times the cause was a machine-wide stall in the kernel, not the protocol.
 - **The CPU figures are not taken from a verified-converged ring.** The CPU mode starts timing one second plus four
   periods after the last node listens. At `5b6830d`, before D-043 shortened start-up, it measured 5.05 % at both
   50 and 100 ms; the most likely explanation is start-up repair still running inside the window. The `b171554`
@@ -389,6 +387,65 @@ deadline of 500 ms rather than 200 ms; kills are refused connections, which the 
   This is why the deadline rule uses a percentile, and the slowest sample only as a floor.
 - **Kills only.** A frozen node is evicted after two strikes (about two periods plus two deadlines). That is tested
   in `scripts/e2e-churn.sh` but not swept here.
+
+### §4a · The 256-node false evictions, re-run with logs kept — **MEASURED 8 Oct 2026**
+
+**Question this answers:** why did one 256-node run in §4 evict 77 live nodes, when 129 other runs evicted none?
+
+**Commits:** `33e64d8` (node log lines carry wall-clock milliseconds; the harness keeps every run's logs with
+`--keep`) and `edf4225` (a strike's log line also says how long the failed call took). Node behaviour is otherwise
+that of `b171554`. **Configuration:** exactly §4's size point — 256 wired nodes, T = 1000 ms, D = 200 ms, one kill,
+deterministic seeds — run 20 times at `33e64d8` and 30 times at `edf4225`. **Recorded alongside:** `vmstat` every
+second, the load average and runnable-task count every 0.2 s, and a thread that sleeps 20 ms in a loop and logs
+every oversleep above 50 ms.
+
+| | Runs | With false evictions | False evictions | Ring correct in that run |
+|---|---:|---:|---:|---:|
+| §4, `b171554` | 5 | 1 | 77 | 9.01 s |
+| re-run, `33e64d8` | 20 | 1 | 344 | 7.86 s |
+| re-run, `edf4225` | 30 | 1 | 1,200 | 41.90 s |
+
+**What happened in both bad runs.** For 5 to 9 seconds the whole machine was in the kernel: `vmstat` showed
+**400–680 runnable tasks** (normally 1–12), **91–99 % system time**, interrupts down to about 2,200 a second (the
+timer tick alone) and context switches down to about 2,000 a second (normally 75,000–90,000). `vmstat` itself
+missed samples, and the sleeping thread overslept by 200–600 ms over and over. In the first bad run this began
+4.5 s *before* the kill, during the settling period after the ring had been verified correct; in the second it began
+9 s *after* it. In both, the nodes' first strike came after the stall began, strikes stopped within about two seconds
+of its end, and **every false eviction was by two timeouts, none by a refused connection**. Outside those two
+stalls no second of the 50 runs had system time above 63 % or more than 146 runnable tasks (brief spikes while
+256 nodes start), and the other 48 runs logged no strike at all in the window around the kill.
+
+**What it rules out.**
+- **Not the protocol feeding on itself.** The strike storm starts after the kernel stall and stops about two seconds
+  after it ends, while the repair it set off was still running; a load the nodes generated themselves would have
+  outlived the stall.
+- **Short stalls are absorbed, as designed.** Later in the second bad run, two sub-second stalls (39 and 233
+  runnable tasks; the sleeping thread overslept 86–255 ms) produced 73 first strikes and no eviction: one timeout
+  is one strike, and the next good reply clears it (D-035). Across the 48 clean runs only 5 strikes were logged
+  after settling.
+- **Not the observer pausing.** Of the 2,727 timed-out calls in the second bad run, the median took 212 ms against
+  the 200 ms deadline and 86 % took under 300 ms: the calling node was running when its timer fired. The peers were
+  the ones not answering.
+- **Not this ring or this victim.** Seeds are fixed, and the run index that failed at `b171554` (the fifth) was clean
+  in both re-runs.
+- **Not memory reclaim or compaction.** No page scanning at any point; the kernel's compaction counters advanced
+  every 30 s for two minutes early in the second re-run, and not at all during its stall.
+
+**What is not identified:** what the kernel was doing. Without root, neither `perf` nor `/proc/<pid>/stack` is
+available. The kernel logged `hrtimer: interrupt took 24772608 ns` (a 24.8 ms timer interrupt) 9 s before the first
+stall's kill. A synthetic load with the node's shape and none of its logic — 256 processes, a thread per accepted
+connection, 2,580 fresh connections a second for 20 minutes — produced no stall and no call over 162 ms; it ran at
+half the benchmark's system time, so it neither confirms nor rules out connection churn as the trigger.
+
+**Conclusion.** The false evictions are the failure detector doing what D-035 specifies — two consecutive
+200 ms timeouts evict — during multi-second stalls that starve every process on this host at once. A peer that has
+not answered for five seconds is indistinguishable from a frozen one by any deadline short enough to catch a frozen
+node in seconds. The stall is a property of running 256 processes on one 8-core virtual machine: it starves the
+observer's peers and the observer's neighbours together, which one node per machine would not. The ring repaired
+itself every time with no orphan and every lookup correct afterwards, but slowly after the larger storm (41.9 s),
+because about 1,200 live nodes had to re-insert themselves. **So the 256-node point in §4 measures this machine as
+much as the protocol, and is reported with that caveat;** the 16- to 128-node points (no stall seen in any run) do
+not carry it.
 
 ---
 

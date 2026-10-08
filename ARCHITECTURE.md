@@ -2381,8 +2381,10 @@ by rounds run back to back to catch up, exactly when a peer is already slow.
 applied in code at `b171554` they chose **T = 1000 ms** (9 of 10 runs repaired within 1 s; 2000 ms: 4 of 10) and
 **D = 200 ms** (ten times the 99.9th-percentile exchange was 55 ms; the slowest exchange 116.7 ms). These are the
 node's defaults. One of five 256-node runs then logged 77 evictions of live nodes at that deadline, which the
-rule's no-false-eviction check, run only on 64 nodes, does not cover — recorded in `BENCHMARKS.md` §4 and
-`SCALE_NOTES.md`.
+rule's no-false-eviction check, run only on 64 nodes, does not cover. Re-run with logs kept (`BENCHMARKS.md` §4a),
+it recurred in 2 of 50 runs, each time during a 5–9 s machine-wide stall in the kernel that starved every process on
+the host; the failure detector evicted peers that had not answered for seconds, as specified. The deadline is kept:
+a stall that long is indistinguishable from a freeze by any deadline short enough to detect a freeze in seconds.
 
 ---
 

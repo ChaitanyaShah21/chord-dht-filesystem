@@ -327,20 +327,27 @@ when nothing has changed for many rounds. **Confidence:** `MEASURED` for the num
 
 ---
 
-### 7 Oct 2026 — at 256 nodes a 200 ms deadline evicted live nodes in one run of five
+### 7 Oct 2026 — at 256 nodes a 200 ms deadline evicted live nodes in one run of five (explained 8 Oct)
 
-**Observed:** `MEASURED` at `b171554`. In one of the five 256-node runs, 77 evictions of nodes that were alive were
-logged and the ring took 9.01 s to be correct instead of under 1.1 s. None of the other 129 runs of that benchmark
-had a single false eviction. The cause is `REASONED`, not confirmed (that run's logs were not kept): with 256
-processes on eight cores, a stall longer than the 200 ms deadline turns into a strike, and two consecutive strikes
-evict (D-035). The deadline came from a rule (D-042) whose false-eviction check ran on 64 nodes only.
+**Observed:** `MEASURED` at `b171554`, then re-run with logs kept at `33e64d8` and `edf4225` (`BENCHMARKS.md` §4a).
+The same configuration falsely evicted live nodes in 3 of 55 runs (77, 344 and 1,200 evictions). In both runs whose
+logs were kept, the cause was a machine-wide stall of 5–9 s with every core in the kernel: 400–680 runnable tasks,
+91–99 % system time, context switches down from about 80,000 a second to about 2,000. Every false eviction was two
+consecutive 200 ms timeouts; the calling nodes' own timers fired on time (median call 212 ms), so it was the peers
+that could not answer. The kernel-level trigger was not identified (no root, so no `perf`); compaction, memory
+reclaim and a protocol feedback loop were ruled out. Short stalls in the same runs produced single strikes and no
+evictions.
 
-**At 10x:** more processes per core make long stalls more frequent, so false evictions would grow faster than N. On
-real hardware with one node per machine the stall would be the node's own, not its neighbours'.
+**At 10x:** on one host the stall starves every node at once, observers and observed alike, and the bigger the ring
+the more live nodes get evicted and must re-insert themselves (ring correct after 7.9 s with 344 false evictions,
+41.9 s with 1,200). With one node per machine a stall would affect one node, which is then correctly suspected.
 
-**Would do:** re-run the 256-node configuration with logs kept, to confirm the cause; then either run the
-false-eviction check at the largest ring size, or make the deadline adaptive (a phi-accrual detector, D-013's named
-alternative). **Confidence:** `MEASURED` that it happened once in five; `REASONED` for why.
+**Would do:** nothing in the protocol for this host: no deadline short enough to evict a frozen node in seconds can
+tell a five-second stall from a freeze. For a real deployment, a phi-accrual detector (D-013's named alternative)
+adapts the threshold to observed latency, and a "local pause" guard (Cassandra's) discards a node's own late
+timeouts — which would not have helped here, because the observers were not late. For benchmarks, keep the
+256-node point and say what it measures. **Confidence:** `MEASURED` for the mechanism; the stall's trigger is
+unknown.
 
 ---
 
