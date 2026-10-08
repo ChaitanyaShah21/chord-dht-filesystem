@@ -857,6 +857,18 @@ address, which is what makes the rule transfer to a real deployment, where it wo
 them), and filtering the successor list itself (the list must name the actual next members for routing and
 repair). **Cost:** a ring of fewer than three processes cannot hold three copies, and says so.
 
+### A read checks one replica's bytes itself, and falls through on anything wrong
+
+`R = 1`: the client asks one replica, hashes what comes back and compares it with the key. With content
+addressing a wrong, truncated or corrupt chunk cannot hash to its key, so one replica checked locally is as
+strong as several compared. If the owner fails, answers `MISSING`, or sends bytes that do not hash to the key,
+the client asks the member that answered its lookup — the owner's predecessor, which has just proved it is alive
+— for its successor list, and tries the next distinct processes in turn. That keeps reads working during the
+window after an owner dies and before the ring has evicted it. **Rejected:** reading two replicas and comparing
+(detects nothing hashing does not, at twice the traffic), asking every replica at once (three times the traffic
+of every read to speed up the rare failed one), and having the owner name its replicas (useless when the owner
+is the one that died). **Cost:** a read whose owner just died pays one failed connection and two extra requests.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

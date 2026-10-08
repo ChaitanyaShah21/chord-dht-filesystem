@@ -222,6 +222,7 @@ decided before the paper is one that cannot be defended in December.
 | **F38** | **Who replicates a write, and where does W live?** The owner sending in parallel; the client writing every replica; or a chain — and W per node or per request. | Decides write latency (the slower of two parallel sends or the sum of a chain), who uploads the chunk how many times, and whether W values can be compared on one ring. | **RESOLVED** — D-046 |
 | **F39** | **How do virtual nodes share a process?** One listening port per member; one port with requests addressed by identifier; one shared routing table per process; or full membership. | Decides whether the wire can say which members share a process (replica placement needs it), what a refused connection proves, and the background traffic per process. | **RESOLVED** — D-047 |
 | **F40** | **Which members hold a chunk's replicas when one process has several members?** The next members regardless of process; the first distinct processes clockwise; a separate replica list; or a longer successor list. | With virtual nodes, adjacent members often share a process, so the naive rule puts two copies where one crash destroys both. | **RESOLVED** — D-048 |
+| **F41** | **How does a read find a good copy?** One replica, checked locally, falling through; two replicas compared; all replicas at once; and where the list of replicas comes from when the owner is dead. | Decides read traffic, what happens in the window after an owner dies, and whether a quorum is needed at all. | **RESOLVED** — D-049 |
 
 ---
 
@@ -2856,3 +2857,42 @@ compute different sets for one key, and repair (D-050) settles it.
 
 **Evidence:** none yet — design time. An in-process test builds rings where the next members belong to the
 owner's own process, and checks every replica set holds distinct processes.
+
+---
+
+### D-049 — A read asks one replica, checks the hash itself, and falls through to the next on any failure
+
+**Fork:** F41. **Date:** 8 Oct 2026. **Depends on:** D-014, D-015, D-048. **Gates:** the read path; Phase 5's
+parallel fetch.
+
+**The decision.** To read key `k`, the client looks up `k`. The lookup's last answer comes from the member
+just before `k`, which answers `OWNER <o>`. The client sends `GET <k>` to `o`'s process, hashes the bytes it
+receives and compares the result with `k`. If the connection fails, the reply is `MISSING` or `ERR`, or the
+hash differs, the client asks that last member for `NEIGHBOURS`, whose successor list begins with `o`, takes
+the distinct processes from it in order (D-048's rule), and tries each in turn. The first chunk whose hash
+matches is the answer. Every replica failing, or every replica answering wrongly, is a read failure that names
+each replica and what it did.
+
+**Why the replica list comes from the member before the key.** If the owner is dead it cannot be asked for its
+successors. The member that answered `OWNER` is the owner's predecessor; its successor list is the owner
+followed by the next members — the replica set, from a node that has just shown it is alive. It costs one
+extra round trip, paid only when the first replica fails.
+
+**Rejected: `R = 2`, compare two replicas.** Detects nothing that hashing does not: with content addressing a
+wrong answer cannot hash to the key, so a single replica checked locally is as strong as any number compared
+(D-014). It doubles read traffic.
+
+**Rejected: ask all replicas at once, take the first good answer** (hedged reads). Lowest tail latency, and a
+common answer to a slow replica. Triples the read traffic of every read to speed up the rare one. Phase 5's
+parallel transfer may revisit it with a delay before the hedge.
+
+**Rejected: the owner returns its replica list with `MISSING`.** One message fewer, but useless in exactly the
+case that needs it — the owner being dead.
+
+**Cost accepted.** A read of a key whose owner has just died pays a failed connection, one `NEIGHBOURS` and a
+second `GET`. Until the owner's predecessor has evicted it, the lookup still names the dead owner (D-036's
+window); the fall-through serves the read from the next replica during that window instead of failing it.
+A read does not repair what it finds wrong; repair is the scrub's and the owner's job (D-050).
+
+**Evidence:** none yet — design time. Tests: a corrupt replica on disk, a dead owner, a replica that closes
+mid-body, and every replica wrong.
