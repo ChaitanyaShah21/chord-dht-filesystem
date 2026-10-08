@@ -79,3 +79,16 @@ thread can see — and no reply can carry — state that is not yet on disk. Thr
 | **Release the lock during the flush** | every reader must then tell durable state from state in memory — where votes get forgotten |
 | **An event loop owning all state** | a blocking flush blocks the loop just the same, and nothing else in the project uses one |
 | **A thread per call** | unbounded threads behind a slow peer, and two calls to one follower arriving in either order |
+
+### Timers — [D-073](../ARCHITECTURE.md#d-073--timers-heartbeat-e5-election-timeout-uniform-in-e-2e-call-deadline-e-e-comes-off-a-measured-sweep-by-a-rule-fixed-now)
+
+One base, E: election timeouts uniform in [E, 2E) and redrawn at every reset; heartbeats every E/5; a call to another
+replica gets E; a leader steps down after 2E without a majority. E is the smallest of 150, 300, 600 and 1200 ms with no
+leader change in three 30-second runs under saturating write load — a rule fixed before measuring — and failover time
+is measured at every candidate.
+
+| Alternative | Why not |
+|---|---|
+| **The paper's 150–300 ms by precedent** | chosen for a dedicated network, not this host's flushes and stalls |
+| **A large constant** (1–2 s) | no spurious elections, and every failover costs over a second |
+| **Separate knobs** | three values that must keep a fixed relationship, offered as if independent |

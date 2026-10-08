@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-072: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-073: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -223,13 +223,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-072 |
+| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-073 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 64 recorded here (F1–F63 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 65 recorded here (F1–F64 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -301,6 +301,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F61** | **Where does the Raft protocol live?** In the server, among threads and sockets; in a socket-free core with time, storage and messages passed in; or in an external library. | Decides whether message loss, reordering and a crash between any two steps can be constructed and replayed in a test. | **RESOLVED** — D-070 |
 | **F62** | **How do replicas talk?** A fresh connection per call; a persistent connection per pair; UDP; and on which port, with how many calls in flight. | Decides what a lost message is, whether a reply can be mistaken for another's, and how replication batches. | **RESOLVED** — D-071 |
 | **F63** | **The replica's concurrency.** One lock held across the flush but never a network call; the lock released during the flush; or an event loop. And who sends to each peer. | Decides whether "flush before replying" holds by construction, and what a slow disk or a frozen peer delays. | **RESOLVED** — D-072 |
+| **F64** | **Election timeout, heartbeat and call deadline.** The paper's example values; a large constant; or one base swept, with the default chosen by a rule fixed before measuring. | Sets failover time and whether a healthy group elects for no reason. | **RESOLVED** — D-073 (rule); value from `BENCHMARKS.md` §7 |
 
 ---
 
@@ -3931,3 +3932,50 @@ proposals are serialised at the flush rate (D-082 measures it). One lock means t
 the namespace is protected by the replica's lock.
 
 **Evidence:** pending — ThreadSanitizer through `test-replica` and the end-to-end suites.
+
+---
+
+### D-073 — Timers: heartbeat E/5, election timeout uniform in [E, 2E), call deadline E; E comes off a measured sweep by a rule fixed now
+
+**Fork:** F64. **Date:** 8 Oct 2026. **Depends on:** D-039, D-042, D-072. **Gates:** failover time, and whether a
+healthy group holds spurious elections.
+
+**The decision.** One parameter, the **election timeout base `E`** (`--election <ms>`), sets the rest:
+
+- each replica's election timeout is drawn **uniformly from [E, 2E)**, and drawn again at every reset;
+- the leader's **heartbeat interval is E/5** — a follower must miss about five heartbeats in a row before it can
+  time out;
+- the **deadline for a call to another replica is E**: a reply later than an election timeout is useless, because
+  the follower would already have started an election;
+- a leader that has not heard from a majority for **2E** steps down (D-077).
+
+**The rule for E, fixed before measuring.** Candidates: 150, 300, 600 and 1200 ms. The default is **the smallest
+candidate with no leader change in three 30-second runs of a three-replica group under its saturating write load,
+with no failure injected**. Election time after a leader is killed is measured at every candidate (at least 20
+kills each), so what each choice costs in failover is on the same plot. Until measured, `E = 300 ms` (`ESTIMATE`:
+the upper end of the Raft paper's example range).
+
+**Why a rule.** As with the stabilisation period (D-039): failover time grows with E, and spurious elections fall
+with it, and neither curve has a knee. Stating the target before the data exists stops the data choosing it. The
+target is "never elect without a failure" because a spurious election is an outage of up to one election time
+that nothing caused — and the measured risk on this host is real: a flush under the lock delays heartbeats
+(D-072), and the host has shown multi-second stalls (`BENCHMARKS.md` §4a).
+
+**Why E/5 and [E, 2E).** The Raft paper requires `broadcast time ≪ election timeout ≪ time between failures`.
+A ratio of 5 lets a heartbeat or two be delayed by a flush without an election; etcd uses 10 (100 ms and 1 s) at
+twice the heartbeat traffic. Randomising over a range as wide as its base makes it likely that one replica times
+out well before the others and wins before anyone else becomes a candidate — the paper's mechanism against split
+votes; it measured that 5 ms of spread was already enough to avoid most of them.
+
+**Rejected: the paper's example values by precedent** (150–300 ms, heartbeat 50 ms). Chosen for a dedicated
+network, with no derivation for this host's flushes and stalls.
+
+**Rejected: a large, safe constant** (1–2 s). No spurious elections, and every failover costs over a second.
+
+**Rejected: separate parameters** for the heartbeat and the deadline. Three knobs that must keep a fixed
+relationship to be correct, offered as if they were independent.
+
+**Cost accepted.** The ratios are reasoned, not swept. A replica's timeout is drawn from its own generator, so two
+replicas can still collide; the next round redraws.
+
+**Evidence:** pending — `BENCHMARKS.md` §7.

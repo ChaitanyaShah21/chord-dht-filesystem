@@ -143,6 +143,7 @@ has every alternative considered and what it would have cost.
 | **Raft as a socket-free core** (D-070) | time, storage and messages are passed in, so tests replay lost, reordered and duplicated messages and crashes from a seed | Raft written among the server's threads and sockets |
 | **A fresh connection per Raft call** (D-071) | a lost connection is a lost message; every reply is the reply to the request just sent | persistent connections, whose replies can belong to an earlier, timed-out call |
 | **One lock, held across the flush, never across a call** (D-072) | no reply can carry state that is not yet on disk | releasing the lock during the flush |
+| **Timers from one base, chosen by a rule** (D-073) | E is the smallest value with no spurious election under load; failover is measured at every candidate | the paper's 150–300 ms by precedent |
 
 ## Project structure
 
