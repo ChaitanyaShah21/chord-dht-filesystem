@@ -233,6 +233,7 @@ decided before the paper is one that cannot be defended in December.
 | **F47** | **How is a transfer parallelised?** A fixed pool of workers taking chunk numbers from one counter, sized at run time; a thread per chunk; an event loop; or chunks batched by owner. And what does a transfer do when one chunk fails? | Sets throughput, the memory a transfer uses, how many connections land on a node at once, and whether throughput against parallelism can be measured as a curve. | **RESOLVED** — D-056 |
 | **F48** | **How does a client find the ring?** Addresses on its command line, tried in order; addresses handed out by the tracker; a seed file; or learning the membership from a first contact. | Decides whether the tracker carries liveness state about nodes, whether a client can read a file with the tracker down, and where every lookup's first request lands. | **RESOLVED** — D-057 |
 | **F49** | **What does the tracker become?** The name-to-manifest map alone, with an effect log; the legacy commands kept beside it; or a new program beside the legacy tracker. And what happens to users, groups, `update_seeder` and the persistence log format (D-009)? | Decides the size of the mutable state that consensus will later replicate, what recovery replays, and how much legacy machinery stays alive. | **RESOLVED** — D-058 |
+| **F50** | **What happens when a name is registered twice?** Refuse a different key and accept the same one again; the last writer wins; keep versions; or overwrite on request. | With no access control and no deletion, decides whether one user can replace another's file, and whether a retried upload succeeds. | **RESOLVED** — D-059 |
 
 ---
 
@@ -3343,5 +3344,35 @@ newline.
   Group commit is the fix.
 - The log only grows: no deletion (D-023), no compaction.
 - `LIST` is a full scan in pages; there is no search.
+
+**Evidence:** none yet — design time.
+
+---
+
+### D-059 — A name is written once; registering the same key again succeeds, a different key is refused
+
+**Fork:** F50. **Date:** 8 Oct 2026. **Depends on:** D-004, D-023, D-058. **Gates:** what `REGISTER` answers.
+
+**The decision.** `REGISTER <name> <key>` for a name that is not taken records it and answers `OK`. For a name that
+is taken: if the key is the same, it answers `OK` and records nothing — so a client whose `OK` was lost, and which
+retries, succeeds; if the key differs, it answers `EXISTS <existing key>` and changes nothing. Of two concurrent
+uploads of different content to one name, the first registration wins and the other client reports the conflict;
+its chunks stay in the ring, unreferenced (D-023).
+
+**Why.** There is no access control (D-004), so a name that can be replaced is a name anyone can replace — and the
+replaced manifest becomes unreachable garbage, with no collector to reclaim it (D-023). A write-once namespace with
+no deletion is also append-only, which is what keeps its log a plain list of effects (D-058).
+
+**Rejected: the last writer wins.** The usual file-system semantics, and with no owners it lets any client replace
+any file silently.
+
+**Rejected: keep every version under a name.** Mutable history per name, a rule for which version a read gets, and
+versions that accumulate with nothing to delete them.
+
+**Rejected: overwrite only when asked (`--replace`).** The same vandalism with one more word on the command line,
+until ownership exists.
+
+**Cost accepted.** A mistaken upload holds its name until deletion with an owner token is built (D-023, Block 2).
+Changing a file means uploading it under a new name.
 
 **Evidence:** none yet — design time.

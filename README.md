@@ -1001,6 +1001,15 @@ replicate. **Rejected:** keeping the legacy commands alongside (soft state and a
 longer exists), a second tracker program, and records without a checksum. **Cost:** one flush per registration under
 one lock, so registrations are serialised at the disk's flush rate; the log only grows.
 
+### A name is written once
+
+Registering a name that is free records it. Registering a taken name with the same manifest key succeeds and changes
+nothing — so a client that lost its `OK` and retries succeeds — and with a different key is refused, naming the key
+already there. With no access control, a replaceable name is one anyone can replace, and the replaced manifest would
+be garbage nothing collects. **Rejected:** last writer wins, keeping versions, and an explicit overwrite flag — all
+three let any client replace any file until names have owners. **Cost:** a mistaken upload holds its name until
+deletion with ownership exists; to change a file, upload it under a new name.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the
