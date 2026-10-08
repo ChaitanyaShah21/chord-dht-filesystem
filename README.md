@@ -1071,6 +1071,17 @@ repository is pushed — and no badge is shown until it has passed. **Rejected:*
 program that skips the tested code), every suite on every push (a check that fails for timing reasons gets ignored),
 and no CI. **Cost:** the timing-sensitive suites run only when asked.
 
+### The transfer is measured against the old system re-run the same day, and against itself at one worker
+
+The old single-seeder baseline is re-run at its own commit on the same day as the new measurement, so a change in the
+machine is not mistaken for a change in the system. The new path is timed the way the old one was — from the command to
+every chunk verified and written — with the flush and the process start reported separately. And because the new path
+changes the ring, replication, verification and parallelism all at once, a second comparison changes only one: the same
+ring and files at one worker against the default. Curves against workers, ring size and chunk size, per-chunk p50/p99
+latency, deduplication and the tracker's footprint per name complete it. **Rejected:** comparing against the September
+number alone (the machine has changed since), and reporting only the old-against-new figure (several variables move at
+once). **Cost:** a fresh ring per repetition makes the benchmark slow to run.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

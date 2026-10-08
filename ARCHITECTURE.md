@@ -240,6 +240,7 @@ decided before the paper is one that cannot be defended in December.
 | **F54** | **How is the chunk-size sweep run above the 512 KiB framing limit?** A second build with a raised limit, used for every point; a run-time limit on every program; a sweep only up to 512 KiB; or a raised default. | D-016 promised five sizes up to 8 MiB, and the framing and stores refuse anything above 512 KiB (D-044). | **RESOLVED** — D-063 |
 | **F55** | **How does someone else start a ring, given that Docker is not installed on the development machine?** A tested local launcher plus container files marked not yet run; container files only; nothing until Docker is installed; or installing Docker now. | Decides what "how would someone run this?" can honestly be answered with, and what is claimed about containers. | **RESOLVED** — D-064 |
 | **F56** | **What does continuous integration run?** The build, the unit tests and the fast end-to-end suites on every push, with the timing-sensitive suites on demand; unit tests only; everything on every push; or none. | Decides what a green check means, and whether a flaky check teaches everyone to ignore it. | **RESOLVED** — D-065 |
+| **F57** | **How is the transfer path measured against the Phase 0 baseline?** Against a same-day re-run of the baseline at its own commit, with the clean single-variable comparison (one worker against many) beside it; or against the number recorded in September alone. And what are the curves? | The before/after is the phase's headline; moving several variables at once, or comparing across machine changes, would make it unattributable. | **RESOLVED** — D-066 |
 
 ---
 
@@ -3599,3 +3600,49 @@ newer offering whose availability is checked by the first run, not assumed. The 
 someone asks.
 
 **Evidence:** none yet — not run.
+
+---
+
+### D-066 — The transfer path is measured against the baseline re-run at its own commit, and against itself at one worker
+
+**Fork:** F57. **Date:** 8 Oct 2026. **Depends on:** D-016, D-053, D-056, D-062, D-063. **Gates:** every Phase 5
+number.
+
+**The decision.**
+1. **Before and after.** The Phase 0 baseline (`BENCHMARKS.md` §1: one seeder, sequential, 512 KB pieces) is
+   **re-measured the same day at its own commit**, `e381179`, with its own harness, as a control: the machine has
+   changed since September (it now has more free memory), and a same-day re-run separates machine drift from the
+   change. The new path is then measured with the same files (`medium.bin`, `large.dat`, `huge.iso`: 1, 10 and
+   100 MB), the same 512 KiB chunks, on 16 processes × 8 virtual nodes, `W = 2`, a fresh ring and tracker for every
+   repetition. Each repetition uploads (timed, reported on its own — the baseline has no upload figure) and then
+   downloads.
+   - **The comparable figure** is the client's own time from its start to every chunk verified and written —
+     the baseline's clock also ran from the command to "every piece verified", and its client never flushed.
+   - Also reported: the wall time to the client's exit, which adds the process start, the `fsync` and the rename
+     (D-055).
+   - **The single-variable comparison** is the new path at 1 worker against the default: same ring, same files,
+     same code, only the parallelism changed. Against the baseline, the ring, replication, verification and
+     parallelism all changed at once, and the report says so.
+2. **Throughput against workers** `{1, 2, 4, 8, 16, 32}` at 100 MB on 16 processes — D-056's rule picks the default
+   from it — and **against ring size** `{3, 4, 8, 16, 32}` processes at the default.
+3. **Per-chunk latency:** the client records, for every chunk, the time from the start of its lookup to its bytes
+   verified (and, for a download, written), retries included. p50 and p99 per configuration, pooled over repetitions.
+4. **Chunk size** `{64, 256, 512, 2048, 8192}` KiB at 100 MB, workers at the default, 16 processes, on the sweep build
+   (D-063); 512 KiB also on the default build.
+5. **Deduplication** as D-062.
+6. **The tracker:** log bytes and resident memory against names registered (10,000 and 100,000), and registrations
+   per second — the evidence D-017 owes for its `O(files)` claim.
+
+Median of at least three repetitions, with the spread; five where the spread exceeds 10 %. Each run records its commit,
+build, seeds and configuration. Everything runs on one host (`BENCHMARKS.md` § Known distortions).
+
+**Rejected: compare against the September number alone.** The host is not in the state it was; a difference could be
+the machine.
+
+**Rejected: report only new-path-against-baseline.** It moves parallelism, the ring, replication and verification at
+once, so the improvement could not be attributed to parallelism — the one-variable rule D-016 exists to protect.
+
+**Cost accepted.** The baseline's single seeder and this ring's 16 processes are different topologies; a fresh ring per
+repetition makes the benchmark slower to run.
+
+**Evidence:** none yet — design time.
