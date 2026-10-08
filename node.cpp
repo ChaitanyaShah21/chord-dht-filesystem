@@ -38,9 +38,12 @@
 
 namespace {
 
-// The defaults D-039 picks from the reconvergence benchmark (BENCHMARKS.md §3).
-constexpr int DEFAULT_PERIOD_MS  = 500;
-constexpr int DEFAULT_TIMEOUT_MS = 1000;
+// The defaults chosen from the reconvergence benchmark by the rules of D-039 and
+// D-042, at commit b171554 (BENCHMARKS.md §4): the longest period at which 9 of 10
+// runs repaired the ring within 1 s, and the smallest deadline at least ten times the
+// 99.9th-percentile exchange and above the slowest one observed.
+constexpr int DEFAULT_PERIOD_MS  = 1000;
+constexpr int DEFAULT_TIMEOUT_MS = 200;
 
 // Set once in main() before any thread starts, and only read afterwards. That
 // ordering -- all writes before the first reader exists -- is what makes them
