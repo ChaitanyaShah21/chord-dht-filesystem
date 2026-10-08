@@ -41,6 +41,9 @@ CMakeFiles/
 testdata/
 downloads*/
 
+# ---- A local cluster from scripts/cluster.sh: stores, logs, PIDs ----
+/cluster/
+
 # ---- Per-port tracker state and any other runtime logs ----
 *.log
 
