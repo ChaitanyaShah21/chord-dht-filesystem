@@ -979,6 +979,16 @@ chosen from the measured throughput curve by a rule fixed before measuring. **Re
 rewrite of every tested exchange), and batching by owner (one slow node stalls a whole batch). **Cost:** a small file
 cannot use more workers than it has chunks.
 
+### A client is told where the ring is
+
+The client takes a comma-separated list of ring addresses and starts every lookup at the first one that answers,
+moving down the list if a start node stops answering. Routing finds everything else. **Rejected:** having the tracker
+hand out node addresses — it would have to track which nodes are alive, putting liveness state back on the control
+plane, and a client could not read a file with the tracker down even when it already held the manifest key; a seed
+file (the same list, one more file); and learning the membership from the first contact to spread the first hop
+(worth it only if the entry node's load is measured to matter). **Cost:** every lookup's first request lands on the
+same node.
+
 ### A ring member is its own process; the client stays outside the ring
 
 A peer that stores chunks runs the `node` daemon. `client` is the user-facing program and is the

@@ -231,6 +231,7 @@ decided before the paper is one that cannot be defended in December.
 | **F45** | **How are W, durability and re-replication measured?** A fresh ring per W, or all W on one ring under one failure; durability from copy counts, or by killing the coordinator at acknowledgement; and who judges that RF = 3 is restored. | Decides whether the W comparison is between settings or between rings, and whether a durability claim was tested or inferred. | **RESOLVED** — D-053 |
 | **F46** | **What is a file's manifest, and what happens when it does not fit in one chunk?** A text manifest, split into a tree of manifests when large; a binary manifest; one flat manifest and a file-size limit; or a chain of manifests. | Decides the largest file the system can hold, how many round trips a download makes before its chunks can be fetched in parallel, and whether a manifest can be read and checked by hand. | **RESOLVED** — D-054 |
 | **F47** | **How is a transfer parallelised?** A fixed pool of workers taking chunk numbers from one counter, sized at run time; a thread per chunk; an event loop; or chunks batched by owner. And what does a transfer do when one chunk fails? | Sets throughput, the memory a transfer uses, how many connections land on a node at once, and whether throughput against parallelism can be measured as a curve. | **RESOLVED** — D-056 |
+| **F48** | **How does a client find the ring?** Addresses on its command line, tried in order; addresses handed out by the tracker; a seed file; or learning the membership from a first contact. | Decides whether the tracker carries liveness state about nodes, whether a client can read a file with the tracker down, and where every lookup's first request lands. | **RESOLVED** — D-057 |
 
 ---
 
@@ -3257,3 +3258,31 @@ to find its owner, and one slow owner then stalls its whole batch instead of one
 - Blocking threads: each worker spends most of its time waiting on a socket.
 
 **Evidence:** none yet — design time. The curve is D-066 item 2.
+
+---
+
+### D-057 — A client is told one or more ring addresses, and starts every lookup at the first that answers
+
+**Fork:** F48. **Date:** 8 Oct 2026. **Depends on:** D-017, D-024. **Gates:** the client's command line.
+
+**The decision.** The client takes `--ring <ip:port>[,<ip:port>...]`. Every lookup starts at the first listed
+process that answers; if a put or a get fails because the lookup could not get past its start node, the next listed
+address is tried, and is then preferred for the rest of the transfer. The client keeps no other membership: once a
+lookup starts, routing finds everything else (D-012).
+
+**Rejected: the tracker hands out ring addresses.** Nodes would register with the tracker and the tracker would have
+to expire the dead ones: liveness state on the control plane, the soft state D-008 and D-009 kept out of it. A client
+that already knows a manifest key could not read the file while the tracker was down, though nothing about reading a
+chunk needs the tracker.
+
+**Rejected: a seed file.** The same list in one more file.
+
+**Rejected: ask the first contact for its successors and fingers, and start lookups across them.** Spreads every
+lookup's first request over many nodes instead of one. Costs a request per transfer and a membership the client must
+keep fresh; worth building only if the entry node's load is measured to matter — its share is one short line per
+chunk.
+
+**Cost accepted.** The user must name at least one live process. Every lookup's first request lands on the same
+process.
+
+**Evidence:** none yet — design time.
