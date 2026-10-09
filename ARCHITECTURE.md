@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-082: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-083: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -237,12 +237,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 74 recorded here (F1–F73 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 75 recorded here (F1–F74 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -324,6 +325,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F71** | **What happens to the single tracker?** Kept as a mode beside the group; a one-replica group; or its log kept under Raft. | Decides whether the existing suites test the replicated code, and how many persistence formats exist. | **RESOLVED** — D-080 |
 | **F72** | **How does a client find the leader?** Every address on its command line with redirects; discovery from one address; followers forwarding; or DNS. | Decides what a client must be told, and what it does during an election. | **RESOLVED** — D-081 |
 | **F73** | **Flush per proposal, or batch?** Measure the direct path first; group commit on the leader; or the leader flushing in parallel with replicating. | Decides write throughput, and whether the optimisation is chosen from a number. | **RESOLVED** — D-082: measure first |
+| **F74** | **How does each process expose its metrics?** A hand-written HTTP/1.0 responder on a separate metrics port, in the Prometheus text format; a `METRICS` line on the protocol port, converted by an exporter; pushing them (StatsD, a Pushgateway); or a metrics library. | Decides whether Prometheus can scrape a process directly, whether a scrape competes with the data path for threads, and whether a dead process is told apart from a quiet one. | **RESOLVED** — D-083 |
 
 ---
 
@@ -4313,3 +4315,39 @@ of the three.
 the leader.
 
 **Evidence (9 Oct, `BENCHMARKS.md` §7):** one client: 131 registrations a second through three replicas, 269 for the single tracker (p50 6.9 against 3.4 ms — two flushes in series); on `tmpfs` 0.95 ms, so about 86 % of a replicated write is flushing. Sixteen clients: 264 against 276 — followers batch, and the ceiling is the leader's flush, as before. **Decision from the numbers:** neither group commit nor the parallel leader flush is built — a registration is one per uploaded file, and under load the group already matches the single tracker; group commit would lift the concurrent ceiling, the parallel flush the one-client latency.
+
+---
+
+### D-083 — Every process serves its metrics over a minimal hand-written HTTP/1.0 responder on a separate port
+
+**Fork:** F74. **Date:** 9 Oct 2026. **Depends on:** D-060, D-061. **Gates:** the dashboard, and every number it shows.
+
+**The decision.** A node, a tracker replica and a client each take `--metrics <port>`. On that port one thread
+accepts a connection, reads one HTTP request head, and answers `GET /metrics` with the Prometheus text exposition
+format (version 0.0.4): `# HELP`, `# TYPE` and one line per series. Then it closes the connection. No metrics port
+is opened unless one is asked for.
+
+**Hardened, because the port is reachable by anyone who can reach the node:**
+- **One thread, one connection at a time.** A flood of connections waits in the listen backlog; it cannot create
+  threads, unlike the protocol port (D-061 bounds those in time, not in number).
+- **The request head is capped at 4 KiB** and must arrive whole within 2 s, by the same deadline reader as D-061.
+  A slow sender holds the one thread for at most 2 s; a long one is cut off at the cap.
+- **Exactly one response, then close:** `200` for `GET /metrics`, `404` for another path, `405` for another method,
+  `400` for anything that is not a request line. No keep-alive, no pipelining, no request body. The send is bounded
+  by a 2 s send timeout, so a client that never reads cannot hold the thread either.
+- The request parser is a pure function, tested in process with constructed input.
+
+**Why a separate port.** The protocol port speaks lines, and `GET` is already a chunk verb (`GET <key>`, D-049), so an
+HTTP request there would be read as a malformed chunk request. A separate port can also be firewalled off from the
+data plane.
+
+**Rejected: a `METRICS` line on the protocol port, scraped by an exporter.** Every process needs a second process to
+translate, and a scrape shares the protocol port's threads.
+
+**Rejected: pushing (StatsD over UDP, or a Pushgateway).** A dead process stops pushing, which looks like a quiet one;
+when Prometheus scrapes, a failed scrape *is* the signal (`up == 0`). It also needs another daemon.
+
+**Rejected: a metrics library (prometheus-cpp).** Against the no-external-libraries rule; the format is small enough
+to write and test by hand.
+
+**Cost accepted.** HTTP/1.0 only, no TLS and no authentication on the metrics port — like the protocol port (D-004).

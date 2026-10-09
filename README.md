@@ -177,6 +177,12 @@ has every alternative considered and what it would have cost.
 | **Every replica's address, then redirects** (D-081) | as the client already finds the ring | followers forwarding requests to the leader |
 | **Measure before batching flushes** (D-082) | the flush's share is measured on disk against `tmpfs` | building group commit before knowing what it saves |
 
+**Observability** — metrics, logs and the dashboard; depth in [`docs/observability.md`](docs/observability.md):
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **Metrics over HTTP on a separate port** (D-083) | Prometheus scrapes every process directly; one hardened thread — a 4 KiB, 2 s request cap, one response, close | a `METRICS` line plus an exporter per process; pushing, where a dead process looks like a quiet one |
+
 ## Project structure
 
 ```
@@ -228,6 +234,7 @@ chord-dht-filesystem/
 | [`docs/transfer.md`](docs/transfer.md) | manifests, the worker pool, the part file, the tracker's namespace |
 | [`docs/protocol.md`](docs/protocol.md) | every message, its replies and errors, framing, deadlines |
 | [`docs/consensus.md`](docs/consensus.md) | the replicated tracker: Raft, each decision with its alternatives (being built) |
+| [`docs/observability.md`](docs/observability.md) | metrics and why each one, the log format, the request id, the dashboard |
 | [`docs/testing.md`](docs/testing.md) | the test layers, oracles, mutation testing, ThreadSanitizer |
 | [`docs/design.md`](docs/design.md) | each major decision with the alternatives considered |
 | [`docs/failures.md`](docs/failures.md) | every defect reproduced: how it was found, the root cause, why the fix works |
