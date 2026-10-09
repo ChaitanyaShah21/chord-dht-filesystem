@@ -26,19 +26,20 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from chunkcheck import Placement, ring_correct   # noqa: E402
 
 TRACKER_PORT, NODE_BASE = 7000, 7010
-GRACE = 6
+GRACE = 6          # the reclaim runs
+CURVE_GRACE = 40   # the chunk curve: room for a 30 s deadline, so the deadline never cuts a sweep short
 MB = 1 << 20
 
 
 class Cluster:
-    def __init__(self, work, nodes=8, args=""):
+    def __init__(self, work, nodes=8, args="", grace=GRACE):
         self.dir, self.nodes = work, nodes
         self.key = os.path.join(work + "-key")
         with open(self.key, "w") as f:
             f.write("ab" * 20 + "\n")
         self.env = dict(os.environ, CLUSTER_DIR=work, TRACKERS="3", TRACKER_PORT=str(TRACKER_PORT), NODE_BASE=str(NODE_BASE),
                         VNODES="8", PERIOD="1000", METRICS_OFFSET="0",
-                        NODE_ARGS=f"--gc-key {self.key} --gc-grace {GRACE} {args}")
+                        NODE_ARGS=f"--gc-key {self.key} --gc-grace {grace} {args}")
         self.group = ",".join(f"127.0.0.1:{TRACKER_PORT + i}" for i in range(3))
         self.ring = f"127.0.0.1:{NODE_BASE},127.0.0.1:{NODE_BASE + 1}"
 
@@ -69,10 +70,10 @@ class Cluster:
             raise RuntimeError("client " + " ".join(args[:2]) + " failed: " + r.stderr.decode()[-300:])
         return r.stdout.decode()
 
-    def gc(self):
+    def gc(self, deadline=2):
         t0 = time.monotonic()
         r = subprocess.run([f"{ROOT}/gc", "--tracker", self.group, "--ring", self.ring, "--gc-key", self.key, "--quiet",
-                            "--tracker-wait", "2000", "--assume-upload-limit", "1", "--deadline", "2"],
+                            "--tracker-wait", "2000", "--assume-upload-limit", "1", "--deadline", str(deadline)],
                            capture_output=True, timeout=1800)
         wall = (time.monotonic() - t0) * 1000
         out = r.stdout.decode().split()
@@ -148,19 +149,20 @@ def chunk_curve(a, rows, summary):
     print(f"== collection time against chunks: {sizes} chunks of 4 KiB", flush=True)
     for n in sizes:
         for rep in range(1, a.reps + 1):
-            with Cluster(os.path.join(a.scratch, "cluster"), 8, "--scan 0") as c:
+            with Cluster(os.path.join(a.scratch, "cluster"), 8, "--scan 0", CURVE_GRACE) as c:
                 path = os.path.join(a.scratch, f"chunks-{n}")
                 with open(path, "wb") as f:
                     f.write(random.Random(n * 10 + rep).randbytes(n * 4096))
                 out = c.client("--chunk-size", "4096", "--workers", "8", "put", path, "big").split()
                 time.sleep(2)
-                live = c.gc()                            # the file named: everything live, all of it marked
+                live = c.gc(30)                          # the file named: everything live, all of it marked
                 c.client("delete", "big", out[out.index("token") + 1])
-                time.sleep(GRACE + 1)
-                dead = c.gc()                            # nothing named: everything garbage, all of it swept
+                time.sleep(CURVE_GRACE + 1)
+                dead = c.gc(30)                          # nothing named: everything garbage, all of it swept
                 row = {"mode": "chunks", "chunks": n, "rep": rep, "live_mark_ms": live["mark_ms"], "live_sweep_ms": live["sweep_ms"],
                        "live_held": live["held"], "dead_sweep_ms": dead["sweep_ms"], "dead_dropped": dead["dropped"],
-                       "dead_garbage": dead["garbage"], "dead_wall_ms": dead["wall_ms"]}
+                       "dead_garbage": dead["garbage"], "dead_wall_ms": dead["wall_ms"],
+                       "deadline_hit": int(dead["dropped"] < dead["garbage"])}
                 rows.append(row)
                 print("  " + json.dumps(row), flush=True)
     summary["chunks"] = {}
