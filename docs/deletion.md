@@ -54,3 +54,14 @@ chunk of an acknowledged upload is ever dropped.
 | **Generations with upload leases** | two more consensus writes per upload, and a crashed client's lease still needs a timeout |
 | **A pin per chunk** | the same timeout, plus pin state and a release per chunk |
 | **Stopping uploads during a collection** | the tracker cannot see an upload until it registers |
+
+### Who may drop — [D-092](../ARCHITECTURE.md#d-092--drop-carries-a-key-shared-by-the-nodes-and-the-collector-compared-in-constant-time)
+
+`DROP` is the first request on the data plane that destroys anything. A node started with `--gc-key <file>` accepts it
+only with the same key, compared in constant time; without one it refuses every `DROP`.
+
+| Alternative | Why not |
+|---|---|
+| **No check** | anyone who can reach a node could delete old chunks, live ones included |
+| **A signed request with a nonce** | stops replay of a sniffed request; the next step, not built |
+| **The node checks reachability** | the whole mark on every node |

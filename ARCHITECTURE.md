@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-091: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-092: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -249,13 +249,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-091 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-092 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 83 recorded here (F1–F82 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 84 recorded here (F1–F83 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -346,6 +346,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F80** | **Who may delete a name, and how is it proved?** A secret chosen by the uploader, of which the tracker keeps only a hash; a token the tracker generates and returns; user accounts; or anyone. | Decides whether delete is a vandalism tool, whether a retried registration stays safe without sessions (D-075), and whether a secret ever sits in the Raft log. | **RESOLVED** — D-089 |
 | **F81** | **Who collects unreferenced chunks, and how does it learn what is live?** A separate collector that reads every name, walks every manifest tree through verified reads, lists each node's chunks and asks it to drop the rest; the Raft leader doing it; every node marking for itself; or nodes deleting whatever is not in a live set they are sent. | Decides which component may destroy data, what one bogus name or one unreadable manifest does to collection, and how much work a collection is. | **RESOLVED** — D-090 |
 | **F82** | **An upload has stored its chunks but not yet registered its name, and the collector runs. What stops it deleting them?** A grace period measured by each node's monotonic clock, renewed whenever a chunk is written again, with a restart counting as a write; generations with upload leases through Raft; a pin per chunk; or stopping uploads during a collection. | The race that turns garbage collection into data loss — made worse by deduplication, where an upload's chunk may be an old orphan the collector already marked. | **RESOLVED** — D-091 |
+| **F83** | **Who may tell a node to drop a chunk?** A shared key held by the nodes and the collector; anyone; a signed request with a nonce; or the node checking reachability itself. | `DROP` is the first request on the data plane that destroys anything; without access control any process that can reach a node could delete old chunks. | **RESOLVED** — D-092 |
 
 ---
 
@@ -4643,3 +4644,29 @@ checks each node's grace, but not the clients' limit. And the deadline bounds wh
 the argument allows. Losing an acknowledged chunk that way needs every copy's node frozen through the same collection
 for most of a grace period; a `DROP` carrying the time it was sent would close it, at the price of trusting clocks to
 agree.
+
+---
+
+### D-092 — `DROP` carries a key shared by the nodes and the collector, compared in constant time
+
+**Fork:** F83. **Date:** 9 Oct 2026. **Depends on:** D-004, D-090. **Gates:** who can destroy data.
+
+**The decision.** A node started with `--gc-key <file>` accepts `DROP <key> <chunk-key> ...` only if the request
+carries the same secret (at least 32 hexadecimal characters), compared in time that does not depend on where the first
+difference is. A node started without one refuses every `DROP`. The collector reads the same file.
+
+**Why.** Until now nothing on the data plane could destroy data: a chunk is named by its hash, so `PUT` and `STORE`
+cannot overwrite it. `DROP` is the first destructive request, and with no access control (D-004) any process that
+can reach a node could delete chunks older than the grace — live ones included, since the node does not know what is
+live.
+
+**Rejected: no check.** See above.
+
+**Rejected: a signed request with a nonce** (an HMAC over the request and a counter). Stops a sniffed request being
+replayed, at the cost of key handling and a replay window; the shared key is the step before it.
+
+**Rejected: the node checking reachability itself.** It would have to read the namespace and every manifest — the
+whole mark (D-090) on every node.
+
+**Cost accepted.** The key crosses the network in cleartext with every `DROP`; anyone who can watch the traffic can
+reuse it. Like every message here, it needs TLS to be private.
