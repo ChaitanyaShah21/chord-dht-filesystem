@@ -98,7 +98,7 @@ int main(int argc, char **argv) {
     // signal that ends the process.
     std::signal(SIGPIPE, SIG_IGN);
 
-    int port = 0, id = -1, election = 300;
+    int port = 0, id = -1, election = 150;           // E: D-073's rule chose 150 ms (BENCHMARKS.md §7)
     if (!parse_int(argv[1], 1, 65535, port)) return usage(argv[0]);
     std::string dir = ".", ip = "0.0.0.0", group_text;
     for (int i = 2; i < argc; ++i) {

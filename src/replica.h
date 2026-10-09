@@ -41,7 +41,7 @@ using CallFn = std::function<Delivery(int to, const std::string &line, const std
 struct ReplicaConfig {
     std::vector<Address> group;          // every replica, in the same order everywhere (D-079)
     int id = 0;                          // this replica's position in `group`
-    Millis election = 300;               // E (D-073)
+    Millis election = 150;               // E (D-073; chosen by its rule, BENCHMARKS.md §7)
     int commit_wait_ms = 2000;           // how long a client request waits before UNAVAILABLE (D-075)
     std::uint64_t seed = 0;              // the election timer's seed; 0: from the clock and the id
     bool log_transitions = true;         // a line on standard error at every change of role or term

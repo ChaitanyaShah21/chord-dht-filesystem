@@ -169,7 +169,7 @@ output file.
 | Every socket an originator opens (`client`, `chunk`, `lookup`) | 5 s on connect, send and receive — a hang guard | `LOOKUP_TIMEOUT_MS`, `CLIENT_TIMEOUT_MS` | D-024, D-025 |
 | Every call one node makes to another | 200 ms on connect, send and receive | `node --timeout <ms>` | D-039, D-042 |
 | A request line, or a body, arriving at a node or the tracker | the **whole** line or body within 10 s, enforced with `poll` on the time remaining | `--read-deadline <ms>` | D-061 |
-| Every call one tracker replica makes to another | E (the election timeout base, 300 ms by default) on connect, send and receive | `tracker --election <ms>` | D-073 |
+| Every call one tracker replica makes to another | E (the election timeout base, 150 ms by default) on connect, send and receive | `tracker --election <ms>` | D-073 |
 | A client request waiting at the tracker's leader for its commit or read confirmation | 2 s, then `UNAVAILABLE` | — | D-075, D-076 |
 | Each exchange a client makes with one tracker replica | 3 s; 10 s overall across replicas and retries | `client --tracker-wait <ms>` | D-081 |
 

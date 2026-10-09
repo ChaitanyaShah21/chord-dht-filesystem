@@ -117,7 +117,7 @@ public:
 struct RaftConfig {
     int id = 0;                     // this replica's position in the group, 0 .. size-1
     int size = 1;                   // replicas in the group (D-069)
-    Millis election = 300;          // E (D-073): timeouts in [E, 2E), heartbeat E/5, call deadline E,
+    Millis election = 150;          // E (D-073; chosen by its rule, BENCHMARKS.md §7): timeouts in [E, 2E), heartbeat E/5, call deadline E,
                                     //   a leader steps down after 2E without a majority (D-077)
     std::size_t max_append_bytes = 64 * 1024;   // commands per APPEND, roughly (D-071)
     std::uint64_t seed = 1;         // the election-timeout generator's seed
