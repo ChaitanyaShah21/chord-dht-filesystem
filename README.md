@@ -182,6 +182,7 @@ has every alternative considered and what it would have cost.
 | Decision | Why | Rejected alternative |
 |---|---|---|
 | **Metrics over HTTP on a separate port** (D-083) | Prometheus scrapes every process directly; one hardened thread — a 4 KiB, 2 s request cap, one response, close | a `METRICS` line plus an exporter per process; pushing, where a dead process looks like a quiet one |
+| **Histograms, and labels only from fixed sets** (D-084) | a p99 can be computed across every node after adding their buckets; no label can grow without bound | summaries, whose quantiles cannot be combined; averages, which hide the tail |
 
 ## Project structure
 

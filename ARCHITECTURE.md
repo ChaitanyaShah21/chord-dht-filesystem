@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-083: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-084: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -237,13 +237,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-084 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 75 recorded here (F1–F74 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 76 recorded here (F1–F75 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -326,6 +326,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F72** | **How does a client find the leader?** Every address on its command line with redirects; discovery from one address; followers forwarding; or DNS. | Decides what a client must be told, and what it does during an election. | **RESOLVED** — D-081 |
 | **F73** | **Flush per proposal, or batch?** Measure the direct path first; group commit on the leader; or the leader flushing in parallel with replicating. | Decides write throughput, and whether the optimisation is chosen from a number. | **RESOLVED** — D-082: measure first |
 | **F74** | **How does each process expose its metrics?** A hand-written HTTP/1.0 responder on a separate metrics port, in the Prometheus text format; a `METRICS` line on the protocol port, converted by an exporter; pushing them (StatsD, a Pushgateway); or a metrics library. | Decides whether Prometheus can scrape a process directly, whether a scrape competes with the data path for threads, and whether a dead process is told apart from a quiet one. | **RESOLVED** — D-083 |
+| **F75** | **Which metrics, and as which instrument?** Histograms with fixed buckets for latencies and hop counts, counters and gauges for the rest, labels only from small fixed sets; summaries computing quantiles in the process; averages; or metrics derived from the logs. | Decides whether a p99 can be computed across processes, what one scrape costs, and whether a label can grow without bound. | **RESOLVED** — D-084 |
 
 ---
 
@@ -4351,3 +4352,37 @@ when Prometheus scrapes, a failed scrape *is* the signal (`up == 0`). It also ne
 to write and test by hand.
 
 **Cost accepted.** HTTP/1.0 only, no TLS and no authentication on the metrics port — like the protocol port (D-004).
+
+---
+
+### D-084 — Histograms with fixed buckets for latencies and hops, counters and gauges for the rest, labels only from fixed sets
+
+**Fork:** F75. **Date:** 9 Oct 2026. **Depends on:** D-083. **Gates:** what the dashboard can compute.
+
+**The decision.**
+- **Latencies and hop counts are histograms**: a counter per bucket, plus a sum and a count, so a percentile is
+  computed *after* the buckets of many processes are added together (`histogram_quantile`). Latency buckets run from
+  0.5 ms to 10 s in a 1–2–5 series; hop buckets are 0 to 10 one at a time, then 12, 16, 24, 32 and 64.
+- **Everything that only goes up is a counter** (`_total`); everything that is a level now is a gauge, read when the
+  scrape arrives (successor-list length, chunks held, the Raft term).
+- **Labels only from small fixed sets** — a verb, a result, an error type, a role. Never a chunk key, a file name, a
+  request id or an address: each distinct label value is a new time series held for ever by Prometheus.
+- Names follow the Prometheus conventions: a `chordfs_` prefix, base units (seconds, bytes), `_total` on counters.
+- The metric set, and why each metric is there, is a table in `docs/observability.md`. Each one answers a question
+  the system's own claims raise: is a lookup still O(log N), is the ring repairing itself, is any chunk short of
+  three copies, does the tracker have one leader, where does a write's time go.
+
+**Counters are `std::atomic` with relaxed ordering.** A counter publishes no other data, so it needs atomicity but
+no ordering. A histogram's `+Inf` bucket is rendered as the sum of the bucket values read in that scrape, so the
+exposition is always self-consistent (`_count` equals the `+Inf` bucket) even while observations land mid-scrape.
+
+**Rejected: summaries** (quantiles computed inside each process). A p99 of p99s means nothing, so quantiles cannot be
+combined across processes; and the quantile is fixed when the code is written.
+
+**Rejected: averages only.** The tail is what a user waits on, and an average hides it.
+
+**Rejected: metrics derived from the logs** (a log processor counting lines). The metrics would depend on the wording
+of log lines, and on every line being kept.
+
+**Cost accepted.** A quantile is only as precise as the bucket edges around it, and a value above the last bucket
+is only known to be "more than 10 s".

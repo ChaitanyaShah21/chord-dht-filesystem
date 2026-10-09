@@ -21,3 +21,15 @@ response with a `Content-Length`, and the connection is closed. Nothing else is 
 | **HTTP on the protocol port** | `GET <key>` is already a chunk request there |
 | **Pushing (StatsD, a Pushgateway)** | a dead process stops pushing and looks quiet; a failed scrape is itself the signal |
 | **prometheus-cpp** | an external library |
+
+### Instruments and labels — [D-084](../ARCHITECTURE.md#d-084--histograms-with-fixed-buckets-for-latencies-and-hops-counters-and-gauges-for-the-rest-labels-only-from-fixed-sets)
+
+Latencies and hop counts are histograms — a counter per bucket, a sum and a count — so percentiles are computed after
+adding many processes' buckets together. Counters only go up; gauges are read at scrape time. A label takes values
+only from a small fixed set: never a key, a name, a request id or an address.
+
+| Alternative | Why not |
+|---|---|
+| **Summaries** | quantiles computed in each process cannot be combined: a p99 of p99s means nothing |
+| **Averages** | hide the tail a user waits on |
+| **Metrics counted from the logs** | they would depend on the wording of every log line |
