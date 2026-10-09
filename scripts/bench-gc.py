@@ -22,6 +22,9 @@ Raw rows go to bench/raw/gc-<label>.csv (not committed); a JSON summary is print
 import argparse, csv, json, os, random, shutil, statistics, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from chunkcheck import Placement, ring_correct   # noqa: E402
+
 TRACKER_PORT, NODE_BASE = 7000, 7010
 GRACE = 6
 MB = 1 << 20
@@ -44,6 +47,16 @@ class Cluster:
         r = subprocess.run([f"{ROOT}/scripts/cluster.sh", "up", str(self.nodes)], env=self.env, capture_output=True, timeout=300)
         if r.returncode != 0:
             raise RuntimeError("cluster.sh up failed: " + r.stdout.decode()[-400:])
+        # The nodes joined one after another: wait for the ring oracle, then three periods
+        # for the successor lists, before writing anything (see BENCHMARKS.md §8: a chunk
+        # written while the ring converges can land where the converged ring never asks).
+        placement = Placement([f"127.0.0.1:{NODE_BASE + i}" for i in range(self.nodes)], 8)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not ring_correct(placement):
+            time.sleep(0.5)
+        if not ring_correct(placement):
+            raise RuntimeError("the ring did not converge")
+        time.sleep(3)
         return self
 
     def __exit__(self, *exc):
