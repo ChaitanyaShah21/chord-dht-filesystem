@@ -22,6 +22,9 @@ bench/raw/observe-<label>.csv (not committed); a JSON summary is printed at the 
 import argparse, csv, json, os, shutil, socket, statistics, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+from chunkcheck import Placement, ring_correct   # noqa: E402
+
 TRACKER_PORT, NODE_BASE, OFFSET = 7000, 7010, 1000
 MB = 1 << 20
 
@@ -62,6 +65,17 @@ class Cluster:
         r = subprocess.run([f"{ROOT}/scripts/cluster.sh", "up", str(self.nodes)], env=self.env, capture_output=True, timeout=300)
         if r.returncode != 0:
             raise RuntimeError("cluster.sh up failed: " + r.stdout.decode()[-400:])
+        # The nodes joined one after another; wait until every member's successor and
+        # predecessor are right (an oracle computed from the addresses alone), then three
+        # more periods for the successor lists. A chunk written while the ring is still
+        # converging can land on a replica set that the converged ring no longer asks.
+        placement = Placement([f"127.0.0.1:{p}" for p in self.node_ports], 8)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not ring_correct(placement):
+            time.sleep(0.5)
+        if not ring_correct(placement):
+            raise RuntimeError("the ring did not converge")
+        time.sleep(3)
         return self
 
     def __exit__(self, *exc):
