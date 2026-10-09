@@ -77,3 +77,14 @@ and passes it on in every call it makes for that request — a coordinator's cop
 | **A trailing field** | a body-carrying line's last word is its length (D-044) |
 | **A separate header line** | a second line per request, and the desyncs that brings |
 | **The chunk key as the id** | names a chunk, not a transfer |
+
+### Prometheus and Grafana — [D-088](../ARCHITECTURE.md#d-088--prometheus-and-grafana-run-from-configuration-in-the-repository-against-the-local-cluster-with-release-binaries-kept-outside-it)
+
+`deploy/` holds the Prometheus configuration, Grafana's provisioning and the dashboard as JSON.
+`scripts/observe.sh up` runs both against the cluster from `scripts/cluster.sh`, using the official release
+binaries unpacked outside the repository; `compose.yaml` has the same services for Docker (not yet run).
+
+| Alternative | Why not |
+|---|---|
+| **Configuration only** | queries that have never run are guesses |
+| **Waiting for Docker** | not installed, and not needed for this |
