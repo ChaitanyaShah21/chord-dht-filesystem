@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-084: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-085: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -237,13 +237,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-084 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-085 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 76 recorded here (F1–F75 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 77 recorded here (F1–F76 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -327,6 +327,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F73** | **Flush per proposal, or batch?** Measure the direct path first; group commit on the leader; or the leader flushing in parallel with replicating. | Decides write throughput, and whether the optimisation is chosen from a number. | **RESOLVED** — D-082: measure first |
 | **F74** | **How does each process expose its metrics?** A hand-written HTTP/1.0 responder on a separate metrics port, in the Prometheus text format; a `METRICS` line on the protocol port, converted by an exporter; pushing them (StatsD, a Pushgateway); or a metrics library. | Decides whether Prometheus can scrape a process directly, whether a scrape competes with the data path for threads, and whether a dead process is told apart from a quiet one. | **RESOLVED** — D-083 |
 | **F75** | **Which metrics, and as which instrument?** Histograms with fixed buckets for latencies and hop counts, counters and gauges for the rest, labels only from small fixed sets; summaries computing quantiles in the process; averages; or metrics derived from the logs. | Decides whether a p99 can be computed across processes, what one scrape costs, and whether a label can grow without bound. | **RESOLVED** — D-084 |
+| **F76** | **A client runs for seconds; Prometheus scrapes every few. Where do transfer numbers come from?** The client serves metrics while it runs, and the dashboard's throughput and latency are measured at the nodes; a Pushgateway; a metrics file written at exit; or a long-running client. | Decides whether the dashboard's headline panels exist at all for short transfers, and what one more daemon would cost. | **RESOLVED** — D-085 |
 
 ---
 
@@ -4386,3 +4387,30 @@ of log lines, and on every line being kept.
 
 **Cost accepted.** A quantile is only as precise as the bucket edges around it, and a value above the last bucket
 is only known to be "more than 10 s".
+
+---
+
+### D-085 — The client serves metrics while it runs; the dashboard's throughput and latency are measured at the nodes
+
+**Fork:** F76. **Date:** 9 Oct 2026. **Depends on:** D-083, D-084. **Gates:** the dashboard's transfer panels.
+
+**The problem.** A `client put` or `get` is a process that lives for as long as one transfer — a 100 MB download takes
+about 0.3 s here. Prometheus scrapes on an interval, so most client processes would end before any scrape.
+
+**The decision.**
+- The client takes `--metrics <port>` like every other process and serves its counters while it runs: chunks and
+  bytes moved, per-chunk latency, its own lookups' hop counts. A long transfer is visible live.
+- **The dashboard's throughput and latency panels come from the nodes**, which live as long as the ring: bytes in and
+  out, requests by verb and result, and the time each chunk request takes to serve (for a `PUT`, until `W` copies
+  exist). Summed over nodes, that is the system's throughput whatever the clients' lifetimes.
+
+**Rejected: a Pushgateway.** Another daemon; the pushed values stay after the client has gone, so a dead client looks
+alive; and Prometheus's own documentation limits it to service-level batch jobs.
+
+**Rejected: a metrics file written at exit.** Needs a collector to read the files, and shows nothing during a long
+transfer.
+
+**Rejected: a long-running client process.** A different program from the one users run.
+
+**Cost accepted.** The client's own view — its lookups, its retries — is visible only for transfers long enough to be
+scraped. The workload driver of the fault-injection runs records every operation's outcome itself.

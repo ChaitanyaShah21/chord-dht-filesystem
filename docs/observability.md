@@ -33,3 +33,15 @@ only from a small fixed set: never a key, a name, a request id or an address.
 | **Summaries** | quantiles computed in each process cannot be combined: a p99 of p99s means nothing |
 | **Averages** | hide the tail a user waits on |
 | **Metrics counted from the logs** | they would depend on the wording of every log line |
+
+### Where transfer numbers come from — [D-085](../ARCHITECTURE.md#d-085--the-client-serves-metrics-while-it-runs-the-dashboards-throughput-and-latency-are-measured-at-the-nodes)
+
+A client process lives for one transfer, often shorter than a scrape interval. It still serves metrics while it runs
+(`--metrics`), but the dashboard's throughput and latency are measured at the nodes, which live as long as the ring:
+bytes in and out, and the time each chunk request takes to serve.
+
+| Alternative | Why not |
+|---|---|
+| **A Pushgateway** | another daemon, and a dead client's last numbers stay up |
+| **A metrics file at exit** | a collector to read it, and nothing during a long transfer |
+| **A long-running client** | not the program users run |
