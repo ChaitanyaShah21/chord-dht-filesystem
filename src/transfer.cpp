@@ -398,6 +398,7 @@ UploadOutcome upload_file(const std::string &path, const PutFn &put, const Trans
         int used = 0;
         const PutOutcome p = put_attempts(put, body, CHUNK_ATTEMPTS, opt.backoff_ms, &stop, used);
         out.timings[i] = ChunkTiming{i, len, micros_since(c0), used, p.attempts, p.ok};
+        if (opt.on_chunk) opt.on_chunk(out.timings[i]);
         if (!p.ok) return failure.set("chunk " + std::to_string(i) + ": " + p.message);
         keys[i] = p.key;
         if (opt.log && (used > 1 || p.attempts > 1))
@@ -504,6 +505,13 @@ DownloadOutcome download_file(const std::string &root_key, const std::string &de
         const GetOutcome g = get_attempts(get, c.key, CHUNK_ATTEMPTS, opt.backoff_ms, &stop, used);
         ChunkTiming &t = out.timings[i];
         t = ChunkTiming{i, c.bytes, 0, used, static_cast<int>(g.tried.size()), false};
+        // Whichever way this job ends, opt.on_chunk is told how this chunk went: the
+        // destructor of `told` runs at every return below (RAII).
+        struct Tell {
+            const TransferOptions &o;
+            const ChunkTiming &t;
+            ~Tell() { if (o.on_chunk) o.on_chunk(t); }
+        } told{opt, t};
         if (!g.ok) return failure.set("chunk " + std::to_string(i) + " (" + c.key + "): " + g.message);
         // A chunk can hash to its key and still be the wrong length for its place, if
         // the manifest lies about it. Its length is checked against the manifest.

@@ -57,6 +57,22 @@ enum class Delivery { Ok, Refused, Timeout, Closed, Failed };
 // A short lowercase name for a Delivery, for log lines: "ok", "refused", ...
 const char *delivery_name(Delivery d);
 
+// ---------------------------------------------------------------------------
+// The request id prefix (decision D-087).
+//
+//   RID <16 lowercase hexadecimal characters> <request>
+//
+// Optional on any request line. A server takes it off before anything else reads
+// the line, and carries the id into its logs and its own calls (log.h). Strict:
+// "RID", one space, exactly 16 characters 0-9a-f, one space, a non-empty request.
+// ---------------------------------------------------------------------------
+enum class RidPrefix {
+    None,        // the line does not start with "RID ": `rest` is the whole line
+    Present,     // `id` and `rest` set
+    Malformed,   // starts with "RID " but the id, or the space after it, is wrong
+};
+RidPrefix split_request_id(const std::string &line, std::string &id, std::string &rest);
+
 // One exchange on a FRESH connection (decision D-024, F19b): connect, send
 // `request` as one line, read one line into `reply`, close. Every step is
 // bounded by timeout_ms. `reply` is meaningful only when Ok is returned.
@@ -96,7 +112,8 @@ enum class Body {
 };
 
 // The one place that knows which lines carry a body. Used by sender and
-// receiver alike, so they cannot disagree. The length must be digits only, with
+// receiver alike, so they cannot disagree. A request id prefix (D-087) is looked
+// past: "RID <id> PUT <key> <w> <length>" carries a body as "PUT ..." does. The length must be digits only, with
 // no sign and no leading zero (a lone "0" is a zero-byte body), at most 7 digits.
 // `length` is written only when Present is returned.
 Body body_length(const std::string &line, std::size_t &length);

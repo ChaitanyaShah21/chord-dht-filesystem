@@ -1,7 +1,9 @@
 #include "lookup.h"
+#include "log.h"
 
 #include <arpa/inet.h>
 
+#include <chrono>
 #include <cstddef>
 
 namespace {
@@ -144,7 +146,27 @@ bool parse_reply(const std::string &line, bool &is_owner, Peer &peer, std::strin
     return true;
 }
 
+namespace {
+
+// Set once by set_lookup_observer, before any other thread starts; only read after.
+LookupObserver g_observer = nullptr;
+
+LookupResult run_lookup(const Peer &start, Id k, const Transport &transport);
+
+}  // namespace
+
+void set_lookup_observer(LookupObserver observer) { g_observer = observer; }
+
 LookupResult lookup(const Peer &start, Id k, const Transport &transport) {
+    const auto t0 = std::chrono::steady_clock::now();
+    LookupResult r = run_lookup(start, k, transport);
+    if (g_observer) g_observer(r, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    return r;
+}
+
+namespace {
+
+LookupResult run_lookup(const Peer &start, Id k, const Transport &transport) {
     LookupResult r;
     if (!transport) return fail(r, LookupError::Unreachable, "no transport supplied");
 
@@ -199,8 +221,11 @@ LookupResult lookup(const Peer &start, Id k, const Transport &transport) {
                 describe(r.path.back()));
 }
 
+}  // namespace
+
 Delivery socket_transport(const Peer &to, const std::string &request, std::string &reply) {
-    return exchange_line(to.ip, to.port, addressed(to, request), reply, LOOKUP_TIMEOUT_MS);
+    // The request id, if this thread or process has one, goes first (D-087).
+    return exchange_line(to.ip, to.port, with_request_id(addressed(to, request)), reply, LOOKUP_TIMEOUT_MS);
 }
 
 std::string addressed(const Peer &to, const std::string &request) {

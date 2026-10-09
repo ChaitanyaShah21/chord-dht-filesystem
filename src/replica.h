@@ -2,6 +2,7 @@
 #define REPLICA_H
 
 #include "group.h"
+#include "metrics.h"
 #include "names.h"
 #include "net.h"
 #include "raft.h"
@@ -71,6 +72,22 @@ public:
 
     std::string fingerprint() const { return fingerprint_; }
 
+    // What the replica is now, copied under the lock, for the metrics (D-084).
+    struct View {
+        Raft::Role role = Raft::Role::Follower;
+        Term term = 0;
+        int leader = NOBODY;
+        Index commit = 0, applied = 0, last = 0;
+        std::size_t names = 0;
+    };
+    View view() const;
+
+    // Events counted for the metrics. Incremented under the lock, read without it:
+    // each Counter is an atomic.
+    Counter elections;                   // elections this replica started
+    Counter leader_changes;              // times it learned of a different leader
+    std::unique_ptr<Counter[]> calls_failed;   // calls to each peer that got no usable reply
+
 private:
     struct WriteWaiter {
         Term term = 0;
@@ -113,6 +130,7 @@ private:
     bool fatal_ = false;
     Raft::Role shown_role_ = Raft::Role::Follower;
     Term shown_term_ = 0;
+    int known_leader_ = NOBODY;
     std::vector<bool> mismatch_logged_;
 
     std::vector<std::thread> threads_;

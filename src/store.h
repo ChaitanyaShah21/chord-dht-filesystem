@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <set>
 #include <string>
@@ -51,6 +52,10 @@ struct ChunkStore {
     // A number unique within this process, for temporary file names. Atomic so
     // two request threads never draw the same one.
     std::atomic<unsigned long> next_tmp{0};
+
+    // Bytes of every chunk held, for the metrics (D-084): counted at open, then
+    // changed by every store and removal.
+    std::atomic<std::uint64_t> bytes{0};
 };
 
 // Create <dir>, <dir>/tmp and the 256 fan-out directories if they do not exist;

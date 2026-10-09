@@ -1,5 +1,6 @@
 #include "replica.h"
 
+#include "log.h"
 #include "lookup.h"     // split_single_spaces
 #include "raft_wire.h"
 
@@ -26,9 +27,9 @@ Replica::Replica(const ReplicaConfig &config, Storage &storage, Durable recovere
     fingerprint_ = group_fingerprint(members);
     slots_.resize(cfg_.group.size());
     mismatch_logged_.assign(cfg_.group.size(), false);
+    calls_failed = std::make_unique<Counter[]>(cfg_.group.size());
     on_fatal = [](const std::string &why) {
-        std::fprintf(stderr, "[tracker] FATAL: %s; stopping so that nothing is answered from state that may be lost\n",
-                     why.c_str());
+        log_event(Level::Error, "raft.fatal", {{"msg", why + "; stopping so that nothing is answered from state that may be lost"}});
         _exit(1);
     };
 
@@ -112,12 +113,37 @@ void Replica::dispatch() {
     if (woke) done_cv_.notify_all();
 
     if (raft_->stopped()) fatal_ = true;
-    if (cfg_.log_transitions && (raft_->role() != shown_role_ || raft_->term() != shown_term_)) {
-        shown_role_ = raft_->role();
-        shown_term_ = raft_->term();
-        std::fprintf(stderr, "[tracker %d] term %llu: %s\n", cfg_.id, static_cast<unsigned long long>(shown_term_),
-                     role_name(shown_role_));
+
+    // Count what changed since the last call (D-084). A candidate in a new term has
+    // started an election -- also when it was a candidate already, in the term before.
+    const Raft::Role role = raft_->role();
+    const Term term = raft_->term();
+    if (role != shown_role_ || term != shown_term_) {
+        if (role == Raft::Role::Candidate) elections.add();
+        shown_role_ = role;
+        shown_term_ = term;
+        if (cfg_.log_transitions)
+            log_event(Level::Info, "raft.role", {{"replica", std::to_string(cfg_.id)}, {"term", std::to_string(term)},
+                                                 {"role", role_name(role)}});
     }
+    const int leader = raft_->leader();
+    if (leader != NOBODY && leader != known_leader_) {
+        known_leader_ = leader;
+        leader_changes.add();
+    }
+}
+
+Replica::View Replica::view() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    View v;
+    v.role = raft_->role();
+    v.term = raft_->term();
+    v.leader = raft_->leader();
+    v.commit = raft_->commit_index();
+    v.applied = raft_->last_applied();
+    v.last = raft_->last_index();
+    v.names = ns_.names.size();
+    return v;
 }
 
 void Replica::check_fatal(std::unique_lock<std::mutex> &lock) {
@@ -167,8 +193,9 @@ std::string Replica::handle(const std::string &line, const std::string &body) {
         if (group != fingerprint_ || from < 0 || from >= n || from == cfg_.id) {
             if (from >= 0 && from < n && !mismatch_logged_[from]) {
                 mismatch_logged_[from] = true;
-                std::fprintf(stderr, "[tracker %d] refusing calls from a replica with group %s (mine is %s)\n", cfg_.id,
-                             group.c_str(), fingerprint_.c_str());
+                log_event(Level::Warn, "raft.mismatch", {{"from", std::to_string(from)},
+                                                         {"msg", "refusing calls from a replica with group " + group +
+                                                                     " (mine is " + fingerprint_ + ")"}});
             }
             return "ERR group mismatch";
         }
@@ -274,8 +301,10 @@ void Replica::sender(int peer) {
             raft_->handle_vote_reply(peer, sent.vote, vr, now_ms());
         else if (d == Delivery::Ok && !sent.is_vote && parse_append_reply(reply, ar))
             raft_->handle_append_reply(peer, sent.append, ar, now_ms());
-        else
+        else {
             raft_->call_failed(peer, sent, now_ms());
+            calls_failed[peer].add();
+        }
         dispatch();
         check_fatal(lock);
     }

@@ -1,4 +1,5 @@
 #include "net.h"
+#include "log.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -22,8 +23,8 @@ bool send_line(int fd, const std::string &line) {
         if (c == '\n' || c == '\r') { c = ' '; ++offenders; }
     }
     if (offenders > 0)
-        std::fprintf(stderr, "[net] BUG: message carried %zu embedded newline(s); "
-                             "replaced with spaces to preserve framing\n", offenders);
+        log_event(Level::Error, "net.bug", {{"msg", "a message carried " + std::to_string(offenders) +
+                                                    " embedded newline(s); replaced with spaces to preserve framing"}});
     out.push_back('\n');
 
     // send() may accept fewer bytes than asked -- a short write -- so loop.
@@ -168,7 +169,28 @@ Delivery classify_io_error(int err) {
 
 }  // namespace
 
-Body body_length(const std::string &line, std::size_t &length) {
+RidPrefix split_request_id(const std::string &line, std::string &id, std::string &rest) {
+    if (line.compare(0, 4, "RID ") != 0) {
+        rest = line;
+        return RidPrefix::None;
+    }
+    // "RID " + 16 characters + " " + at least one character of request.
+    if (line.size() < 4 + 16 + 1 + 1 || line[4 + 16] != ' ') return RidPrefix::Malformed;
+    for (std::size_t i = 4; i < 4 + 16; ++i) {
+        const char c = line[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return RidPrefix::Malformed;
+    }
+    id = line.substr(4, 16);
+    rest = line.substr(4 + 16 + 1);
+    return RidPrefix::Present;
+}
+
+Body body_length(const std::string &whole, std::size_t &length) {
+    // Look past a request id prefix, so the sender (who adds it) and the receiver
+    // (who removes it first) agree on which lines carry a body.
+    std::string id, unprefixed;
+    const bool prefixed = split_request_id(whole, id, unprefixed) == RidPrefix::Present;
+    const std::string &line = prefixed ? unprefixed : whole;
     const std::size_t first_space = line.find(' ');
     const std::string verb = line.substr(0, first_space);
     if (verb != "PUT" && verb != "STORE" && verb != "CHUNK" && verb != "APPEND") return Body::None;

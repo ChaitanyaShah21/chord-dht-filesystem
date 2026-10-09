@@ -13,6 +13,10 @@
 #   NODE_BASE     the first node's port; the rest follow    (default 7010)
 #   VNODES        ring members per node process (D-051)     (default 8)
 #   PERIOD        stabilisation period in ms (D-039)        (default 1000)
+#   METRICS_OFFSET  each process serves /metrics on its port + this (D-083)  (default 1000;
+#                   0 turns metrics off); the addresses go to $CLUSTER_DIR/targets.json,
+#                   which scripts/observe.sh hands to Prometheus
+#   LOG_LEVEL     debug, info, warn or error (D-086)        (default info)
 #   NODE_ARGS     anything else to pass every node
 #
 # The first node creates the ring and the others join through it (D-029). `up`
@@ -31,7 +35,26 @@ TRACKER_PORT="${TRACKER_PORT:-7000}"
 NODE_BASE="${NODE_BASE:-7010}"
 VNODES="${VNODES:-8}"
 PERIOD="${PERIOD:-1000}"
+METRICS_OFFSET="${METRICS_OFFSET:-1000}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
 PIDS="$DIR/pids"
+
+# --metrics <port + offset>, or nothing when metrics are off.
+metrics_args() { [[ "$METRICS_OFFSET" -gt 0 ]] && echo "--metrics $(($1 + METRICS_OFFSET))"; }
+
+# The Prometheus file-discovery list: every process's metrics address, by role.
+write_targets() {                # write_targets <tracker ports> -- <node ports>
+  local role=tracker first=1 port
+  {
+    printf '[{"labels": {"role": "tracker"}, "targets": ['
+    for port in "$@"; do
+      if [[ "$port" == "--" ]]; then printf ']}, {"labels": {"role": "node"}, "targets": ['; first=1; continue; fi
+      [[ $first -eq 1 ]] || printf ', '
+      printf '"127.0.0.1:%s"' $((port + METRICS_OFFSET)); first=0
+    done
+    printf ']}]\n'
+  } > "$DIR/targets.json.tmp" && mv "$DIR/targets.json.tmp" "$DIR/targets.json"   # renamed: never read half-written
+}
 
 listening() { ss -ltn 2>/dev/null | grep -qE "[:.]$1[[:space:]]"; }
 
@@ -70,6 +93,8 @@ up() {
   [[ -f "$PIDS" ]] && { echo "cluster: already up in $DIR (run down first)"; return 1; }
   for port in $tports $(seq "$NODE_BASE" $((NODE_BASE + n - 1))); do
     listening "$port" && { echo "cluster: port $port is already in use"; return 1; }
+    [[ "$METRICS_OFFSET" -gt 0 ]] && listening $((port + METRICS_OFFSET)) &&
+      { echo "cluster: metrics port $((port + METRICS_OFFSET)) is already in use"; return 1; }
   done
   mkdir -p "$DIR/logs"
   : > "$PIDS"
@@ -79,7 +104,9 @@ up() {
   for port in $tports; do
     if [[ $TRACKERS -eq 1 ]]; then tgroup=(); else tgroup=(--group "$group" --id "$i"); fi
     mkdir -p "$DIR/tracker-$port"
-    "$ROOT/tracker" "$port" --dir "$DIR/tracker-$port" --ip 127.0.0.1 "${tgroup[@]}" > "$DIR/logs/tracker-$port.log" 2>&1 &
+    # shellcheck disable=SC2046
+    "$ROOT/tracker" "$port" --dir "$DIR/tracker-$port" --ip 127.0.0.1 "${tgroup[@]}" $(metrics_args "$port") \
+        --log-level "$LOG_LEVEL" > "$DIR/logs/tracker-$port.log" 2>&1 &
     pid=$!
     echo "$pid tracker-$port" >> "$PIDS"
     wait_listening "$port" "$pid" || { echo "cluster: tracker $port did not start (see $DIR/logs/tracker-$port.log)"; down; return 1; }
@@ -93,17 +120,22 @@ up() {
     port=$((NODE_BASE + i))
     if [[ $i -eq 0 ]]; then start=(--create); else start=(--join "127.0.0.1:$NODE_BASE"); fi
     # shellcheck disable=SC2086
+    # shellcheck disable=SC2046
     "$ROOT/node" 127.0.0.1 "$port" "${start[@]}" --vnodes "$VNODES" --period "$PERIOD" \
-        --store "$DIR/store-$port" ${NODE_ARGS:-} > "$DIR/logs/node-$port.log" 2>&1 &
+        --store "$DIR/store-$port" $(metrics_args "$port") --log-level "$LOG_LEVEL" ${NODE_ARGS:-} \
+        > "$DIR/logs/node-$port.log" 2>&1 &
     pid=$!
     echo "$pid node-$port" >> "$PIDS"
     wait_listening "$port" "$pid" || { echo "cluster: node $port did not start (see $DIR/logs/node-$port.log)"; down; return 1; }
   done
   sleep "$(awk "BEGIN { print 3 * $PERIOD / 1000 }")"       # three rounds: let the ring settle
+  # shellcheck disable=SC2086
+  [[ "$METRICS_OFFSET" -gt 0 ]] && write_targets $tports -- $(seq "$NODE_BASE" $((NODE_BASE + n - 1)))
 
   local ring="127.0.0.1:$NODE_BASE"
   [[ $n -gt 1 ]] && ring="$ring,127.0.0.1:$((NODE_BASE + 1))"
   echo "cluster: up in $DIR -- $TRACKERS tracker replica(s) $group, $n nodes on ports $NODE_BASE-$((NODE_BASE + n - 1)), $VNODES ring members each"
+  [[ "$METRICS_OFFSET" -gt 0 ]] && echo "  metrics on each port + $METRICS_OFFSET (listed in $DIR/targets.json; scripts/observe.sh up for Prometheus and Grafana)"
   echo "  $ROOT/client --tracker $group --ring $ring put <file> <name>"
   echo "  $ROOT/client --tracker $group --ring $ring get <name> <file>"
 }

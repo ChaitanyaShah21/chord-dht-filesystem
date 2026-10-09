@@ -23,6 +23,11 @@
 //   --stats <file>      write one CSV line per chunk: op,index,bytes,micros,attempts,tried,ok
 //   --tracker-wait <ms> how long to keep trying the tracker group (default 10000, D-081)
 //   --quiet             no progress or fall-through notes on standard error
+//   --request-id <id>   16 lowercase hex characters carried on every request (D-087);
+//                       by default a random one is made for this command
+//   --log <file>        append structured log lines here (D-086); none without it
+//   --log-level <level> debug, info (default), warn or error
+//   --metrics <port>    serve GET /metrics on this port while the command runs (D-085)
 //
 // put and get print one line on standard output, for scripts:
 //   put <name> <key> ok bytes <n> chunks <n> manifests <n> depth <n> chunk_ms <t> manifest_ms <t> total_ms <t>
@@ -41,12 +46,16 @@
 #include "chord.h"
 #include "chunk.h"
 #include "group.h"
+#include "http.h"
+#include "log.h"
 #include "lookup.h"
+#include "metrics.h"
 #include "net.h"
 #include "names.h"
 #include "store.h"
 #include "transfer.h"
 
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -82,8 +91,59 @@ std::string ms(double v) {
 }
 std::string ms(long long micros) { return ms(micros / 1000.0); }
 
+// Every chunk exchange carries this command's request id (D-087).
 Delivery client_frames(const Peer &to, const std::string &line, const std::string &body, Frame &reply) {
-    return exchange_frame(to.ip, to.port, line, body, reply.line, reply.body, CLIENT_TIMEOUT_MS);
+    return exchange_frame(to.ip, to.port, with_request_id(line), body, reply.line, reply.body, CLIENT_TIMEOUT_MS);
+}
+
+// ---- Metrics (D-085): served while the command runs, if --metrics is given. Every
+// series is registered in register_metrics() before any worker or the metrics
+// thread starts; the values are atomics. ----
+Registry g_metrics;
+Histogram *g_lookup_hops = nullptr;
+Histogram *g_lookup_seconds = nullptr;
+Counter *g_lookup_failures = nullptr;
+Counter *g_chunks[2][2] = {};          // [put, get][failed, ok]
+Counter *g_bytes[2] = {};              // [put, get]
+Histogram *g_chunk_seconds[2] = {};    // [put, get]
+
+void observe_lookup(const LookupResult &r, double seconds) {
+    if (!r.ok()) { g_lookup_failures->add(); return; }
+    g_lookup_hops->observe(r.hops());
+    g_lookup_seconds->observe(seconds);
+}
+
+void register_metrics(double started) {
+    Registry &r = g_metrics;
+    r.gauge("process_start_time_seconds", "When this process started, in seconds since the Unix epoch.",
+            [started] { return started; });
+    g_lookup_hops = &r.histogram("chordfs_lookup_hops", "Fingers followed per lookup (D-026).", hop_buckets());
+    g_lookup_seconds = &r.histogram("chordfs_lookup_seconds", "Time per successful lookup.", latency_buckets());
+    g_lookup_failures = &r.counter("chordfs_lookup_failures_total", "Lookups that failed.");
+    const char *ops[] = {"put", "get"};
+    for (int op = 0; op < 2; ++op) {
+        for (int ok = 0; ok < 2; ++ok)
+            g_chunks[op][ok] = &r.counter("chordfs_client_chunks_total", "Chunks moved by this client, by result.",
+                                          labels({{"op", ops[op]}, {"result", ok ? "ok" : "failed"}}));
+        g_bytes[op] = &r.counter("chordfs_client_bytes_total", "Chunk bytes moved by this client.", labels({{"op", ops[op]}}));
+        g_chunk_seconds[op] = &r.histogram("chordfs_client_chunk_seconds",
+                                           "Per chunk, from its first attempt to stored (put) or verified and written (get).",
+                                           latency_buckets(), labels({{"op", ops[op]}}));
+    }
+}
+
+// Told by the transfer's workers about each chunk as it finishes (D-085).
+std::function<void(const ChunkTiming &)> chunk_observer(int op) {
+    return [op](const ChunkTiming &t) {
+        g_chunks[op][t.ok ? 1 : 0]->add();
+        if (!t.ok) return;
+        g_bytes[op]->add(t.bytes);
+        g_chunk_seconds[op]->observe(static_cast<double>(t.micros) / 1e6);
+        if (log_enabled(Level::Debug))
+            log_event(Level::Debug, op == 0 ? "client.chunk.put" : "client.chunk.get",
+                      {{"index", std::to_string(t.index)}, {"bytes", std::to_string(t.bytes)},
+                       {"ms", ms(t.micros)}, {"attempts", std::to_string(t.attempts)}});
+    };
 }
 
 // The ring's entry points (D-057). Every lookup starts at the preferred one; if a
@@ -201,12 +261,18 @@ int usage() {
                  "  commands: put <file> <name> | get <name> <file> | get-key <key> <file> | info <name>\n"
                  "            | resolve <name> | ls\n"
                  "  options:  --workers <1..%d> --w <1..3> --chunk-size <bytes> --fanout <2..%zu>\n"
-                 "            --stats <file> --quiet --tracker-wait <ms>\n",
+                 "            --stats <file> --quiet --tracker-wait <ms> --request-id <16 hex>\n"
+                 "            --log <file> --log-level debug|info|warn|error --metrics <port>\n",
                  MAX_WORKERS, MANIFEST_FANOUT);
     return 2;
 }
 
-void say(const std::string &what) { std::fprintf(stderr, "client: %s\n", what.c_str()); }
+// A note for the person running the command, on standard error -- and, with --log,
+// the same words as a structured line, so the log tells the whole story too.
+void say(const std::string &what) {
+    std::fprintf(stderr, "client: %s\n", what.c_str());
+    log_event(Level::Warn, "client.note", {{"msg", what}});
+}
 
 }  // namespace
 
@@ -221,7 +287,7 @@ int main(int argc, char **argv) {
     // ---- the command line ----
     GroupClient tracker;
     tracker.exchange = [](const Address &to, const std::string &request, std::string &reply) {
-        return exchange_line(to.ip, to.port, request, reply, TRACKER_CALL_MS);
+        return exchange_line(to.ip, to.port, with_request_id(request), reply, TRACKER_CALL_MS);
     };
     tracker.now = [] {
         return static_cast<Millis>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -232,8 +298,10 @@ int main(int argc, char **argv) {
     std::string err;
     Ring ring;
     TransferOptions opt;
-    std::string stats;
+    std::string stats, request_id, log_path;
     bool quiet = false;
+    int metrics_port = 0;
+    Level level = Level::Info;
     std::vector<std::string> words;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -248,11 +316,36 @@ int main(int argc, char **argv) {
         else if (a == "--fanout" && v)            { if (!parse_number(argv[++i], 2, static_cast<long long>(MANIFEST_FANOUT), n)) return usage(); opt.fanout = static_cast<std::size_t>(n); }
         else if (a == "--stats" && v)             { stats = argv[++i]; }
         else if (a == "--quiet")                  { quiet = true; }
+        else if (a == "--request-id" && v)        { request_id = argv[++i]; if (!valid_request_id(request_id)) return usage(); }
+        else if (a == "--log" && v)               { log_path = argv[++i]; }
+        else if (a == "--log-level" && v)         { if (!parse_level(argv[++i], level)) return usage(); }
+        else if (a == "--metrics" && v)           { if (!parse_number(argv[++i], 1, 65535, n)) return usage(); metrics_port = static_cast<int>(n); }
         else if (a.compare(0, 2, "--") == 0)      { return usage(); }
         else                                      { words.push_back(a); }
     }
     if (words.empty()) return usage();
     const std::string cmd = words[0];
+
+    // ---- logging, the request id and metrics: all set before any other thread starts ----
+    int log_fd = -1;
+    if (!log_path.empty()) {
+        // O_APPEND: every write lands at the end, so several clients can share one file.
+        log_fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (log_fd < 0) { std::fprintf(stderr, "client: cannot open %s: %s\n", log_path.c_str(), std::strerror(errno)); return 2; }
+    }
+    log_setup("client", level, log_fd);
+    set_process_request_id(request_id.empty() ? new_request_id() : request_id);
+    register_metrics(std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count());
+    set_lookup_observer(observe_lookup);
+    if (metrics_port != 0) {
+        if (!serve_metrics("127.0.0.1", metrics_port, [] { return g_metrics.render(); }, err)) { say(err); return 1; }
+    }
+    {
+        std::string all;
+        for (const std::string &w : words) all += (all.empty() ? "" : " ") + w;
+        log_event(Level::Info, "client.start", {{"command", all}});
+    }
+
     if (!quiet) opt.log = say;                    // fprintf locks stderr per call: safe from many workers
 
     const bool needs_tracker = cmd == "put" || cmd == "get" || cmd == "info" || cmd == "resolve" || cmd == "ls";
@@ -265,6 +358,7 @@ int main(int argc, char **argv) {
     if (cmd == "put" && words.size() == 3) {
         const std::string &file = words[1], &name = words[2];
         if (!valid_name(name)) { say("a name is 1 to 200 visible ASCII characters, no spaces"); return 2; }
+        opt.on_chunk = chunk_observer(0);
         const UploadOutcome u = upload_file(file, put, opt);
         if (!stats.empty() && !write_stats(stats, "put", u.timings)) say("could not write " + stats);
         if (!u.ok) { say("upload failed: " + u.message); return 1; }
@@ -278,6 +372,9 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (reply != "OK") { say("the tracker answered: " + reply); return 1; }
+        log_event(Level::Info, "client.put", {{"name", name}, {"key", u.root_key}, {"result", "ok"},
+                                              {"bytes", std::to_string(u.size)}, {"chunks", std::to_string(u.chunks)},
+                                              {"manifests", std::to_string(u.manifests)}, {"ms", ms(ms_since(g_start))}});
         std::printf("put %s %s ok bytes %llu chunks %zu manifests %zu depth %d chunk_ms %s manifest_ms %s total_ms %s\n",
                     name.c_str(), u.root_key.c_str(), static_cast<unsigned long long>(u.size), u.chunks, u.manifests, u.depth,
                     ms(u.chunk_micros).c_str(), ms(u.manifest_micros).c_str(), ms(ms_since(g_start)).c_str());
@@ -295,10 +392,14 @@ int main(int argc, char **argv) {
             if (!valid_key(key)) { say("a key is 40 lowercase hexadecimal characters"); return 2; }
         }
         opt.for_signals = true;                    // Ctrl-C removes the part file (D-055)
+        opt.on_chunk = chunk_observer(1);
         const DownloadOutcome d = download_file(key, dest, get, opt);
         if (!stats.empty() && !write_stats(stats, "get", d.timings)) say("could not write " + stats);
         if (!d.ok) { say("download failed: " + d.message); return 1; }
         const double total = ms_since(g_start);
+        log_event(Level::Info, "client.get", {{"name", words[1]}, {"key", key}, {"result", "ok"},
+                                              {"bytes", std::to_string(d.size)}, {"chunks", std::to_string(d.chunks)},
+                                              {"manifests", std::to_string(d.manifests)}, {"ms", ms(total)}});
         std::printf("get %s %s ok bytes %llu chunks %zu manifests %zu depth %d resolve_ms %s fetch_ms %s sync_ms %s "
                     "ready_ms %s total_ms %s\n",
                     words[1].c_str(), key.c_str(), static_cast<unsigned long long>(d.size), d.chunks, d.manifests, d.depth,

@@ -1,4 +1,5 @@
 #include "chunk.h"
+#include "log.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -86,10 +87,14 @@ ChunkHandled coordinate(ChunkNode &n, const std::string &key, int w, std::string
     // everything it uses -- the shared pointers keep the buffer and the tally alive
     // for as long as it runs, and `send` is copied -- never a reference into this
     // function's stack frame, which is gone before the last copy finishes.
+    // The request id is thread_local (D-087): a new thread starts without it, so
+    // each copy's thread is handed it and opens its own scope.
+    const std::string rid = current_request_id();
     auto workers = std::make_shared<Workers>();
     for (std::size_t i = 1; i < set.size(); ++i) {
         const Peer to = set[i];
-        auto job = [tally, shared, to, store_line, send = n.send]() {
+        auto job = [tally, shared, to, store_line, rid, send = n.send]() {
+            RequestScope scope(rid);
             Frame answer;
             const Delivery d = send(to, store_line, *shared, answer);
             const bool good = d == Delivery::Ok && answer.line == "OK";
@@ -129,6 +134,7 @@ ChunkHandled coordinate(ChunkNode &n, const std::string &key, int w, std::string
         failures  = tally->failures;
     }
     const long long acked_ms = ms_since(start);
+    const auto acked = std::chrono::steady_clock::now();
 
     ChunkHandled h;
     h.reply = confirmed >= w ? "OK " + std::to_string(confirmed)
@@ -138,17 +144,22 @@ ChunkHandled coordinate(ChunkNode &n, const std::string &key, int w, std::string
 
     // After the reply has gone: wait for the remaining copies, then log how long
     // after the answer the last one landed -- the window with fewer than RF copies.
-    auto log = n.log;
-    h.after = [workers, tally, log, key, total, acked_ms, start]() {
+    // `node` is used after this function returns: the same lifetime rule as a
+    // Transport -- `after` runs while the ChunkNode it came from is alive.
+    ChunkNode *node = &n;
+    h.after = [workers, tally, node, key, total, acked_ms, acked, start]() {
         for (std::thread &t : workers->threads) t.join();
-        if (!log) return;
+        node->replication_lag.observe(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - acked).count());
         int c, f;
         {
             std::lock_guard<std::mutex> lock(tally->mu);
             c = tally->confirmed;
             f = tally->failed;
         }
-        log("put " + key + ": " + std::to_string(c) + " of " + std::to_string(total) + " copies, answered after " +
+        if (c < RF) node->copies_short.add();
+        if (!node->log) return;
+        node->log("put " + key + ": " + std::to_string(c) + " of " + std::to_string(total) + " copies, answered after " +
             std::to_string(acked_ms) + " ms, last copy after " + std::to_string(ms_since(start)) + " ms" +
             (f ? ", " + std::to_string(f) + " failed" : ""));
     };

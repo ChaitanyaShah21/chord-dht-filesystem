@@ -19,7 +19,7 @@ Every ring is N `node --wired` processes on 127.2.<run>.1 from port 21000, each 
 store under WORK (removed at exit). Raw rows go to bench/raw/<mode>-<commit>.csv (gitignored);
 scripts/plot-chunks.py makes the committed summary and figures. Warns if the tree is dirty.
 """
-import argparse, csv, json, os, random, re, shutil, signal, statistics, subprocess, sys, threading, time
+import datetime, argparse, csv, json, os, random, re, shutil, signal, statistics, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -340,9 +340,11 @@ def crash(args):
                     # counted at +250 ms came from the write itself, not from re-replication.
                     repaired = False
                     for a in ring.live():
-                        for m in re.finditer(r"\] (\d+\.\d+) repair: \d+ arcs checked, (\d+) chunks sent",
+                        # A structured line (D-086): ts=2026-10-09T13:56:32.667Z ... msg="repair: ..."
+                        for m in re.finditer(r"ts=(\S+) .*?msg=\"repair: \d+ arcs checked, (\d+) chunks sent",
                                              open(ring.log_of(a)).read()):
-                            if wall - 0.05 <= float(m.group(1)) <= wall + 0.3 and int(m.group(2)) > 0:
+                            when = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp()
+                            if wall - 0.05 <= when <= wall + 0.3 and int(m.group(2)) > 0:
                                 repaired = True
                     ring.start(coord)                            # back, from its own store
                     ring.converge()

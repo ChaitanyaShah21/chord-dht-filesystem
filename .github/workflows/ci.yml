@@ -61,3 +61,8 @@ jobs:
           scripts/e2e-raft.sh
           setarch $(uname -m) -R ./test-replica-tsan
           TRACKER_CMD="setarch $(uname -m) -R ./tracker-tsan" scripts/e2e-raft.sh
+      - name: Metrics, logs and request ids (its hostile-input checks time a 2 s deadline), and ThreadSanitizer through it
+        run: |
+          scripts/e2e-observe.sh
+          setarch $(uname -m) -R ./test-obs-tsan
+          NODE_CMD="setarch $(uname -m) -R ./node-tsan" TRACKER_CMD="setarch $(uname -m) -R ./tracker-tsan" scripts/e2e-observe.sh

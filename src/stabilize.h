@@ -4,6 +4,8 @@
 #include "chord.h"
 #include "lookup.h"
 
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -31,6 +33,19 @@ constexpr int STRIKES_TO_EVICT   = 2;      // non-refusal failures in a row (D-0
 constexpr int JOIN_ATTEMPTS      = 30;     // join lookups before giving up (D-029)
 constexpr int MAX_CONTACTS       = 32;     // addresses remembered for rejoining (D-040)
 constexpr int MAX_WALK           = 64;     // inward steps stabilise may take in one round (D-043)
+
+// What a member's maintenance has done, for the process's metrics (D-084). Only
+// ever increased, from any thread, without the lock: each is a std::atomic, so an
+// increment is indivisible and a reader never sees half of one.
+struct RingCounters {
+    std::atomic<std::uint64_t> rounds{0};             // maintenance rounds run
+    std::atomic<std::uint64_t> strikes{0};            // failures counted against a peer (D-035)
+    std::atomic<std::uint64_t> evicted_refused{0};    // members evicted on a refusal: proof
+    std::atomic<std::uint64_t> evicted_strikes{0};    // ... on a second strike: suspicion twice
+    std::atomic<std::uint64_t> evicted_orphan{0};     // ... because they said they were orphaned
+    std::atomic<std::uint64_t> new_successor{0};      // a closer successor adopted (a join)
+    std::atomic<std::uint64_t> rejoins{0};            // an orphan rejoined (D-040)
+};
 
 struct NodeState {
     NodeState(const Peer &me, int successors);
@@ -62,6 +77,8 @@ struct NodeState {
     // ("ip:port/<identifier>", D-047). Cleared by a valid reply; the second strike
     // evicts that member. A refusal evicts every member at the address at once.
     std::map<std::string, int> strikes;
+
+    RingCounters counters;                 // atomics: read and written without `mu`
 };
 
 // Same ring member? Same address AND same identifier -- never the identifier

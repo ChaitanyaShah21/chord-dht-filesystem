@@ -33,6 +33,8 @@ CMakeFiles/
 /test-replica
 /tracker-tsan
 /test-replica-tsan
+/test-obs
+/test-obs-tsan
 
 # ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----
 # Regenerate deterministically with scripts/make-testdata.sh

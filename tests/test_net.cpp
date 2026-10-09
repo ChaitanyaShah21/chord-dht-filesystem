@@ -77,7 +77,7 @@ void test_send_line() {
                     "an empty message is one empty line"); }
 
     // D-010: an embedded newline must not split one message into two lines.
-    std::fprintf(stderr, "  (the next two [net] BUG lines are expected)\n");
+    std::fprintf(stderr, "  (the next two net.bug lines are expected)\n");
     { Pair p; check(send_line(p.a, "OWNER a\nb") && drain(p.b, 10) == "OWNER a b\n",
                     "an embedded \\n becomes a space: still one line"); }
     { Pair p; check(send_line(p.a, "x\ry") && drain(p.b, 4) == "x y\n",

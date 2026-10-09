@@ -125,9 +125,15 @@ void evict_locked(NodeState &s, const Peer &dead, const std::string &why, Events
                                          : it->first == member_key(dead);
         it = match ? s.strikes.erase(it) : std::next(it);
     }
-    if (was_known)
+    if (was_known) {
         events.push_back("evict " + address(dead) + " (" + why + ")" +
                          (whole_process ? "" : " member " + id_to_hex(dead.id)));
+        // Counted by the evidence (D-013, D-035, D-067): proof, suspicion, or its own word.
+        std::atomic<std::uint64_t> &count = sibling_said_so ? s.counters.evicted_orphan
+                                            : whole_process ? s.counters.evicted_refused
+                                                            : s.counters.evicted_strikes;
+        count.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // A failure that is not a refusal: suspicion, not proof (D-013). It counts
@@ -147,6 +153,7 @@ void strike_locked(NodeState &s, const Peer &p, const std::string &why, Events &
     if (!held) return;                         // nothing to evict it from
 
     const int n = ++s.strikes[member_key(p)];
+    s.counters.strikes.fetch_add(1, std::memory_order_relaxed);
     events.push_back("strike " + std::to_string(n) + " against " + address(p) + " (" + why + ")" + detail);
     if (n >= STRIKES_TO_EVICT) evict_locked(s, p, why + ", second strike", events, false);
 }
@@ -557,6 +564,7 @@ void stabilize(NodeState &s, const Transport &transport) {
                         s.fingers[0] = s.succs[0];
                         remember_locked(s, candidate);
                         adopted.push_back("successor is now " + address(candidate));
+                        s.counters.new_successor.fetch_add(1, std::memory_order_relaxed);
                         moved = true;
                     }
                 }
@@ -649,6 +657,7 @@ void fix_next_finger(NodeState &s, const Transport &transport) {
 }
 
 void maintenance_round(NodeState &s, const Transport &transport) {
+    s.counters.rounds.fetch_add(1, std::memory_order_relaxed);
     // An orphan does no maintenance -- it has nobody to maintain against -- and
     // instead tries one remembered contact per round, round-robin (D-040).
     Peer contact;
@@ -665,6 +674,7 @@ void maintenance_round(NodeState &s, const Transport &transport) {
         if (!have_contact) return;
         std::string why;
         const JoinStatus st = join(s, contact, transport, why);
+        if (st == JoinStatus::Joined) s.counters.rejoins.fetch_add(1, std::memory_order_relaxed);
         Events events{st == JoinStatus::Joined ? "rejoined through " + address(contact)
                                                : "rejoin through " + address(contact) + " failed: " + why};
         emit(s, events);

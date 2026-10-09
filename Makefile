@@ -3,7 +3,7 @@
 # -----------------------------
 #
 #   make            the programs: tracker, node, client, chunk, lookup, sim-hops, sim-balance
-#   make check      build and run the nine unit-test binaries
+#   make check      build and run the ten unit-test binaries
 #   make tsan       ThreadSanitizer builds of the node, the client, the tracker and test-replica
 #   make clean
 #
@@ -38,20 +38,21 @@ CRYPTO_LDLIBS = -lcrypto
 BUILD = build
 obj = $(addprefix $(BUILD)/,$(addsuffix .o,$(1)))
 
-# The libraries every program is built from, each a socket-free module (except net)
-# so the unit tests can drive it in process.
+# The libraries every program is built from, each a socket-free module (except net
+# and http) so the unit tests can drive it in process.
+#   NET      the framing, the structured logger and request ids, the metrics registry
 #   ROUTING  the originator's loop and the ring arithmetic
 #   RING     a member's routing state and maintenance
 #   CHUNKS   the chunk plane: the store, replicated writes, verified reads
 #   RAFT     the replicated tracker: the core, its log file, its wire format (D-070)
-NET     = net
+NET     = net log metrics
 ROUTING = lookup chord $(NET)
 RING    = stabilize $(ROUTING)
 CHUNKS  = chunk store $(RING)
 RAFT    = raft raft_log raft_wire
 
 PROGRAMS = tracker client node chunk lookup sim-hops sim-balance
-TESTS    = test-chord test-net test-lookup test-stabilize test-chunk test-transfer test-names test-raft test-replica
+TESTS    = test-chord test-net test-lookup test-stabilize test-chunk test-transfer test-names test-raft test-replica test-obs
 
 all: $(PROGRAMS)
 
@@ -62,17 +63,18 @@ all: $(PROGRAMS)
 # The tracker: a Raft replica (replica.o around the core, D-070, D-072) whose state
 # machine is the namespace (names.o, D-080), on the node's framing (D-060). names.o
 # checks keys with store.o's valid_key; group.o parses the member list.
-tracker: $(call obj,tracker replica group names $(RAFT) store $(ROUTING))
+tracker: $(call obj,tracker replica group names http $(RAFT) store $(ROUTING))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 # The client: transfer.o moves whole files with chunk.o's put_chunk and get_chunk;
 # names.o only for valid_name, so a bad name is refused before anything is uploaded;
 # group.o finds the tracker group's leader (D-081).
-client: $(call obj,client transfer names group $(CHUNKS))
+client: $(call obj,client transfer names group http $(CHUNKS))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
-# A ring process: its members' maintenance, the chunk store and re-replication.
-node: $(call obj,node repair $(CHUNKS))
+# A ring process: its members' maintenance, the chunk store and re-replication; http
+# serves its metrics (D-083).
+node: $(call obj,node repair http $(CHUNKS))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 # Tools: one chunk, or one lookup per line of input, through a ring.
@@ -120,6 +122,9 @@ test-raft: $(call obj,test_raft group names $(RAFT) store $(ROUTING))
 test-replica: $(call obj,test_replica replica group names $(RAFT) store $(ROUTING))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+test-obs: $(call obj,test_obs http $(NET))
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
 # Build and run the in-process tests. Exits non-zero on the first failure, so it can
 # be used as a gate.
 check: $(TESTS)
@@ -158,24 +163,28 @@ $(BUILD)/flags: FORCE
 TSAN_FLAGS = -std=c++17 -Wall -pthread -g -O1 -fsanitize=thread -Isrc
 src = $(addprefix src/,$(addsuffix .cpp,$(1)))
 
-node-tsan: $(call src,node repair $(CHUNKS)) $(wildcard src/*.h)
+node-tsan: $(call src,node repair http $(CHUNKS)) $(wildcard src/*.h)
 	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^) $(CRYPTO_LDLIBS)
 
-client-tsan: $(call src,client transfer names group $(CHUNKS)) $(wildcard src/*.h)
+client-tsan: $(call src,client transfer names group http $(CHUNKS)) $(wildcard src/*.h)
 	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^) $(CRYPTO_LDLIBS)
 
 # The tracker replica's lock, ticker, senders and waiting requests (D-072): the real
 # program, and three replicas in one process with a transport the test can cut.
 #   TRACKER_CMD="setarch $(uname -m) -R ./tracker-tsan" scripts/e2e-raft.sh
-tracker-tsan: $(call src,tracker replica group names $(RAFT) store $(ROUTING)) $(wildcard src/*.h)
+tracker-tsan: $(call src,tracker replica group names http $(RAFT) store $(ROUTING)) $(wildcard src/*.h)
 	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^) $(CRYPTO_LDLIBS)
 
 test-replica-tsan: tests/test_replica.cpp $(call src,replica group names $(RAFT) store $(ROUTING)) $(wildcard src/*.h)
 	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^) $(CRYPTO_LDLIBS)
 
-tsan: node-tsan client-tsan tracker-tsan test-replica-tsan
+# The metrics registry and the logger under concurrent writers and readers (D-084, D-086).
+test-obs-tsan: tests/test_obs.cpp $(call src,http $(NET)) $(wildcard src/*.h)
+	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^)
+
+tsan: node-tsan client-tsan tracker-tsan test-replica-tsan test-obs-tsan
 
 clean:
-	rm -rf $(BUILD) $(PROGRAMS) $(TESTS) node-tsan client-tsan tracker-tsan test-replica-tsan
+	rm -rf $(BUILD) $(PROGRAMS) $(TESTS) node-tsan client-tsan tracker-tsan test-replica-tsan test-obs-tsan
 
 .PHONY: all check tsan clean FORCE

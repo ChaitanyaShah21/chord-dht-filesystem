@@ -103,6 +103,14 @@ struct LookupResult {
 // Never throws on anything a node sends, however malformed (invariant I5).
 LookupResult lookup(const Peer &start, Id k, const Transport &transport);
 
+// Something to tell about every lookup when it ends -- its result and how long it
+// took, in seconds -- for a process's metrics (D-084). A plain function pointer, set
+// once at start-up before any other thread exists, and null (nothing told) by
+// default, so tests and tools are unaffected. Each attempt of lookup_with_recovery is
+// a lookup of its own.
+using LookupObserver = void (*)(const LookupResult &result, double seconds);
+void set_lookup_observer(LookupObserver observer);
+
 // lookup(), plus recovery from a node that could not be reached (decision D-036).
 //
 // If a lookup fails because the node it was sent to refused, timed out or closed
@@ -119,7 +127,8 @@ LookupResult lookup_with_recovery(const Peer &start, Id k, const Transport &tran
 // The real transport: one fresh connection per request (D-024 F19b), with
 // LOOKUP_TIMEOUT_MS on connect, send and receive. Holds no state, so it is
 // safe to pass anywhere. The request is addressed to the member `to` names
-// (addressed(), below), so it reaches the right member of a process.
+// (addressed(), below), so it reaches the right member of a process, and carries
+// the current request id, if there is one (D-087).
 Delivery socket_transport(const Peer &to, const std::string &request, std::string &reply);
 
 // Strictly parse one reply line: exactly "OWNER" or "NEXT", one space, 16 hex

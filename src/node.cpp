@@ -14,6 +14,8 @@
 //   --scan <rounds>  rounds between full repair scans, 0 = never  (default DEFAULT_SCAN_ROUNDS)
 //   --read-deadline <ms>  a request line, or a body, must arrive whole within this (D-061)
 //                         (default DEFAULT_READ_DEADLINE_MS)
+//   --metrics <port>      serve GET /metrics on this port (D-083); none without it
+//   --log-level <level>   debug, info (default), warn or error (D-086)
 //
 // Ring requests are answered by handle_request() in stabilize.cpp and chunk
 // requests by handle_chunk_request() in chunk.cpp, both shared with the
@@ -22,7 +24,10 @@
 
 #include "chord.h"
 #include "chunk.h"
+#include "http.h"
+#include "log.h"
 #include "lookup.h"
+#include "metrics.h"
 #include "net.h"
 #include "repair.h"
 #include "stabilize.h"
@@ -32,12 +37,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -77,18 +84,92 @@ std::vector<std::unique_ptr<NodeState>> g_members;     // this process's ring me
 ChunkStore g_store;
 ChunkNode  g_chunks;
 
+// ---- Metrics (D-083, D-084) ----------------------------------------------------
+// Every series is registered by register_metrics() before the metrics thread or any
+// connection thread starts, and these maps and pointers are only read after that:
+// the same "all writes before the first reader" rule as the settings above. The
+// values themselves are atomics, updated from any thread.
+Registry g_metrics;
+std::atomic<int> g_connections_open{0};
+std::atomic<int> g_repair_pending{0};
+Counter *g_connections_total = nullptr;
+Counter *g_bytes_in = nullptr;
+Counter *g_bytes_out = nullptr;
+Histogram *g_lookup_hops = nullptr;
+Histogram *g_lookup_seconds = nullptr;
+std::map<std::string, Counter *> g_errors;            // by type: deadline, malformed, busy, ...
+std::map<std::string, Counter *> g_chunk_requests;    // by "verb/result"
+std::map<std::string, Histogram *> g_chunk_seconds;   // by verb
+std::map<std::string, Counter *> g_lookup_failures;   // by lookup_error_name
+std::map<std::string, Counter *> g_repair;            // by what a repair round did
+
+const char *const CHUNK_VERBS[] = {"put", "store", "get", "have"};
+const char *const CHUNK_RESULTS[] = {"ok", "missing", "busy", "error"};
+const char *const ERROR_TYPES[] = {"deadline", "line_too_long", "malformed", "too_large", "busy", "closed_mid_body"};
+
+void count(std::map<std::string, Counter *> &family, const std::string &which, std::uint64_t n = 1) {
+    const auto it = family.find(which);
+    if (it != family.end()) it->second->add(n);
+}
+
+// Every lookup this process makes -- finger repair, joins, hand-offs -- ends here.
+void observe_lookup(const LookupResult &r, double seconds) {
+    if (!r.ok()) { count(g_lookup_failures, lookup_error_name(r.error)); return; }
+    g_lookup_hops->observe(r.hops());
+    g_lookup_seconds->observe(seconds);
+}
+
+// "PUT ab12... 2 524288" -> "put"; "HAVE k1 k2" -> "have".
+std::string verb_of(const std::string &line) {
+    std::string v = line.substr(0, line.find(' '));
+    for (char &c : v) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    return v;
+}
+
+// What a chunk reply means, as one of CHUNK_RESULTS.
+const char *result_of(const std::string &reply) {
+    if (reply == "OK" || reply.compare(0, 3, "OK ") == 0 || reply.compare(0, 6, "CHUNK ") == 0 ||
+        reply.compare(0, 5, "HAVE ") == 0)
+        return "ok";
+    if (reply == "MISSING") return "missing";
+    if (reply == "ERR busy") return "busy";
+    return "error";
+}
+
+// Count, time and log one chunk request once its reply has been sent (D-084, D-086).
+void record_chunk(const std::string &line, const std::string &reply, std::uint64_t bytes,
+                  std::chrono::steady_clock::time_point t0) {
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const std::string verb = verb_of(line);
+    const char *result = result_of(reply);
+    count(g_chunk_requests, verb + "/" + result);
+    const auto h = g_chunk_seconds.find(verb);
+    if (h != g_chunk_seconds.end()) h->second->observe(seconds);
+    // HAVE is repair's bookkeeping, many per round: debug. The rest is one line per chunk.
+    const Level level = verb == "have" ? Level::Debug : Level::Info;
+    if (!log_enabled(level)) return;
+    char ms[32];
+    std::snprintf(ms, sizeof ms, "%.3f", seconds * 1000);
+    const std::size_t a = line.find(' ');
+    const std::string key = a == std::string::npos ? "" : line.substr(a + 1, line.find(' ', a + 1) - a - 1);
+    log_event(level, ("chunk." + verb).c_str(),
+              {{"key", key}, {"result", result}, {"reply", reply.substr(0, 120)}, {"bytes", std::to_string(bytes)},
+               {"ms", ms}});
+}
+
 // Every call this node makes to a ring member: one fresh connection, with the
 // deadline set before connect (D-025), addressed to that member (D-047). A plain
 // function, so it lives forever and can be referred to from any thread.
 Delivery node_transport(const Peer &to, const std::string &request, std::string &reply) {
-    return exchange_line(to.ip, to.port, addressed(to, request), reply, g_timeout_ms);
+    // The request id of whatever this thread is doing on someone's behalf goes first (D-087).
+    return exchange_line(to.ip, to.port, with_request_id(addressed(to, request)), reply, g_timeout_ms);
 }
 const Transport g_transport = node_transport;
 
 // Every chunk call this node makes to another process (D-044): a header line, a
 // body if the line declares one, and the same deadline on each system call.
 Delivery frame_transport(const Peer &to, const std::string &line, const std::string &body, Frame &reply) {
-    return exchange_frame(to.ip, to.port, line, body, reply.line, reply.body, g_timeout_ms);
+    return exchange_frame(to.ip, to.port, with_request_id(line), body, reply.line, reply.body, g_timeout_ms);
 }
 
 // The member a ring request is for, or null. No prefix means member 0 (D-047).
@@ -103,10 +184,15 @@ NodeState *member_by_id(Id id) {
 // unknown, because the body's bytes are still arriving and nothing says where
 // they end.
 bool serve_chunk(int fd, const std::string &line) {
+    const auto t0 = std::chrono::steady_clock::now();
     std::size_t length = 0;
     const Body b = body_length(line, length);
-    if (b == Body::Malformed) { send_line(fd, "ERR malformed body length"); return false; }
-    if (b == Body::TooLarge)  { send_line(fd, "ERR chunk larger than " + std::to_string(MAX_BODY) + " bytes"); return false; }
+    if (b == Body::Malformed) { count(g_errors, "malformed"); send_line(fd, "ERR malformed body length"); return false; }
+    if (b == Body::TooLarge)  {
+        count(g_errors, "too_large");
+        send_line(fd, "ERR chunk larger than " + std::to_string(MAX_BODY) + " bytes");
+        return false;
+    }
 
     // Take a body slot BEFORE reading the body, so a peer cannot make this node
     // allocate more than MAX_BODIES chunks at once (D-052).
@@ -120,13 +206,22 @@ bool serve_chunk(int fd, const std::string &line) {
             // drop it, so the answer is not lost. Closing with the body unread would
             // make the kernel reset the connection, which can destroy "ERR busy"
             // before the sender reads it.
-            return recv_discard_by(fd, length, body_due) && send_line(fd, "ERR busy");
+            count(g_errors, "busy");
+            const bool ok = recv_discard_by(fd, length, body_due) && send_line(fd, "ERR busy");
+            record_chunk(line, "ERR busy", 0, t0);
+            return ok;
         }
-        if (!recv_exact_by(fd, length, body, body_due)) return false;   // closed, or not whole in time
+        if (!recv_exact_by(fd, length, body, body_due)) {        // closed, or not whole in time
+            count(g_errors, errno == EAGAIN ? "deadline" : "closed_mid_body");
+            return false;
+        }
+        g_bytes_in->add(length);
     }
 
     ChunkHandled h = handle_chunk_request(g_chunks, Frame{line, std::move(body)});
     const bool sent = send_line(fd, h.reply) && send_all(fd, h.body.data(), h.body.size());
+    if (sent) g_bytes_out->add(h.body.size());
+    record_chunk(line, h.reply, b == Body::Present ? length : h.body.size(), t0);
     if (h.after) h.after();                    // a coordinator's remaining copies
     return sent;
 }                                              // `hold` and h.hold released here
@@ -135,10 +230,30 @@ bool serve_chunk(int fd, const std::string &line) {
 // is too long. Runs on its own detached thread. Work a handler deferred until
 // after its reply (Handled::after) runs once the reply has been sent.
 void serve(int fd) {
-    std::string line;
-    // Each request line must arrive whole within the deadline of starting to wait
-    // for it (D-061): a peer that sends nothing, or a byte at a time, is cut off.
-    while (recv_line_by(fd, line, deadline_in(g_read_deadline_ms))) {
+    g_connections_open.fetch_add(1);
+    g_connections_total->add();
+    std::string raw, rid, line;
+    while (true) {
+        // Each request line must arrive whole within the deadline of starting to wait
+        // for it (D-061): a peer that sends nothing, or a byte at a time, is cut off.
+        // errno says why a read ended: 0 the peer closed (the normal end), EAGAIN the
+        // deadline passed, EMSGSIZE the line was too long.
+        if (!recv_line_by(fd, raw, deadline_in(g_read_deadline_ms))) {
+            if (errno == EAGAIN) count(g_errors, "deadline");
+            else if (errno == EMSGSIZE) count(g_errors, "line_too_long");
+            break;
+        }
+        // The request id comes off first (D-087). While `scope` lives, this thread's
+        // log lines and its calls on this request's behalf carry it.
+        const RidPrefix rp = split_request_id(raw, rid, line);
+        if (rp == RidPrefix::Malformed) {
+            count(g_errors, "malformed");
+            send_line(fd, "ERR malformed request id");
+            break;                             // the line may have announced a body: the stream is lost
+        }
+        if (rp == RidPrefix::None) rid.clear();
+        RequestScope scope(rid);
+
         // Chunk requests, and any line that announces a body: the body must be read
         // (or the connection closed) before the next line, or its bytes would be
         // taken for requests.
@@ -157,11 +272,18 @@ void serve(int fd) {
         if (t == Target::Malformed) h.reply = "ERR malformed TO prefix";
         else if (!member)           h.reply = "ERR no ring member " + id_to_hex(id) + " here";
         else                        h = handle_request(*member, request, g_transport);
+        if (t == Target::Malformed) count(g_errors, "malformed");
         const bool sent = send_line(fd, h.reply);
+        // One line per routing request -- every hop of every lookup -- so only at debug.
+        if (log_enabled(Level::Debug))
+            log_event(Level::Debug, "ring.request",
+                      {{"member", member ? id_to_hex(member->self.id) : "-"},
+                       {"verb", request.substr(0, request.find(' '))}, {"reply", h.reply.substr(0, 120)}});
         if (h.after) h.after();
         if (!sent) break;
     }
     close(fd);
+    g_connections_open.fetch_sub(1);
 }
 
 // The maintenance thread: a round for every member, then a fixed delay (D-039).
@@ -183,7 +305,30 @@ void repair(int period_ms, int scan_rounds) {
     RepairState state;
     std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
     while (true) {
-        repair_round(g_chunks, state, g_transport, scan_rounds);
+        {
+            // Each round is its own "request" (D-087): the HAVEs and STOREs it sends,
+            // and the lines the receivers log, carry one id per round.
+            RequestScope scope(new_request_id());
+            const RepairReport r = repair_round(g_chunks, state, g_transport, scan_rounds);
+            count(g_repair, "rounds");
+            count(g_repair, "chunks_sent", static_cast<std::uint64_t>(r.chunks_sent));
+            count(g_repair, "failures", static_cast<std::uint64_t>(r.send_failures));
+            count(g_repair, "handed_off", static_cast<std::uint64_t>(r.handed_off));
+            count(g_repair, "scrubbed", static_cast<std::uint64_t>(r.scrubbed));
+            if (r.full_scan) count(g_repair, "full_scans");
+        }
+        // The repair queue: arcs this process owns whose last check failed or that
+        // changed since, so they are checked again next round.
+        int pending = 0;
+        for (const auto &m : g_members) {
+            bool known;
+            {
+                std::lock_guard<std::mutex> lock(m->mu);
+                known = m->has_pred && !m->orphaned;
+            }
+            if (known && state.checked.count(m->self.id) == 0) ++pending;
+        }
+        g_repair_pending = pending;
         std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
     }
 }
@@ -233,12 +378,113 @@ bool expand_members(const std::vector<Peer> &processes, int v, std::vector<Peer>
     return true;
 }
 
+// Every series this process exposes (D-084; docs/observability.md says why each is
+// there). Called once, after the members and the store exist and before any thread
+// that could read the registry starts.
+void register_metrics(double started) {
+    Registry &r = g_metrics;
+    r.gauge("process_start_time_seconds", "When this process started, in seconds since the Unix epoch.",
+            [started] { return started; });
+
+    // Connections and errors: one thread per connection (D-061) is a known limit.
+    r.gauge("chordfs_connections_open", "Connections being served now, each on its own thread.",
+            [] { return static_cast<double>(g_connections_open.load()); });
+    g_connections_total = &r.counter("chordfs_connections_total", "Connections accepted.");
+    for (const char *type : ERROR_TYPES)
+        g_errors[type] = &r.counter("chordfs_request_errors_total",
+                                    "Requests dropped or refused before they could be answered, by why.",
+                                    labels({{"type", type}}));
+
+    // Lookups this process makes itself: finger repair, joins, repair's hand-offs.
+    g_lookup_hops = &r.histogram("chordfs_lookup_hops", "Fingers followed per lookup (D-026).", hop_buckets());
+    g_lookup_seconds = &r.histogram("chordfs_lookup_seconds", "Time per successful lookup.", latency_buckets());
+    for (LookupError e : {LookupError::Refused, LookupError::Timeout, LookupError::Closed, LookupError::Unreachable,
+                          LookupError::ErrReply, LookupError::Malformed, LookupError::NoProgress,
+                          LookupError::TooManyRequests})
+        g_lookup_failures[lookup_error_name(e)] = &r.counter("chordfs_lookup_failures_total", "Lookups that failed, by why.",
+                                                             labels({{"error", lookup_error_name(e)}}));
+
+    // The ring: summed over this process's members.
+    auto sum = [](std::atomic<std::uint64_t> RingCounters::*field) {
+        return [field] {
+            double total = 0;
+            for (const auto &m : g_members) total += static_cast<double>((m->counters.*field).load());
+            return total;
+        };
+    };
+    r.gauge("chordfs_ring_members", "Ring members (virtual nodes) in this process.",
+            [] { return static_cast<double>(g_members.size()); });
+    r.counter_fn("chordfs_ring_rounds_total", "Maintenance rounds run, all members.", sum(&RingCounters::rounds));
+    r.counter_fn("chordfs_ring_strikes_total", "Failed calls counted against a peer (D-035).", sum(&RingCounters::strikes));
+    r.counter_fn("chordfs_ring_evictions_total", "Members evicted, by the evidence (D-013).",
+                 sum(&RingCounters::evicted_refused), labels({{"evidence", "refused"}}));
+    r.counter_fn("chordfs_ring_evictions_total", "Members evicted, by the evidence (D-013).",
+                 sum(&RingCounters::evicted_strikes), labels({{"evidence", "strikes"}}));
+    r.counter_fn("chordfs_ring_evictions_total", "Members evicted, by the evidence (D-013).",
+                 sum(&RingCounters::evicted_orphan), labels({{"evidence", "orphan"}}));
+    r.counter_fn("chordfs_ring_successor_changes_total", "Closer successors adopted (joins).",
+                 sum(&RingCounters::new_successor));
+    r.counter_fn("chordfs_ring_rejoins_total", "Orphaned members that rejoined (D-040).", sum(&RingCounters::rejoins));
+    r.gauge("chordfs_ring_successor_list_min", "The shortest successor list among this process's members.", [] {
+        std::size_t shortest = MAX_SUCCESSORS;
+        for (const auto &m : g_members) {
+            std::lock_guard<std::mutex> lock(m->mu);
+            shortest = std::min(shortest, m->succs.size());
+        }
+        return static_cast<double>(shortest);
+    });
+    r.gauge("chordfs_ring_orphaned_members", "Members that lost every node they knew (D-040).", [] {
+        int n = 0;
+        for (const auto &m : g_members) {
+            std::lock_guard<std::mutex> lock(m->mu);
+            n += m->orphaned ? 1 : 0;
+        }
+        return static_cast<double>(n);
+    });
+
+    // Chunks: what is held, what is asked, what moves.
+    r.gauge("chordfs_store_chunks", "Chunks held by this process.", [] {
+        if (!g_chunks.store) return 0.0;
+        std::lock_guard<std::mutex> lock(g_store.mu);
+        return static_cast<double>(g_store.keys.size());
+    });
+    r.gauge("chordfs_store_bytes", "Bytes of chunks held by this process.",
+            [] { return static_cast<double>(g_store.bytes.load()); });
+    r.gauge("chordfs_body_slots_in_use", "Chunk bodies held in memory now, of 32 (D-052).",
+            [] { return static_cast<double>(g_chunks.bodies.load()); });
+    for (const char *verb : CHUNK_VERBS) {
+        for (const char *result : CHUNK_RESULTS)
+            g_chunk_requests[std::string(verb) + "/" + result] =
+                &r.counter("chordfs_chunk_requests_total", "Chunk requests answered, by verb and result.",
+                           labels({{"verb", verb}, {"result", result}}));
+        g_chunk_seconds[verb] = &r.histogram("chordfs_chunk_request_seconds",
+                                             "From a chunk request read to its reply sent; a PUT is answered once W copies exist.",
+                                             latency_buckets(), labels({{"verb", verb}}));
+    }
+    g_bytes_in = &r.counter("chordfs_chunk_bytes_total", "Chunk bytes received (PUT, STORE) and sent (GET).",
+                            labels({{"direction", "in"}}));
+    g_bytes_out = &r.counter("chordfs_chunk_bytes_total", "Chunk bytes received (PUT, STORE) and sent (GET).",
+                             labels({{"direction", "out"}}));
+    r.expose("chordfs_put_replication_lag_seconds",
+             "From a write's acknowledgement to its last copy: the window with fewer than three copies.",
+             g_chunks.replication_lag);
+    r.expose("chordfs_put_copies_short_total", "Coordinated writes whose copies ended below three.", g_chunks.copies_short);
+
+    // Repair (D-050).
+    for (const char *what : {"rounds", "full_scans", "chunks_sent", "failures", "handed_off", "scrubbed"})
+        g_repair[what] = &r.counter(std::string("chordfs_repair_") + what + "_total",
+                                    std::string("Repair: ") + what + ", summed over rounds (D-050).");
+    r.gauge("chordfs_repair_pending_arcs", "Owned arcs to be checked again next round.",
+            [] { return static_cast<double>(g_repair_pending.load()); });
+}
+
 int usage(const char *argv0) {
     std::fprintf(stderr,
                  "usage: %s <ip> <port> <membership-file>\n"
                  "       %s <ip> <port> (--create | --join <ip:port> | --wired <file>)\n"
                  "                      [--period <ms>] [--timeout <ms>] [--succ <1..%d>]\n"
-                 "                      [--vnodes <1..%d>] [--store <dir>] [--scan <rounds>] [--read-deadline <ms>]\n",
+                 "                      [--vnodes <1..%d>] [--store <dir>] [--scan <rounds>] [--read-deadline <ms>]\n"
+                 "                      [--metrics <port>] [--log-level debug|info|warn|error]\n",
                  argv0, argv0, MAX_SUCCESSORS, MAX_VNODES);
     return 2;
 }
@@ -259,7 +505,8 @@ int main(int argc, char **argv) {
     enum class Mode { Fixed, Create, Join, Wired } mode = Mode::Fixed;
     std::string file, known_text, store_dir;
     int period_ms = DEFAULT_PERIOD_MS, successors = DEFAULT_SUCCESSORS;
-    int vnodes = DEFAULT_VNODES, scan_rounds = DEFAULT_SCAN_ROUNDS;
+    int vnodes = DEFAULT_VNODES, scan_rounds = DEFAULT_SCAN_ROUNDS, metrics_port = 0;
+    Level level = Level::Info;
     if (argc == 4 && argv[3][0] != '-') {
         file = argv[3];                                   // Phase 2's form, unchanged
         vnodes = 1;                                       // the fixed ring is one member per process
@@ -278,28 +525,28 @@ int main(int argc, char **argv) {
             else if (a == "--read-deadline" && has_value) { if (!parse_int(argv[++i], 10, 600000, g_read_deadline_ms)) return usage(argv[0]); }
             else if (a == "--scan" && has_value)    { if (!parse_int(argv[++i], 0, 1000000, scan_rounds)) return usage(argv[0]); }
             else if (a == "--store" && has_value && store_dir.empty()) { store_dir = argv[++i]; if (store_dir.empty()) return usage(argv[0]); }
+            else if (a == "--metrics" && has_value) { if (!parse_int(argv[++i], 1, 65535, metrics_port)) return usage(argv[0]); }
+            else if (a == "--log-level" && has_value) { if (!parse_level(argv[++i], level)) return usage(argv[0]); }
             else return usage(argv[0]);
         }
         if (!chosen) return usage(argv[0]);
     }
 
-    const std::string tag = "[node " + me.ip + ":" + std::to_string(me.port) + "] ";
-    // Every event carries the wall-clock time in milliseconds, so the logs of many
-    // nodes -- and a machine-wide record such as `vmstat` -- can be put on one
-    // timeline when a failure has to be explained after the fact.
-    auto log = [tag](const std::string &event) {
-        const auto now = std::chrono::system_clock::now().time_since_epoch();
-        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-        std::fprintf(stderr, "%s%lld.%03lld %s\n", tag.c_str(), ms / 1000, ms % 1000, event.c_str());
-    };
+    // Structured lines from here on (D-086), each with the wall-clock time, so the
+    // logs of many nodes -- and a machine-wide record such as `vmstat` -- can be put
+    // on one timeline when a failure has to be explained after the fact. The ring's
+    // and the store's event texts are kept word for word in `msg`.
+    log_setup("node:" + std::to_string(me.port), level);
+    const double started = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    auto log = [](const std::string &event) { log_event(Level::Info, "ring", {{"msg", event}}); };
 
     // ---- the members (D-047) ----
     for (int i = 0; i < vnodes; ++i) {
         const Peer member{id_of_member(me.ip, me.port, i), me.ip, me.port};
         for (const auto &m : g_members) {
             if (m->self.id == member.id) {
-                std::fprintf(stderr, "%smembers %d and another share identifier %s; use fewer --vnodes\n",
-                             tag.c_str(), i, id_to_hex(member.id).c_str());
+                log_event(Level::Error, "node.start", {{"msg", "members " + std::to_string(i) + " and another share identifier " +
+                                                               id_to_hex(member.id) + "; use fewer --vnodes"}});
                 return 1;
             }
         }
@@ -313,13 +560,13 @@ int main(int argc, char **argv) {
         std::vector<Peer> processes, members;     // both die at the end of this block (D-020)
         std::string err;
         if (!read_members(file, processes, err) || !expand_members(processes, vnodes, members, err)) {
-            std::fprintf(stderr, "[node] %s\n", err.c_str());
+            log_event(Level::Error, "node.start", {{"msg", err}});
             return 1;
         }
         bool listed = false;
         for (const Peer &p : processes) listed = listed || same_process(p, me);
         if (!listed) {
-            std::fprintf(stderr, "[node] %s:%d is not in %s\n", me.ip.c_str(), me.port, file.c_str());
+            log_event(Level::Error, "node.start", {{"msg", me.ip + ":" + std::to_string(me.port) + " is not in " + file}});
             return 1;
         }
         for (const auto &m : g_members) init_wired(*m, members);
@@ -333,7 +580,7 @@ int main(int argc, char **argv) {
     } else {
         Peer known;
         if (!parse_address(known_text, known)) {
-            std::fprintf(stderr, "[node] invalid --join address %s\n", known_text.c_str());
+            log_event(Level::Error, "node.start", {{"msg", "invalid --join address " + known_text}});
             return 2;
         }
         // Not listening yet, on purpose (D-029): until every member has joined, a
@@ -344,13 +591,13 @@ int main(int argc, char **argv) {
                 std::string why;
                 const JoinStatus st = join(*m, known, g_transport, why);
                 if (st == JoinStatus::Joined) { joined = true; break; }
-                std::fprintf(stderr, "%sjoin attempt %d/%d for %s: %s\n", tag.c_str(), attempt, JOIN_ATTEMPTS,
-                             id_to_hex(m->self.id).c_str(), why.c_str());
+                log_event(Level::Warn, "node.join", {{"attempt", std::to_string(attempt) + "/" + std::to_string(JOIN_ATTEMPTS)},
+                                                     {"member", id_to_hex(m->self.id)}, {"msg", why}});
                 if (st == JoinStatus::Collision) return 1;
                 std::this_thread::sleep_for(std::chrono::milliseconds(period_ms));
             }
             if (!joined) {
-                std::fprintf(stderr, "%sgiving up: could not join through %s\n", tag.c_str(), known_text.c_str());
+                log_event(Level::Error, "node.join", {{"msg", "giving up: could not join through " + known_text}});
                 return 1;
             }
         }
@@ -358,22 +605,33 @@ int main(int argc, char **argv) {
 
     // ---- the chunk store (D-045) ----
     g_chunks.send = frame_transport;
-    g_chunks.log = log;
+    g_chunks.log = [](const std::string &event) { log_event(Level::Info, "storage", {{"msg", event}}); };
     for (const auto &m : g_members) g_chunks.members.push_back(m.get());
     if (!store_dir.empty()) {
         std::string report, err;
         if (!store_open(g_store, store_dir, report, err)) {
-            std::fprintf(stderr, "%s%s\n", tag.c_str(), err.c_str());
+            log_event(Level::Error, "node.start", {{"msg", err}});
             return 1;
         }
         g_chunks.store = &g_store;
-        std::fprintf(stderr, "%sstore %s: %s\n", tag.c_str(), store_dir.c_str(), report.c_str());
+        log_event(Level::Info, "node.start", {{"msg", "store " + store_dir + ": " + report}});
+    }
+
+    // ---- metrics (D-083): every series registered before any thread can read them ----
+    register_metrics(started);
+    set_lookup_observer(observe_lookup);
+    if (metrics_port != 0) {
+        std::string err;
+        if (!serve_metrics(me.ip, metrics_port, [] { return g_metrics.render(); }, err)) {
+            log_event(Level::Error, "node.start", {{"msg", err}});
+            return 1;
+        }
     }
 
     const int listener = listen_on(me.ip, me.port);
     if (listener < 0) {
-        std::fprintf(stderr, "[node] cannot listen on %s:%d: %s\n", me.ip.c_str(), me.port,
-                     std::strerror(errno));
+        log_event(Level::Error, "node.start", {{"msg", "cannot listen on " + me.ip + ":" + std::to_string(me.port) + ": " +
+                                                       std::strerror(errno)}});
         return 1;
     }
 
@@ -384,8 +642,7 @@ int main(int argc, char **argv) {
             if (m->has_pred) pred_text = id_to_hex(m->pred.id);
             succ_text = id_to_hex(m->succs[0].id);
         }
-        std::fprintf(stderr, "%sid=%s pred=%s succ=%s\n", tag.c_str(), id_to_hex(m->self.id).c_str(),
-                     pred_text.c_str(), succ_text.c_str());
+        log_event(Level::Info, "node.member", {{"id", id_to_hex(m->self.id)}, {"pred", pred_text}, {"succ", succ_text}});
     }
 
     // The fixed ring has no maintenance thread: its tables never change (D-029).
@@ -394,15 +651,18 @@ int main(int argc, char **argv) {
         if (mode != Mode::Fixed) std::thread(maintain, period_ms).detach();
         if (mode != Mode::Fixed && g_chunks.store) std::thread(repair, period_ms, scan_rounds).detach();
     } catch (const std::system_error &e) {
-        std::fprintf(stderr, "[node] cannot start a background thread: %s\n", e.what());
+        log_event(Level::Error, "node.start", {{"msg", std::string("cannot start a background thread: ") + e.what()}});
         return 1;
     }
 
     while (true) {
         const int fd = accept(listener, nullptr, nullptr);
         if (fd < 0) {
-            if (errno != EINTR)
-                std::fprintf(stderr, "[node] accept: %s\n", std::strerror(errno));
+            if (errno != EINTR) {
+                log_event(Level::Error, "node.accept", {{"msg", std::strerror(errno)}});
+                // Out of descriptors (EMFILE) would otherwise make this loop spin at full speed.
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             continue;
         }
         // std::thread's constructor throws if the system cannot create a thread.
@@ -410,7 +670,7 @@ int main(int argc, char **argv) {
         try {
             std::thread(serve, fd).detach();
         } catch (const std::system_error &e) {
-            std::fprintf(stderr, "[node] cannot start a thread: %s\n", e.what());
+            log_event(Level::Error, "node.accept", {{"msg", std::string("cannot start a thread: ") + e.what()}});
             close(fd);
         }
     }

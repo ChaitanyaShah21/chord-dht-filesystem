@@ -3,6 +3,7 @@
 
 #include "chord.h"
 #include "lookup.h"
+#include "metrics.h"
 #include "net.h"
 #include "stabilize.h"
 #include "store.h"
@@ -59,6 +60,12 @@ struct ChunkNode {
     // Bodies held in memory right now (D-052). Changed only by hold_body() and
     // the Hold it returns.
     std::atomic<int> bodies{0};
+
+    // What the coordinator measured, for the process's metrics (D-084): the time
+    // from a write's acknowledgement to its last copy -- the window with fewer than
+    // RF copies -- and the writes whose copies ended short of RF.
+    Histogram replication_lag{latency_buckets()};
+    Counter   copies_short;
 };
 
 // A claim on one of MAX_BODIES body slots. While the returned pointer (or a copy

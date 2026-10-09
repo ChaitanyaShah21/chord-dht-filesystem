@@ -103,6 +103,8 @@ Resolved resolve_manifest(const std::string &root_key, const GetFn &get, int att
 
 // ---- whole transfers (D-055, D-056) -----------------------------------------
 
+struct ChunkTiming;                                // below: how one chunk went
+
 struct TransferOptions {
     int           workers = DEFAULT_WORKERS;       // 1..MAX_WORKERS
     std::uint64_t chunk = DEFAULT_CHUNK_SIZE;      // upload only: 1..MAX_CHUNK
@@ -111,6 +113,9 @@ struct TransferOptions {
     bool          for_signals = false;             // download: make the part file removable by
                                                    // remove_part_file() from a signal handler
     std::function<void(const std::string &)> log;  // progress and fall-through notes; may be empty
+    // Told about every chunk as soon as it is done or has failed (for a client's
+    // live metrics, D-085). Called from the workers, so it must be thread-safe.
+    std::function<void(const ChunkTiming &)> on_chunk;
 };
 
 // How one chunk went: for the latency percentiles (D-066 item 3).

@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -113,13 +114,20 @@ bool store_open(ChunkStore &s, const std::string &dir, std::string &report, std:
     // The index: every correctly named file in its correct fan-out directory.
     // Anything else is not ours and is left alone, but counted.
     int loaded = 0, foreign = 0;
+    std::uint64_t bytes = 0;
     std::set<std::string> keys;
     for (char a : std::string(HEX)) {
         for (char b : std::string(HEX)) {
             const std::string sub = std::string(1, a) + b;
             for (const std::string &name : list_dir(dir + "/" + sub)) {
-                if (valid_key(name) && name.compare(0, 2, sub) == 0) { keys.insert(name); ++loaded; }
-                else ++foreign;
+                if (valid_key(name) && name.compare(0, 2, sub) == 0) {
+                    keys.insert(name);
+                    ++loaded;
+                    struct stat st;
+                    if (stat((dir + "/" + sub + "/" + name).c_str(), &st) == 0) bytes += static_cast<std::uint64_t>(st.st_size);
+                } else {
+                    ++foreign;
+                }
             }
         }
     }
@@ -127,6 +135,7 @@ bool store_open(ChunkStore &s, const std::string &dir, std::string &report, std:
         std::lock_guard<std::mutex> lock(s.mu);
         s.keys = std::move(keys);
     }
+    s.bytes = bytes;
     report = std::to_string(loaded) + " chunks, " + std::to_string(removed) +
              " unfinished writes removed, " + std::to_string(foreign) + " other files ignored";
     return true;
@@ -163,7 +172,7 @@ PutResult store_put(ChunkStore &s, const std::string &key, const std::string &bo
     if (!fsync_dir(fan_dir(s.dir, key))) return PutResult::IoError;
 
     std::lock_guard<std::mutex> lock(s.mu);
-    s.keys.insert(key);
+    if (s.keys.insert(key).second) s.bytes += body.size();     // counted once, if two writers raced
     return PutResult::Stored;
 }
 
@@ -218,9 +227,15 @@ std::vector<std::string> store_keys_in_arc(const ChunkStore &s, Id from, Id to) 
 
 bool store_remove(ChunkStore &s, const std::string &key) {
     if (!valid_key(key)) return false;
+    struct stat st;
+    const std::uint64_t size = stat(store_path(s, key).c_str(), &st) == 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
     {
         std::lock_guard<std::mutex> lock(s.mu);
-        s.keys.erase(key);
+        // Every change to `bytes` is made under `mu`, so this read-then-subtract cannot
+        // interleave with another. The size is what is on disk now; a file altered
+        // behind the node's back (the scrub's case) may differ from what was added,
+        // so the total is clamped rather than allowed to wrap below zero.
+        if (s.keys.erase(key) == 1) s.bytes -= std::min<std::uint64_t>(size, s.bytes.load());
     }
     const bool ok = unlink(store_path(s, key).c_str()) == 0 || errno == ENOENT;
     fsync_dir(fan_dir(s.dir, key));
