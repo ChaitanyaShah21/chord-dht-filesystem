@@ -202,6 +202,8 @@ for _ in range(40):                                 # wait until its port is rea
         time.sleep(0.05)
     except ConnectionRefusedError:
         break
+    except OSError:                                 # accepted into the dying listener's backlog, then
+        time.sleep(0.05)                            # reset as the kernel closed it: not closed yet
 
 rc, lines, _ = run_lookup(s_dead, [f"{k_dead:016x}"])
 r = parse(lines[0])
