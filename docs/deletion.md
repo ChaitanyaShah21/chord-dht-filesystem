@@ -39,3 +39,18 @@ sends back the ones nothing uses in `DROP` requests. If any tree cannot be read,
 | **The Raft leader collects** | the control plane deleting in the data plane; a leader change stops it half way |
 | **Every node marks for itself** | the whole mark done once per node |
 | **Nodes drop whatever is not in a set they are sent** | a forged or truncated set deletes everything |
+
+### The race with uploads — [D-091](../ARCHITECTURE.md#d-091--a-chunk-is-dropped-only-after-a-grace-period-without-being-written-kept-by-each-nodes-monotonic-clock-a-restart-counts-as-a-write)
+
+An upload stores its chunks first and registers its name last, so for a while its chunks are reachable from nothing.
+A node therefore drops a chunk only if nothing has written it for a grace period G (default 2 h) — and writing a chunk
+it already holds counts, so an old orphan reused by a new upload is renewed. Times are kept by the node's monotonic
+clock, in memory; a restart counts as a write of everything. A client registers only within U (1 h) of starting; the
+collector stops D (30 min) after it began, and refuses a node whose grace is below U + 10 s + D. Together these mean no
+chunk of an acknowledged upload is ever dropped.
+
+| Alternative | Why not |
+|---|---|
+| **Generations with upload leases** | two more consensus writes per upload, and a crashed client's lease still needs a timeout |
+| **A pin per chunk** | the same timeout, plus pin state and a release per chunk |
+| **Stopping uploads during a collection** | the tracker cannot see an upload until it registers |

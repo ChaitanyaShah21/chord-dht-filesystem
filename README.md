@@ -194,6 +194,7 @@ has every alternative considered and what it would have cost.
 |---|---|---|
 | **The uploader's secret deletes a name** (D-089) | only whoever uploaded can delete; the tracker and its log hold only the secret's hash; a retried registration stays safe | a token the tracker returns, which a retry would hand to anyone; anyone may delete |
 | **A separate mark-and-sweep collector** (D-090) | marks every chunk reachable from a live name through verified reads; deletes nothing if any tree cannot be read | nodes deleting whatever is not in a set they are sent, which a forged set empties |
+| **A grace period on each node's monotonic clock, renewed by every write** (D-091) | an upload that has stored chunks but not yet registered — or reused an old orphan — cannot lose them; no acknowledged upload is ever collected | upload leases through Raft, which need the same timeout for crashed clients |
 
 ## Project structure
 
