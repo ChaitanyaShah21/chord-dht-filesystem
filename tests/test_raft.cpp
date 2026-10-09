@@ -665,6 +665,21 @@ void test_votes() {
     check(s[1].term() == 5 && s[1].voted_for() == 0, "restarted, the same-term vote is remembered");
     check(!s[1].handle_vote(VoteRequest{5, 2, 9, 2}, 0).granted, "and a third candidate in term 5 is refused");
 
+    // A granted vote counts only in the term it was asked for. Replica 0 stands in a term,
+    // its reply from replica 1 is delayed past the next timeout, and it arrives after 0 has
+    // stood again: counting it would make 0 leader of the new term with a vote nobody
+    // cast in that term. (Found by mutation testing: the simulation's delays rarely
+    // outlast an election timeout; a vote call behind a slow flush can.)
+    Hand d(3);
+    const std::vector<Outgoing> first = d.stand(0, 1000);
+    const Outgoing to1 = first[0].to == 1 ? first[0] : first[1];
+    const VoteReply late = d[1].handle_vote(to1.vote, 1000);      // granted, then held up in the network
+    check(late.granted && late.term == 1, "replica 1 grants replica 0's term-1 request");
+    d.stand(0, 99000);                                           // 0 times out and stands in term 2
+    check(d[0].term() == 2 && d[0].role() == Raft::Role::Candidate, "replica 0 stands again, in term 2");
+    d[0].handle_vote_reply(1, to1.vote, late, 99001);
+    check(d[0].role() == Raft::Role::Candidate, "the late term-1 grant arrives: it is not counted in term 2");
+
     // Up-to-date rule (section 5.4.1).
     Hand u(3);
     u.disks[1]->durable = Durable{3, NOBODY, {Entry{1, "NOOP"}, Entry{3, "NOOP"}}};

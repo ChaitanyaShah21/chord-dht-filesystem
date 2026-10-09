@@ -48,8 +48,9 @@ struct Group {
     bool down[N] = {};
     std::atomic<int> fatal{0};
     std::vector<Address> addrs;
+    int commit_wait;
 
-    Group() {
+    explicit Group(int commit_wait_ms = 600) : commit_wait(commit_wait_ms) {
         for (int i = 0; i < N; ++i) {
             addrs.push_back(Address{"127.0.0.1", 7000 + i});
             disks.push_back(std::make_unique<MemoryStorage>());
@@ -66,7 +67,7 @@ struct Group {
         c.group = addrs;
         c.id = i;
         c.election = E;
-        c.commit_wait_ms = 600;
+        c.commit_wait_ms = commit_wait;
         c.seed = 17 + static_cast<std::uint64_t>(i);
         c.log_transitions = false;
         auto r = std::make_unique<Replica>(c, *disks[i], disks[i]->durable,
@@ -237,6 +238,30 @@ void test_minority_leader() {
     check(same, "the old leader caught up with the new log");
 }
 
+// A request whose entry is replaced must not be told what the replacement did. The
+// leader is cut off holding a client's REGISTER; the others elect a leader, which
+// commits its own entries at that index; the partition heals while the client is still
+// waiting, and the old leader applies the replacement there. The client must hear
+// UNAVAILABLE -- its registration never took effect -- not the result of applying
+// someone else's entry. (Found by mutation testing: the minority test above lets the
+// waiter time out before the heal, so nothing was applied while anyone waited.)
+void test_replaced_entry() {
+    std::printf("-- a waiting request whose entry a new leader replaces\n");
+    Group g(3000);
+    const int l = g.leader(3000);
+    g.isolate(l, true);
+    std::string reply;
+    std::thread client([&] { reply = g.ask(l, "REGISTER replaced " + key(5)); });
+    sleep_ms(50);                                             // the entry is in the old leader's log
+    const int l2 = g.leader(3000, l);
+    check(l2 >= 0 && g.ask(l2, "REGISTER other " + key(6)) == "OK", "the majority elects a leader and commits there");
+    g.isolate(l, false);                                      // heal while the client still waits
+    client.join();
+    check(reply.compare(0, 11, "UNAVAILABLE") == 0, "the waiting client is told UNAVAILABLE: " + reply.substr(0, 70));
+    const int l3 = g.leader(3000);
+    check(l3 >= 0 && g.ask(l3, "RESOLVE replaced") == "MISSING", "and indeed its name was never registered");
+}
+
 void test_restart_and_failure() {
     std::printf("-- a replica restarted from its disk, and a disk that fails\n");
     Group g;
@@ -268,6 +293,7 @@ int main() {
     test_election_and_requests();
     test_concurrent_clients();
     test_minority_leader();
+    test_replaced_entry();
     test_restart_and_failure();
     std::printf("%s  %d/%d checks passed\n", failures == 0 ? "PASS" : "FAIL", checks - failures, checks);
     return failures == 0 ? 0 : 1;
