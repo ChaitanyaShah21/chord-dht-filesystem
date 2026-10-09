@@ -184,6 +184,7 @@ has every alternative considered and what it would have cost.
 | **Metrics over HTTP on a separate port** (D-083) | Prometheus scrapes every process directly; one hardened thread — a 4 KiB, 2 s request cap, one response, close | a `METRICS` line plus an exporter per process; pushing, where a dead process looks like a quiet one |
 | **Histograms, and labels only from fixed sets** (D-084) | a p99 can be computed across every node after adding their buckets; no label can grow without bound | summaries, whose quantiles cannot be combined; averages, which hide the tail |
 | **Throughput measured at the nodes** (D-085) | a client lives for one transfer, often less than a scrape interval; the nodes live as long as the ring | a Pushgateway, which keeps a dead client's numbers |
+| **A hand-written `key=value` logger** (D-086) | one event is one line, written with one system call, so threads never interleave and every line parses | `spdlog` (an external library); free text |
 
 ## Project structure
 

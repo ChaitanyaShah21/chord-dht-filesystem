@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-085: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-086: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -237,13 +237,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-085 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-086 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 77 recorded here (F1–F76 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 78 recorded here (F1–F77 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -328,6 +328,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F74** | **How does each process expose its metrics?** A hand-written HTTP/1.0 responder on a separate metrics port, in the Prometheus text format; a `METRICS` line on the protocol port, converted by an exporter; pushing them (StatsD, a Pushgateway); or a metrics library. | Decides whether Prometheus can scrape a process directly, whether a scrape competes with the data path for threads, and whether a dead process is told apart from a quiet one. | **RESOLVED** — D-083 |
 | **F75** | **Which metrics, and as which instrument?** Histograms with fixed buckets for latencies and hop counts, counters and gauges for the rest, labels only from small fixed sets; summaries computing quantiles in the process; averages; or metrics derived from the logs. | Decides whether a p99 can be computed across processes, what one scrape costs, and whether a label can grow without bound. | **RESOLVED** — D-084 |
 | **F76** | **A client runs for seconds; Prometheus scrapes every few. Where do transfer numbers come from?** The client serves metrics while it runs, and the dashboard's throughput and latency are measured at the nodes; a Pushgateway; a metrics file written at exit; or a long-running client. | Decides whether the dashboard's headline panels exist at all for short transfers, and what one more daemon would cost. | **RESOLVED** — D-085 |
+| **F77** | **How does a process log?** A small hand-written logger writing one `key=value` line per event; `spdlog`; JSON lines; or the free-text lines kept. | Decides whether a log line can be parsed by a tool, whether lines from two threads can interleave, and whether the no-external-libraries rule holds. | **RESOLVED** — D-086 |
 
 ---
 
@@ -4414,3 +4415,36 @@ transfer.
 
 **Cost accepted.** The client's own view — its lookups, its retries — is visible only for transfers long enough to be
 scraped. The workload driver of the fault-injection runs records every operation's outcome itself.
+
+---
+
+### D-086 — A hand-written logger: one `key=value` line per event, written with one system call
+
+**Fork:** F77. **Date:** 9 Oct 2026. **Depends on:** D-010. **Gates:** reconstructing a request from the logs (D-087).
+
+**The decision.** `src/log.{h,cpp}`: every event is one line in the `logfmt` style —
+```
+ts=2026-10-09T13:14:16.123Z level=info proc=node:7010 req=6f1c2a9e0b3d4c5a event=chunk.put key=ab12... copies=3 ms=1.9
+```
+- **Fields:** the wall-clock time in UTC to the millisecond, a level (`debug`, `info`, `warn`, `error`), the process
+  (`node:7010`, `tracker:7001`, `client`), the request id when there is one (D-087), an event name, then the
+  event's own fields. The levels below the one given by `--log-level` (default `info`) are not formatted at all.
+- **One event is one line, always** — D-010's rule for messages applied to logs. A value containing a space, an
+  `=`, a quote or a control character is quoted, with `"` and `\` escaped and a newline written as `\n`.
+- **One `write(2)` per line.** Lines from different threads never interleave, and no lock is needed: on Linux a
+  `write` of at most 4 KiB (`PIPE_BUF`) to a pipe is never split by another writer's, and a `write` to a regular file
+  holds the file's position lock (since Linux 3.14), so two threads' lines land one after the other. Longer lines
+  are cut to 4 KiB.
+- The node's existing event texts (`evict 127.0.0.1:7011 (refused)`) are kept word for word in a `msg` field, so
+  every harness that reads them still works.
+
+**Rejected: `spdlog`.** A good library, against the no-external-libraries rule; and the parts used here — a level, a
+timestamp, a line — are a hundred lines.
+
+**Rejected: JSON lines.** Heavier escaping and harder to read by eye or grep; `key=value` parses as easily.
+
+**Rejected: the free-text lines kept.** No level, no request id, and a field cannot be found without knowing the
+sentence it sits in.
+
+**Cost accepted.** Wall-clock timestamps from different machines are only as comparable as their clocks; the
+request id, not the time, is what links lines across processes.

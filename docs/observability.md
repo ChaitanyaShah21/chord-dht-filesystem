@@ -45,3 +45,19 @@ bytes in and out, and the time each chunk request takes to serve.
 | **A Pushgateway** | another daemon, and a dead client's last numbers stay up |
 | **A metrics file at exit** | a collector to read it, and nothing during a long transfer |
 | **A long-running client** | not the program users run |
+
+### One `key=value` line per event — [D-086](../ARCHITECTURE.md#d-086--a-hand-written-logger-one-keyvalue-line-per-event-written-with-one-system-call)
+
+```
+ts=2026-10-09T13:14:16.123Z level=info proc=node:7010 req=6f1c2a9e0b3d4c5a event=chunk.put key=ab12... copies=3 ms=1.9
+```
+
+`src/log.cpp` formats each event as one line and writes it with one system call, so lines from different threads
+never interleave. A value with a space, `=`, a quote or a control character is quoted and escaped, so an event can
+never become two lines. `--log-level` sets the threshold (default `info`).
+
+| Alternative | Why not |
+|---|---|
+| **`spdlog`** | an external library |
+| **JSON lines** | heavier escaping, harder to read and grep |
+| **Free text** | no level, no request id, no fields a tool can find |
