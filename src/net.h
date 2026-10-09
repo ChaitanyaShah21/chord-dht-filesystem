@@ -71,8 +71,9 @@ int listen_on(const std::string &ip, int port);
 // Bodies: binary data after a header line (decision D-044).
 //
 // A chunk can contain any byte, newlines included, so it cannot travel as a
-// line. A header line whose first word is PUT, STORE or CHUNK is followed by a
-// body, and the header's LAST word is the body's length in bytes:
+// line. A header line whose first word is PUT, STORE, CHUNK or APPEND (a batch of
+// Raft log entries, D-071) is followed by a body, and the header's LAST word is the
+// body's length in bytes:
 //
 //     PUT <key> <w> <length>\n<length bytes>
 //

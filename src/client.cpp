@@ -1,6 +1,9 @@
 // client -- store files in the ring and name them in the tracker (Phase 5).
 //
-//   ./client --tracker <ip:port> --ring <ip:port>[,<ip:port>...] [options] <command>
+//   ./client --tracker <ip:port>[,<ip:port>...] --ring <ip:port>[,<ip:port>...] [options] <command>
+//
+// --tracker lists every replica of the tracker group (D-081): requests go to the first
+// that answers, following REDIRECT to the leader.
 //
 // Commands:
 //   put <file> <name>        cut the file into chunks, store them and its manifests in
@@ -18,6 +21,7 @@
 //   --chunk-size <b>    upload only: bytes per chunk (default 524288, D-016)
 //   --fanout <n>        upload only: entries per manifest, 2..8192 (default 8192, D-054)
 //   --stats <file>      write one CSV line per chunk: op,index,bytes,micros,attempts,tried,ok
+//   --tracker-wait <ms> how long to keep trying the tracker group (default 10000, D-081)
 //   --quiet             no progress or fall-through notes on standard error
 //
 // put and get print one line on standard output, for scripts:
@@ -36,6 +40,7 @@
 
 #include "chord.h"
 #include "chunk.h"
+#include "group.h"
 #include "lookup.h"
 #include "net.h"
 #include "names.h"
@@ -53,11 +58,16 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 
 constexpr int CLIENT_TIMEOUT_MS = 5000;     // a hang guard on every socket (D-024), as in `chunk`
+// One exchange with one tracker replica. Longer than a replica waits for a commit
+// (2 s, D-075), so a replica that is merely busy answers before this fires; short
+// enough that a frozen replica costs 3 s, not 5, before the next is tried.
+constexpr int TRACKER_CALL_MS = 3000;
 
 using Clock = std::chrono::steady_clock;
 const Clock::time_point g_start = Clock::now();   // the program's start: ready_ms and total_ms count from here
@@ -115,17 +125,16 @@ GetOutcome ring_get(Ring &ring, const std::string &key) {
     return g;
 }
 
-// One request to the tracker, on a fresh connection (as every exchange here is).
-bool ask_tracker(const Peer &tracker, const std::string &request, std::string &reply) {
-    const Delivery d = exchange_line(tracker.ip, tracker.port, request, reply, CLIENT_TIMEOUT_MS);
-    if (d == Delivery::Ok) return true;
-    reply = std::string("the tracker at ") + tracker.ip + ":" + std::to_string(tracker.port) + " could not be reached (" +
-            delivery_name(d) + ")";
+// One request to the tracker group: to the leader, wherever it is (group.cpp, D-081).
+// Each exchange is on a fresh connection, as every exchange here is.
+bool ask_tracker(GroupClient &tracker, const std::string &request, std::string &reply) {
+    if (ask_group(tracker, request, reply)) return true;
+    reply = "the tracker could not be reached in " + std::to_string(tracker.wait_ms) + " ms (" + reply + ")";
     return false;
 }
 
 // RESOLVE <name> -> the manifest key, or false with `err` set.
-bool resolve(const Peer &tracker, const std::string &name, std::string &key, std::string &err) {
+bool resolve(GroupClient &tracker, const std::string &name, std::string &key, std::string &err) {
     if (!valid_name(name)) { err = "a name is 1 to 200 visible ASCII characters, no spaces"; return false; }
     std::string reply;
     if (!ask_tracker(tracker, "RESOLVE " + name, reply)) { err = reply; return false; }
@@ -188,11 +197,11 @@ void on_signal(int sig) {
 
 int usage() {
     std::fprintf(stderr,
-                 "usage: client --tracker <ip:port> --ring <ip:port>[,<ip:port>...] [options] <command>\n"
+                 "usage: client --tracker <ip:port>[,<ip:port>...] --ring <ip:port>[,<ip:port>...] [options] <command>\n"
                  "  commands: put <file> <name> | get <name> <file> | get-key <key> <file> | info <name>\n"
                  "            | resolve <name> | ls\n"
                  "  options:  --workers <1..%d> --w <1..3> --chunk-size <bytes> --fanout <2..%zu>\n"
-                 "            --stats <file> --quiet\n",
+                 "            --stats <file> --quiet --tracker-wait <ms>\n",
                  MAX_WORKERS, MANIFEST_FANOUT);
     return 2;
 }
@@ -210,8 +219,17 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sa, nullptr);
 
     // ---- the command line ----
-    Peer tracker;
+    GroupClient tracker;
+    tracker.exchange = [](const Address &to, const std::string &request, std::string &reply) {
+        return exchange_line(to.ip, to.port, request, reply, TRACKER_CALL_MS);
+    };
+    tracker.now = [] {
+        return static_cast<Millis>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       Clock::now().time_since_epoch()).count());
+    };
+    tracker.sleep = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
     bool have_tracker = false;
+    std::string err;
     Ring ring;
     TransferOptions opt;
     std::string stats;
@@ -221,7 +239,8 @@ int main(int argc, char **argv) {
         const std::string a = argv[i];
         const bool v = i + 1 < argc;
         long long n = 0;
-        if (a == "--tracker" && v)                { if (!parse_one(argv[++i], tracker)) return usage(); have_tracker = true; }
+        if (a == "--tracker" && v)                { if (!parse_address_list(argv[++i], tracker.replicas, err)) return usage(); have_tracker = true; }
+        else if (a == "--tracker-wait" && v)      { if (!parse_number(argv[++i], 0, 600000, n)) return usage(); tracker.wait_ms = static_cast<int>(n); }
         else if (a == "--ring" && v)              { if (!parse_list(argv[++i], ring.seeds)) return usage(); }
         else if (a == "--workers" && v)           { if (!parse_number(argv[++i], 1, MAX_WORKERS, n)) return usage(); opt.workers = static_cast<int>(n); }
         else if (a == "--w" && v)                 { if (!parse_number(argv[++i], 1, 3, n)) return usage(); ring.w = static_cast<int>(n); }

@@ -171,7 +171,7 @@ Delivery classify_io_error(int err) {
 Body body_length(const std::string &line, std::size_t &length) {
     const std::size_t first_space = line.find(' ');
     const std::string verb = line.substr(0, first_space);
-    if (verb != "PUT" && verb != "STORE" && verb != "CHUNK") return Body::None;
+    if (verb != "PUT" && verb != "STORE" && verb != "CHUNK" && verb != "APPEND") return Body::None;
     if (first_space == std::string::npos) return Body::Malformed;      // "CHUNK" alone
 
     const std::string word = line.substr(line.rfind(' ') + 1);        // the last word
