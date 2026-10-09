@@ -27,3 +27,15 @@ in the log. A name registered without an owner (the old three-word form) can nev
 | **User accounts** | removed by D-004; one secret per name is enough |
 | **Anyone may delete** | a vandalism tool |
 | **Storing the secret** | every owner's secret in every replica's log file |
+
+### The collector — [D-090](../ARCHITECTURE.md#d-090--a-separate-collector-marks-every-chunk-reachable-from-a-live-name-lists-each-nodes-chunks-and-asks-each-node-to-drop-the-rest)
+
+`gc` lists every name and manifest key from the tracker group, walks every manifest tree through the ring with
+verified reads, and so knows every live chunk. It finds every node by walking the ring, lists each node's chunks, and
+sends back the ones nothing uses in `DROP` requests. If any tree cannot be read, nothing is dropped.
+
+| Alternative | Why not |
+|---|---|
+| **The Raft leader collects** | the control plane deleting in the data plane; a leader change stops it half way |
+| **Every node marks for itself** | the whole mark done once per node |
+| **Nodes drop whatever is not in a set they are sent** | a forged or truncated set deletes everything |

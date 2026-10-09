@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-089: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-090: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -249,13 +249,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-089 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-090 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 81 recorded here (F1–F80 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 82 recorded here (F1–F81 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -344,6 +344,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F78** | **How does one transfer's request id reach every process it touches?** A `RID <id>` prefix on every request line, carried on into a server's onward calls; a trailing field; a separate header line; or deriving it from the chunk key. | Decides whether one upload can be reconstructed from the logs of the client, the tracker and every node, and whether the framing's rules survive the change. | **RESOLVED** — D-087 |
 | **F79** | **Prometheus and Grafana without Docker.** Configuration and a dashboard in the repository, run against the local cluster with the official release binaries downloaded outside it; configuration only; or waiting for Docker. | Decides whether the dashboard is a screenshot of a running system or a description of one. | **RESOLVED** — D-088 |
 | **F80** | **Who may delete a name, and how is it proved?** A secret chosen by the uploader, of which the tracker keeps only a hash; a token the tracker generates and returns; user accounts; or anyone. | Decides whether delete is a vandalism tool, whether a retried registration stays safe without sessions (D-075), and whether a secret ever sits in the Raft log. | **RESOLVED** — D-089 |
+| **F81** | **Who collects unreferenced chunks, and how does it learn what is live?** A separate collector that reads every name, walks every manifest tree through verified reads, lists each node's chunks and asks it to drop the rest; the Raft leader doing it; every node marking for itself; or nodes deleting whatever is not in a live set they are sent. | Decides which component may destroy data, what one bogus name or one unreadable manifest does to collection, and how much work a collection is. | **RESOLVED** — D-090 |
 
 ---
 
@@ -4559,3 +4560,36 @@ receive the token — or it does not, and a client whose first reply was lost ne
 **Cost accepted.** The secret crosses the network in cleartext, once, when deleting (no TLS, as everywhere — D-004).
 A lost secret means the name can never be deleted. The namespace is no longer write-once, so D-078's "a snapshot would
 be as large as the log" now holds only until names are deleted.
+
+---
+
+### D-090 — A separate collector marks every chunk reachable from a live name, lists each node's chunks, and asks each node to drop the rest
+
+**Fork:** F81. **Date:** 9 Oct 2026. **Depends on:** D-014, D-017, D-023, D-054, D-089. **Gates:** reclaiming storage.
+
+**The decision.** A `gc` program, run by an operator (or a timer), in two phases, as `git gc` is:
+- **Mark.** List every name and its manifest key from the tracker group (`ENTRIES`, a linearizable read like `LIST`,
+  D-076). For each distinct manifest key, fetch the manifest tree through the ring with the client's verified reads
+  (D-049, D-054). The live set is every manifest and every data chunk reachable from any name. **If any name's tree
+  cannot be read completely, nothing is deleted**: the collection stops and names the file.
+- **Find every node** by walking the ring from a seed with `NEIGHBOURS`, collecting distinct processes, until the walk
+  returns to where it began.
+- **Sweep.** For each node, list the chunks it holds (`KEYS`, a page at a time) and send the ones not in the live set
+  back in `DROP` requests, twenty keys each. The node deletes only those old enough (D-091) and answers which.
+- `--dry-run` marks and lists, and reports what would be dropped.
+
+**Safe failures.** A node that is down, or missed by the walk, keeps its garbage until the next collection: a leak,
+never a loss. A chunk dropped on one replica can be copied back by repair from a replica not yet swept; it is collected
+by a later run.
+
+**Rejected: the Raft leader collects.** The control plane would read and delete in the data plane, which D-017 keeps
+it out of, and a leader change would stop a collection half way.
+
+**Rejected: every node marks for itself.** Each node would read the whole namespace and every manifest tree — the mark
+done N times — and every node would need the tracker's addresses.
+
+**Rejected: nodes delete whatever is not in a live set they are sent** (or a Bloom filter of it). A forged or truncated
+set would delete everything; here the node is only ever told what to delete, key by key.
+
+**Cost accepted.** A collection is O(names + chunks) and holds every live key in memory. One name pointing at a
+manifest that does not exist blocks every collection until that name is deleted — and only its owner can do that.
