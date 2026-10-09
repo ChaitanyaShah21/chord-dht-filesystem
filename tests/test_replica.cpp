@@ -218,14 +218,22 @@ void test_minority_leader() {
     check(l2 >= 0 && g.ask(l2, "REGISTER after " + key(3)) == "OK", "and writes continue there");
     sleep_ms(3 * static_cast<int>(E));
     check(g.status(l)[2] != "leader", "the cut-off leader has stepped down (check-quorum)");
+    const std::string term_before_heal = l2 >= 0 ? g.status(l2)[3] : "";
     g.isolate(l, false);
     sleep_ms(6 * static_cast<int>(E));
-    check(l2 >= 0 && g.ask(l2, "RESOLVE before") == "FILE " + key(1) && g.ask(l2, "RESOLVE after") == "FILE " + key(3),
+    // Healing may move the leadership: the cut-off replica kept standing for election,
+    // raising its term each time, and its higher term deposes the leader when it
+    // returns -- the cost of having no pre-vote (D-077). So ask whoever leads now.
+    const int l3 = g.leader(3000);
+    if (l3 >= 0 && (l3 != l2 || g.status(l3)[3] != term_before_heal))
+        std::printf("    (the heal forced an election: term %s -> %s, as D-077 accepts without pre-vote)\n",
+                    term_before_heal.c_str(), g.status(l3)[3].c_str());
+    check(l3 >= 0 && g.ask(l3, "RESOLVE before") == "FILE " + key(1) && g.ask(l3, "RESOLVE after") == "FILE " + key(3),
           "after healing, both acknowledged writes are there");
-    const std::string during = l2 >= 0 ? g.ask(l2, "RESOLVE during") : "";
+    const std::string during = l3 >= 0 ? g.ask(l3, "RESOLVE during") : "";
     check(during == "MISSING", "and the unacknowledged one never took effect: " + during);
     bool same = true;
-    for (int i = 0; i < N; ++i) same = same && g.status(i)[6] == g.status(l2)[6];
+    for (int i = 0; i < N; ++i) same = same && l3 >= 0 && g.status(i)[6] == g.status(l3)[6];
     check(same, "the old leader caught up with the new log");
 }
 

@@ -650,6 +650,21 @@ void test_votes() {
     check(h[1].term() == 1 && h[1].voted_for() == 0, "restarted, replica 1 remembers term 1 and its vote");
     check(!h[1].handle_vote(other, 1000).granted, "and still refuses a second candidate in term 1");
 
+    // A vote granted in a term the voter already held -- it learned the term first from
+    // a candidate it refused -- must reach the disk too. Here no term change accompanies
+    // the vote, so only the vote itself can make the step save. (Found by mutation
+    // testing: the test above only covered a vote that raised the term, which saves
+    // anyway.)
+    Hand s(3);
+    s.disks[1]->durable = Durable{2, NOBODY, {Entry{1, "NOOP"}, Entry{2, "NOOP"}}};
+    s.boot(1);
+    check(!s[1].handle_vote(VoteRequest{5, 2, 1, 1}, 0).granted && s[1].term() == 5,
+          "a stale candidate is refused, and its term 5 adopted with no vote");
+    check(s[1].handle_vote(VoteRequest{5, 0, 2, 2}, 0).granted, "then a candidate with a good log is granted, in the same term");
+    s.boot(1);
+    check(s[1].term() == 5 && s[1].voted_for() == 0, "restarted, the same-term vote is remembered");
+    check(!s[1].handle_vote(VoteRequest{5, 2, 9, 2}, 0).granted, "and a third candidate in term 5 is refused");
+
     // Up-to-date rule (section 5.4.1).
     Hand u(3);
     u.disks[1]->durable = Durable{3, NOBODY, {Entry{1, "NOOP"}, Entry{3, "NOOP"}}};
