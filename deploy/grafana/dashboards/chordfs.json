@@ -1,0 +1,1284 @@
+{
+ "uid": "chordfs",
+ "title": "chord-dht-filesystem",
+ "tags": [
+  "chordfs"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "editable": false,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "row",
+   "title": "Cluster",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Nodes up",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 3,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(up{role=\"node\"})",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Tracker replicas up",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 3,
+    "y": 1,
+    "w": 3,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(up{role=\"tracker\"})",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Raft leaders",
+   "description": "Replicas that believe they lead. 1 when healthy; 0 during an election.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 6,
+    "y": 1,
+    "w": 3,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(chordfs_raft_role{role=\"leader\"})",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Raft term",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 9,
+    "y": 1,
+    "w": 3,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "max(chordfs_raft_term)",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Chunks held (all copies)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(chordfs_store_chunks)",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 7,
+   "type": "stat",
+   "title": "Bytes held (all copies)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(chordfs_store_bytes)",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 8,
+   "type": "stat",
+   "title": "Names",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "max(chordfs_names)",
+     "legendFormat": ""
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   }
+  },
+  {
+   "id": 9,
+   "type": "state-timeline",
+   "title": "Process up (a gap is a fault)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 5,
+    "w": 24,
+    "h": 6
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "up",
+     "legendFormat": "{{instance}} {{role}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "down",
+         "color": "red"
+        },
+        "1": {
+         "text": "up",
+         "color": "green"
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "showValue": "never",
+    "mergeValues": true,
+    "rowHeight": 0.8
+   }
+  },
+  {
+   "id": 10,
+   "type": "row",
+   "title": "Data plane",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 11,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Throughput through the nodes",
+   "description": "Chunk bytes received (PUT, STORE) and sent (CHUNK) by every node, summed: the system's throughput whatever the clients' lifetimes (D-085).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (direction) (rate(chordfs_chunk_bytes_total[$__rate_interval]))",
+     "legendFormat": "{{direction}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "Chunk request latency at the node, p50 and p99",
+   "description": "From the request read to the reply sent. A PUT is answered once W copies exist.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 12,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.5, sum by (le, verb) (rate(chordfs_chunk_request_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "p50 {{verb}}"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le, verb) (rate(chordfs_chunk_request_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "p99 {{verb}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 13,
+   "type": "timeseries",
+   "title": "Chunk requests by result",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (verb, result) (rate(chordfs_chunk_requests_total[$__rate_interval]))",
+     "legendFormat": "{{verb}} {{result}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 14,
+   "type": "timeseries",
+   "title": "Lookup hops (nodes' own lookups)",
+   "description": "Fingers followed per lookup: about half of log2 of the number of ring members.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 20,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(chordfs_lookup_hops_bucket[$__rate_interval])))",
+     "legendFormat": "p50"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(chordfs_lookup_hops_bucket[$__rate_interval])))",
+     "legendFormat": "p99"
+    },
+    {
+     "refId": "C",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(rate(chordfs_lookup_hops_sum[$__rate_interval])) / sum(rate(chordfs_lookup_hops_count[$__rate_interval]))",
+     "legendFormat": "mean"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 15,
+   "type": "row",
+   "title": "Ring maintenance and repair",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 28,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 16,
+   "type": "timeseries",
+   "title": "Strikes and evictions",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 29,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(rate(chordfs_ring_strikes_total[$__rate_interval]))",
+     "legendFormat": "strikes"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (evidence) (rate(chordfs_ring_evictions_total[$__rate_interval]))",
+     "legendFormat": "evicted: {{evidence}}"
+    },
+    {
+     "refId": "C",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(rate(chordfs_ring_successor_changes_total[$__rate_interval]))",
+     "legendFormat": "closer successor adopted"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 17,
+   "type": "timeseries",
+   "title": "Shortest successor list, orphaned members",
+   "description": "Margin before a member is cut off: the list has 8 entries when healthy.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 29,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "min(chordfs_ring_successor_list_min)",
+     "legendFormat": "shortest list"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(chordfs_ring_orphaned_members)",
+     "legendFormat": "orphaned"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 18,
+   "type": "timeseries",
+   "title": "Copies: time from acknowledgement to the last copy, p99",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 37,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(chordfs_put_replication_lag_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "p99 lag"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(rate(chordfs_put_copies_short_total[$__rate_interval]))",
+     "legendFormat": "writes ending short of 3 copies /s"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 19,
+   "type": "timeseries",
+   "title": "Repair",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 37,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(rate(chordfs_repair_chunks_sent_total[$__rate_interval]))",
+     "legendFormat": "chunks re-replicated /s"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(rate(chordfs_repair_failures_total[$__rate_interval]))",
+     "legendFormat": "failed offers /s"
+    },
+    {
+     "refId": "C",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(chordfs_repair_pending_arcs)",
+     "legendFormat": "arcs awaiting a re-check"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 20,
+   "type": "row",
+   "title": "Tracker (Raft)",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 45,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 21,
+   "type": "timeseries",
+   "title": "Term and commit index per replica",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 46,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "chordfs_raft_term",
+     "legendFormat": "term {{instance}}"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "chordfs_raft_commit_index",
+     "legendFormat": "commit {{instance}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Leader changes and elections",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 46,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(increase(chordfs_raft_leader_changes_total[1m]))",
+     "legendFormat": "leader changes / min"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum(increase(chordfs_raft_elections_total[1m]))",
+     "legendFormat": "elections started / min"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 23,
+   "type": "timeseries",
+   "title": "Log flush (fdatasync), p50 and p99",
+   "description": "Each step's batch, flushed before any reply (D-074); the write path's main cost (D-082).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 46,
+    "w": 8,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(chordfs_raft_flush_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "p50"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(chordfs_raft_flush_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "p99"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 24,
+   "type": "timeseries",
+   "title": "Tracker requests by result",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 54,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (verb, result) (rate(chordfs_tracker_requests_total[$__rate_interval]))",
+     "legendFormat": "{{verb}} {{result}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 25,
+   "type": "timeseries",
+   "title": "Tracker request latency, p99",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 54,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le, verb) (rate(chordfs_tracker_request_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "{{verb}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 26,
+   "type": "row",
+   "title": "Errors and connections",
+   "collapsed": false,
+   "panels": [],
+   "gridPos": {
+    "x": 0,
+    "y": 62,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "id": 27,
+   "type": "timeseries",
+   "title": "Errors by type",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 63,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (type) (rate(chordfs_request_errors_total[$__rate_interval]))",
+     "legendFormat": "{{type}}"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (error) (rate(chordfs_lookup_failures_total[$__rate_interval]))",
+     "legendFormat": "lookup: {{error}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  },
+  {
+   "id": 28,
+   "type": "timeseries",
+   "title": "Open connections (a thread each)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "chordfs-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 63,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "chordfs-prom"
+     },
+     "expr": "sum by (role) (chordfs_connections_open)",
+     "legendFormat": "{{role}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   }
+  }
+ ],
+ "annotations": {
+  "list": [
+   {
+    "builtIn": 1,
+    "datasource": {
+     "type": "grafana",
+     "uid": "-- Grafana --"
+    },
+    "enable": true,
+    "hide": true,
+    "iconColor": "rgba(0, 211, 255, 1)",
+    "name": "Annotations & Alerts",
+    "type": "dashboard"
+   }
+  ]
+ }
+}

@@ -105,7 +105,8 @@ a user.
 | `client` | `src/client.cpp`; `transfer.cpp`, `group.cpp` | Upload and download of whole files; names through the tracker group's leader, found by redirects (D-081) | nothing persistent; during a transfer, one chunk per worker and the part file | the tracker replicas, and ring nodes, over a fresh connection per exchange |
 | `chunk`, `lookup` | `src/chunk_main.cpp`, `src/lookup_main.cpp` | Tools: one chunk, or one lookup, through the ring | nothing | ring nodes |
 | `sim-hops`, `sim-balance` | `src/sim_hops.cpp`, `src/sim_balance.cpp` | Benchmark replays: the same routing (D-027) and placement (D-051) code with the ring in one process | nothing | — |
-| framing | `src/net.cpp` | The one framing layer: lines, bodies, connect deadline, server read deadline (D-010, D-044, D-025, D-061) | nothing | — |
+| framing | `src/net.cpp` | The one framing layer: lines, bodies, connect deadline, server read deadline, the request id prefix (D-010, D-044, D-025, D-061, D-087) | nothing | — |
+| observability | `src/metrics.cpp`, `src/http.cpp`, `src/log.cpp` | Counters, histograms and gauges in the Prometheus text format; the metrics port's HTTP/1.0 responder; one `key=value` line per event and the request id (D-083 – D-087) | each process's registry; its request id | Prometheus, over `--metrics <port>` |
 | hashing | `src/sha1.h` | Header-only wrapper over OpenSSL `SHA1()`, hex-encoding the 20-byte digest | nothing | — |
 
 Wire formats: [`docs/protocol.md`](docs/protocol.md). Repository layout: D-068.
@@ -130,6 +131,7 @@ coursework system, where all but I1 were violated; they are restated for the sys
 | I9 | **A name never points at a file that is not all there** | the client registers a name only after every chunk and manifest is stored (D-017, D-058) | `e2e-transfer.sh` (a failed upload leaves its name unregistered) | ✓ |
 | I10 | **At most one tracker leader per term, and no two replicas apply different entries at one index** | one vote per term, flushed before it is sent; votes only for logs at least as up to date; the commit rule counts only the leader's own term (D-074, Figure 8) | `test-raft`: checked after every step of seeded histories with loss, duplication, reordering, partitions and crashes | ✓ |
 | I11 | **An acknowledged registration survives the loss of any minority of tracker replicas, and every answer is linearizable** | `OK` only after the request's own entry is committed by a majority and applied (D-075); reads by ReadIndex (D-076) | `test-raft` (a linearizability checker per history), `test-replica`, `e2e-raft.sh` (a writer through a leader kill) | ✓ |
+| I12 | **One event is one log line, and one metrics response is one well-formed exposition** | values with a space, `=`, a quote or a control character are quoted and escaped; one `write` per line; `+Inf` rendered as the sum of the buckets read (D-084, D-086) | `test-obs` (hostile values, 8 threads through one pipe), `e2e-observe.sh` (an independent parser on every process; every line of every log parsed) | ✓ |
 
 ---
 
@@ -143,15 +145,25 @@ coursework system, where all but I1 were violated; they are restated for the sys
 
 **Threads:** one `accept` loop and one detached thread per connection (a client's request waits on a
 condition variable until its entry is applied or its read confirmed, at most 2 s); a ticker every 5 ms
-(elections, heartbeats, check-quorum); one sender per peer, which makes its calls with the lock released.
+(elections, heartbeats, check-quorum); one sender per peer, which makes its calls with the lock released; and
+with `--metrics` one metrics thread, whose gauges copy the replica's state under the same lock — so a scrape
+can wait behind a flush, never the other way round.
 
 ### Node
 
 One mutex per ring member's routing state, never held across a network call (D-030); the store's index
 has its own; the body cap is one atomic counter (D-052). Threads: the `accept` loop, one detached thread
 per connection (bounded in time by the read deadline, not in number), one maintenance thread for all
-members, one repair thread. A coordinator's copy threads are joined by the request's own thread after it
+members, one repair thread, and with `--metrics` one thread serving the metrics port, one connection at a
+time (D-083). A coordinator's copy threads are joined by the request's own thread after it
 answers (D-046).
+
+**Metrics and logs** (D-084, D-086): every counter and histogram bucket is a `std::atomic` updated with relaxed
+ordering, from any thread, without a lock; the registry's list of series is written before any thread that reads it
+starts, and only read after. A gauge is a function the metrics thread calls, taking the one lock that guards what it
+reads (a member's mutex, the store's, the tracker replica's). A log line is built in memory and written with one
+`write`, so lines from different threads never interleave. The request id is `thread_local`: each connection
+thread has its own, and work handed to a new thread (a coordinator's copies) is given the id explicitly.
 
 ### Client
 

@@ -1,16 +1,23 @@
-# compose.yaml -- a tracker and a five-node ring (decision D-064).
+# compose.yaml -- a three-replica tracker group, a five-node ring, and Prometheus and
+# Grafana watching them (decisions D-064, D-069, D-088).
 #
 # NOT YET RUN. Written without Docker on the development machine; see the README.
+# scripts/cluster.sh and scripts/observe.sh are the tested way to run the same thing.
 #
 #   docker compose up -d --build
 #   docker compose run --rm client put /work/somefile somefile
 #   docker compose run --rm client get somefile /work/copy
-#   docker compose down            (add -v to delete the stores)
+#   open http://localhost:3000/d/chordfs
+#   docker compose down            (add -v to delete the stores and the tracker logs)
 #
 # The addresses are fixed because a node's dotted-quad ip:port is also its ring
-# identity -- SHA-1("ip:port") -- and --join takes an address, not a host name
-# (D-019, D-029). The subnet 172.28.0.0/24 must not collide with another Docker
-# network on the host.
+# identity -- SHA-1("ip:port") -- and --join and --group take addresses, not host
+# names (D-019, D-029, D-079). Every process serves its metrics on port 8001
+# (D-083). The subnet 172.28.0.0/24 must not collide with another Docker network.
+
+x-tracker: &tracker
+  image: chordfs
+  restart: unless-stopped
 
 x-node: &node
   image: chordfs
@@ -18,50 +25,91 @@ x-node: &node
   restart: unless-stopped
 
 services:
-  tracker:
+  tracker1:
+    <<: *tracker
     build: .
-    image: chordfs
-    command: ["tracker", "7000", "--dir", "/data"]
-    volumes: ["tracker-data:/data"]
+    command: ["tracker", "7000", "--dir", "/data", "--metrics", "8001", "--id", "0",
+              "--group", "172.28.0.10:7000,172.28.0.20:7000,172.28.0.30:7000"]
+    volumes: ["tracker1-data:/data"]
     networks: { ring: { ipv4_address: 172.28.0.10 } }
+
+  tracker2:
+    <<: *tracker
+    depends_on: [tracker1]
+    command: ["tracker", "7000", "--dir", "/data", "--metrics", "8001", "--id", "1",
+              "--group", "172.28.0.10:7000,172.28.0.20:7000,172.28.0.30:7000"]
+    volumes: ["tracker2-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.20 } }
+
+  tracker3:
+    <<: *tracker
+    depends_on: [tracker1]
+    command: ["tracker", "7000", "--dir", "/data", "--metrics", "8001", "--id", "2",
+              "--group", "172.28.0.10:7000,172.28.0.20:7000,172.28.0.30:7000"]
+    volumes: ["tracker3-data:/data"]
+    networks: { ring: { ipv4_address: 172.28.0.30 } }
 
   node1:
     image: chordfs
-    depends_on: [tracker]
+    depends_on: [tracker1]
     restart: unless-stopped
-    command: ["node", "172.28.0.11", "7001", "--create", "--store", "/data"]
+    command: ["node", "172.28.0.11", "7001", "--create", "--store", "/data", "--metrics", "8001"]
     volumes: ["node1-data:/data"]
     networks: { ring: { ipv4_address: 172.28.0.11 } }
 
   node2:
     <<: *node
-    command: ["node", "172.28.0.12", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    command: ["node", "172.28.0.12", "7001", "--join", "172.28.0.11:7001", "--store", "/data", "--metrics", "8001"]
     volumes: ["node2-data:/data"]
     networks: { ring: { ipv4_address: 172.28.0.12 } }
 
   node3:
     <<: *node
-    command: ["node", "172.28.0.13", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    command: ["node", "172.28.0.13", "7001", "--join", "172.28.0.11:7001", "--store", "/data", "--metrics", "8001"]
     volumes: ["node3-data:/data"]
     networks: { ring: { ipv4_address: 172.28.0.13 } }
 
   node4:
     <<: *node
-    command: ["node", "172.28.0.14", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    command: ["node", "172.28.0.14", "7001", "--join", "172.28.0.11:7001", "--store", "/data", "--metrics", "8001"]
     volumes: ["node4-data:/data"]
     networks: { ring: { ipv4_address: 172.28.0.14 } }
 
   node5:
     <<: *node
-    command: ["node", "172.28.0.15", "7001", "--join", "172.28.0.11:7001", "--store", "/data"]
+    command: ["node", "172.28.0.15", "7001", "--join", "172.28.0.11:7001", "--store", "/data", "--metrics", "8001"]
     volumes: ["node5-data:/data"]
     networks: { ring: { ipv4_address: 172.28.0.15 } }
+
+  # Official multi-architecture images; the configuration is the same as observe.sh uses.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes: ["./deploy/prometheus-compose.yml:/etc/prometheus/prometheus.yml:ro"]
+    networks: { ring: { ipv4_address: 172.28.0.40 } }
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    depends_on: [prometheus]
+    ports: ["3000:3000"]
+    environment:
+      PROM_URL: http://172.28.0.40:9090
+      DASHBOARDS_DIR: /var/lib/grafana/dashboards
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/chordfs.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: { ring: { ipv4_address: 172.28.0.41 } }
 
   # Not started by `up`: run it with `docker compose run --rm client <command>`.
   client:
     image: chordfs
     profiles: ["client"]
-    entrypoint: ["client", "--tracker", "172.28.0.10:7000", "--ring", "172.28.0.11:7001,172.28.0.12:7001"]
+    entrypoint: ["client", "--tracker", "172.28.0.10:7000,172.28.0.20:7000,172.28.0.30:7000",
+                 "--ring", "172.28.0.11:7001,172.28.0.12:7001"]
     volumes: ["./:/work"]
     networks: [ring]
 
@@ -72,7 +120,9 @@ networks:
         - subnet: 172.28.0.0/24
 
 volumes:
-  tracker-data:
+  tracker1-data:
+  tracker2-data:
+  tracker3-data:
   node1-data:
   node2-data:
   node3-data:

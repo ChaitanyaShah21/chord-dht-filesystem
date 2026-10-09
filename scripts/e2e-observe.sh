@@ -280,6 +280,17 @@ st, _, _, _ = http(mp, b"GET /metrics HTTP/1.1\r\nX: " + b"a" * 5000 + b"\r\n\r\
 check("a 5 KB request head is refused with 431", st == 431)
 st, _, _, _ = http(mp, b"POST /metrics HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc")
 check("POST answers 405", st == 405)
+# A request whose body the server never reads: over TCP, closing with those bytes unread
+# makes the kernel send a reset, which can destroy the response before the client reads
+# it. The client here waits 300 ms before reading, so the reset (if any) arrives first.
+with socket.create_connection(("127.0.0.1", mp), timeout=5) as s:
+    s.sendall(b"POST /metrics HTTP/1.1\r\nContent-Length: 30000\r\n\r\n" + b"x" * 30000)
+    time.sleep(0.3)
+    try:
+        late = s.recv(200)
+    except ConnectionResetError:
+        late = b"<reset>"
+check(f"a 30 KB body the server never reads does not cost the client its answer ({late[:12]!r})", late.startswith(b"HTTP/1.0 405"))
 st, _, _, _ = http(mp, b"GET /secret HTTP/1.1\r\n\r\n")
 check("another path answers 404", st == 404)
 st, _, _, _ = http(mp, b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\r\n\r\n")

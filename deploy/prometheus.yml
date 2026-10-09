@@ -1,0 +1,18 @@
+# prometheus.yml -- scrape every process of a local cluster (decision D-088).
+#
+# Used by scripts/observe.sh, which copies it into its run directory next to
+# targets.json: the list of metrics addresses that scripts/cluster.sh wrote when it
+# started the cluster (every process's metrics port is its protocol port + 1000).
+# A target list in a file is re-read by Prometheus whenever it changes, so a node
+# restarted by a fault-injection run needs no reload.
+
+global:
+  scrape_interval: 2s          # one machine, a few dozen targets: frequent scrapes are cheap
+  scrape_timeout: 1s           # a process that cannot answer in 1 s counts as down (up == 0)
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: chordfs
+    file_sd_configs:
+      - files: ["targets.json"]
+        refresh_interval: 5s

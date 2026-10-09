@@ -209,6 +209,9 @@ chord-dht-filesystem/
 │   ├── raft_wire.{h,cpp}   # VOTE and APPEND on the line framing, with strict parsers
 │   ├── replica.{h,cpp}     # One replica: a lock around the core, a ticker, a sender per peer, waiting clients
 │   ├── group.{h,cpp}       # The client's side of the group: the address list, redirects and retries
+│   ├── metrics.{h,cpp}     # Counters, histograms and gauges, rendered in the Prometheus text format
+│   ├── http.{h,cpp}        # The metrics port: just enough HTTP/1.0, one hardened thread
+│   ├── log.{h,cpp}         # One key=value line per event, written with one system call; request ids
 │   ├── sha1.h              # Header-only wrapper over OpenSSL SHA1(), hex-encoded
 │   ├── node.cpp            # `node`: a ring process -- members (virtual nodes), a chunk store, maintenance and repair
 │   ├── tracker.cpp         # `tracker`: one replica of the namespace's Raft group (alone: the single tracker)
@@ -219,12 +222,14 @@ chord-dht-filesystem/
 │   └── sim_balance.cpp     # `sim-balance`: chunk placement with the node's own code, for load-balance curves
 ├── tests/                  # Nine unit-test programs (`make check`): hand-built rings, constructed hostile input,
 │                           #   a seeded simulation of the Raft group with its safety properties checked every step
-├── scripts/                # End-to-end suites (e2e-*.sh), the local cluster launcher (cluster.sh),
+├── scripts/                # End-to-end suites (e2e-*.sh), the local cluster launcher (cluster.sh), Prometheus and
+│                           #   Grafana against it (observe.sh), one request across every log (trace.py),
 │                           #   benchmark harnesses (bench-*.py), plotters (plot-*.py), test oracles
+├── deploy/                 # Prometheus's configuration, Grafana's provisioning and the dashboard, as text
 ├── docs/                   # A guide per subsystem, the design document, the failure log, the postmortem;
 │                           #   figures/ holds the plots and the summary data each is drawn from
 ├── Makefile                # Hand-written. Objects go to build/, programs to the repository root
-├── Dockerfile, compose.yaml # A single tracker and five nodes in containers -- written, not yet run
+├── Dockerfile, compose.yaml # Three tracker replicas, five nodes, Prometheus and Grafana in containers -- written, not yet run
 ├── .github/workflows/ci.yml # Build, unit tests and the fast end-to-end suites on x86-64 and arm64 -- not yet run
 ├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-082)
 ├── BENCHMARKS.md           # Every number, its method and its commit
