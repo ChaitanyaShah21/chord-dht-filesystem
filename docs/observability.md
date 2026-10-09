@@ -61,3 +61,19 @@ never become two lines. `--log-level` sets the threshold (default `info`).
 | **`spdlog`** | an external library |
 | **JSON lines** | heavier escaping, harder to read and grep |
 | **Free text** | no level, no request id, no fields a tool can find |
+
+### The request id — [D-087](../ARCHITECTURE.md#d-087--a-request-id-travels-as-a-rid-id-prefix-on-every-request-line-and-a-server-carries-it-into-its-own-calls)
+
+```
+RID 6f1c2a9e0b3d4c5a PUT ab12... 2 524288
+```
+
+A client makes one id per command (or takes `--request-id`) and prefixes every request line with it. A server takes
+the prefix off first, keeps the id in a thread-local variable while it handles the request, logs it on every line,
+and passes it on in every call it makes for that request — a coordinator's copies to the other replicas included.
+
+| Alternative | Why not |
+|---|---|
+| **A trailing field** | a body-carrying line's last word is its length (D-044) |
+| **A separate header line** | a second line per request, and the desyncs that brings |
+| **The chunk key as the id** | names a chunk, not a transfer |

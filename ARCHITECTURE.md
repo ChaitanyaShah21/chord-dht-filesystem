@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-086: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-087: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -237,13 +237,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-086 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-087 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 78 recorded here (F1–F77 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 79 recorded here (F1–F78 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -329,6 +329,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F75** | **Which metrics, and as which instrument?** Histograms with fixed buckets for latencies and hop counts, counters and gauges for the rest, labels only from small fixed sets; summaries computing quantiles in the process; averages; or metrics derived from the logs. | Decides whether a p99 can be computed across processes, what one scrape costs, and whether a label can grow without bound. | **RESOLVED** — D-084 |
 | **F76** | **A client runs for seconds; Prometheus scrapes every few. Where do transfer numbers come from?** The client serves metrics while it runs, and the dashboard's throughput and latency are measured at the nodes; a Pushgateway; a metrics file written at exit; or a long-running client. | Decides whether the dashboard's headline panels exist at all for short transfers, and what one more daemon would cost. | **RESOLVED** — D-085 |
 | **F77** | **How does a process log?** A small hand-written logger writing one `key=value` line per event; `spdlog`; JSON lines; or the free-text lines kept. | Decides whether a log line can be parsed by a tool, whether lines from two threads can interleave, and whether the no-external-libraries rule holds. | **RESOLVED** — D-086 |
+| **F78** | **How does one transfer's request id reach every process it touches?** A `RID <id>` prefix on every request line, carried on into a server's onward calls; a trailing field; a separate header line; or deriving it from the chunk key. | Decides whether one upload can be reconstructed from the logs of the client, the tracker and every node, and whether the framing's rules survive the change. | **RESOLVED** — D-087 |
 
 ---
 
@@ -4448,3 +4449,37 @@ sentence it sits in.
 
 **Cost accepted.** Wall-clock timestamps from different machines are only as comparable as their clocks; the
 request id, not the time, is what links lines across processes.
+
+---
+
+### D-087 — A request id travels as a `RID <id>` prefix on every request line, and a server carries it into its own calls
+
+**Fork:** F78. **Date:** 9 Oct 2026. **Depends on:** D-021, D-044, D-047, D-086. **Gates:** tracing one transfer.
+
+**The decision.**
+- A client makes one request id per command — 16 random hexadecimal characters, or the one given by
+  `--request-id` — and every line it sends carries it: lookups, chunk requests, tracker requests.
+  ```
+  RID 6f1c2a9e0b3d4c5a TO 3fa4c1d2e5b6a798 FIND_SUCCESSOR 9c2e...
+  RID 6f1c2a9e0b3d4c5a PUT ab12... 2 524288
+  ```
+- A server takes the prefix off before anything else reads the line, and holds the id in a **thread-local** variable
+  for as long as it handles that request: every line it logs carries it, and every call it makes on the request's
+  behalf carries it on — a coordinator's `STORE`s to the other replicas (D-046), a `SUSPECT`'s probe.
+- The prefix is optional and strictly parsed — `RID`, one space, 16 lowercase hexadecimal characters, one space, a
+  non-empty request — so tools and harnesses that send bare lines are unaffected.
+- `body_length` (D-044), the one place that decides which lines carry a body, looks past the prefix, so sender and
+  receiver still cannot disagree about where a body starts.
+- Background work has its own ids: each repair round that moves chunks makes one.
+
+**Rejected: a trailing field.** A body-carrying line's *last* word is its length (D-044); a trailing id would break
+that rule or need a second one.
+
+**Rejected: a separate header line before each request.** A second line per request doubles what can go wrong in
+the framing — exactly the class of desync that D-007 and D-010 removed.
+
+**Rejected: deriving the id from the chunk key.** It names a chunk, not a transfer: one download's 200 chunks could
+not be gathered, and two transfers of the same chunk could not be told apart.
+
+**Cost accepted.** 21 bytes more per request line, far inside the 1,024-byte limit; and the id is chosen by the
+client, so a hostile client can reuse another's — it is for tracing, not for security.
