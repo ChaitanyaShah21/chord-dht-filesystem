@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """plot-raft.py -- summarise the replicated tracker's benchmarks and draw their figures.
 
-  scripts/plot-raft.py <label>
+  scripts/plot-raft.py <election-label> [<writes-label>]
 
-Reads bench/raw/raft-<label>-election.csv and bench/raw/raft-<label>-writes.csv (written by
-scripts/bench-raft.py). Writes:
+Reads bench/raw/raft-<election-label>-election.csv and bench/raw/raft-<writes-label>-writes.csv
+(written by scripts/bench-raft.py; the writes label defaults to the election label). Writes:
   docs/figures/raft.csv            one row per summarised configuration
   docs/figures/raft-election.png   a. election time after the leader is killed, against E: every kill,
                                       the median, and the band [E, 2E) a follower's timeout is drawn from
@@ -27,8 +27,9 @@ SURFACE, INK, INK_2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 BLUE, ORANGE, GREEN, PURPLE = "#2a78d6", "#eb6834", "#1baf7a", "#8a5cd1"
 
 label = sys.argv[1]
+wlabel = sys.argv[2] if len(sys.argv) > 2 else label
 el = list(csv.DictReader(open(os.path.join(RAW, f"raft-{label}-election.csv"))))
-wr = list(csv.DictReader(open(os.path.join(RAW, f"raft-{label}-writes.csv"))))
+wr = list(csv.DictReader(open(os.path.join(RAW, f"raft-{wlabel}-writes.csv"))))
 
 plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9.5})
 
@@ -76,8 +77,10 @@ for e in es:
     rs = by_e[e]
     ev = [float(r["elect_ms"]) for r in rs]
     uv = [float(r["unavailable_ms"]) for r in rs]
-    summary.append({"what": "election", "config": f"E={e}", "n": len(rs), "median": round(statistics.median(ev), 1),
-                    "p99_or_max": round(max(ev), 1), "min": round(min(ev), 1), "extra": f"unavailable median {statistics.median(uv):.0f} ms, max {max(uv):.0f} ms"})
+    splits = sum(1 for r in rs if int(r["terms"]) > 1)
+    summary.append({"what": "election ms", "config": f"E={e}", "n": len(rs), "median": round(statistics.median(ev), 1),
+                    "max": round(max(ev), 1), "min": round(min(ev), 1),
+                    "extra": f"unavailable median {statistics.median(uv):.0f} ms, max {max(uv):.0f} ms; split votes {splits}"})
 
 # ---- writes ----
 groups = defaultdict(list)
@@ -106,15 +109,21 @@ for k, (media, clients, color, name) in enumerate(series):
         lo.append(m - min(v))
         hi.append(max(v) - m)
         summary.append({"what": "registrations/s", "config": f"{c}, {media}, {clients} client(s)", "n": len(rs), "median": round(m, 1),
-                        "p99_or_max": round(max(v), 1), "min": round(min(v), 1),
+                        "max": round(max(v), 1), "min": round(min(v), 1),
                         "extra": f"latency p50 {statistics.median(float(r['w_p50_ms']) for r in rs):.2f} ms p99 "
                                  f"{statistics.median(float(r['w_p99_ms']) for r in rs):.2f} ms; resolve p50 "
                                  f"{statistics.median(float(r['r_p50_ms']) for r in rs):.3f} ms"})
     axes[0].bar(xs, ys, w, color=color, label=name, yerr=[lo, hi], ecolor=INK_2, capsize=2, zorder=3)
 axes[0].set_xticks(range(len(configs)), [c.replace(" (before)", "\n(before)") for c in configs], fontsize=8.5)
 axes[0].set_yscale("log")
+axes[0].set_ylim(50, 6000)
+ticks = [50, 100, 200, 500, 1000, 2000, 5000]
+axes[0].set_yticks(ticks, [str(v) for v in ticks])
+axes[0].minorticks_off()
 style(axes[0], "a. Registrations per second", "", "registrations / s (log scale)")
-axes[0].legend(frameon=False, fontsize=8, loc="upper right")
+axes[0].legend(frameon=False, fontsize=8, loc="upper center", ncol=2)
+fig.text(0.01, 0.01, f"tmpfs with {many} clients is bounded by the harness's Python clients, not by the replicas", color=INK_2,
+         fontsize=7.5)
 for k, (media, color) in enumerate((("disk", BLUE), ("tmpfs", GREEN))):
     xs, p50, p99 = [], [], []
     for x, c in enumerate(configs):
@@ -125,11 +134,11 @@ for k, (media, color) in enumerate((("disk", BLUE), ("tmpfs", GREEN))):
         p50.append(statistics.median(float(r["w_p50_ms"]) for r in rs))
         p99.append(statistics.median(float(r["w_p99_ms"]) for r in rs))
     axes[1].bar(xs, p50, 0.33, color=color, label=f"{media}: p50", zorder=3)
-    axes[1].scatter(xs, p99, color=INK, marker="_", s=180, zorder=4, label=f"{media}: p99" if k == 0 else None)
+    axes[1].scatter(xs, p99, color=INK, marker="_", s=180, zorder=4, label="p99 (each bar's)" if k == 0 else None)
 axes[1].set_xticks(range(len(configs)), [c.replace(" (before)", "\n(before)") for c in configs], fontsize=8.5)
 style(axes[1], "b. One registration, one client", "", "milliseconds")
 axes[1].legend(frameon=False, fontsize=8, loc="upper left")
-fig.tight_layout()
+fig.tight_layout(rect=(0, 0.04, 1, 1))
 fig.savefig(os.path.join(FIG, "raft-writes.png"), facecolor=SURFACE)
 
 with open(os.path.join(FIG, "raft.csv"), "w", newline="") as f:
