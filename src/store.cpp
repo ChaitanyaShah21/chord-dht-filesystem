@@ -274,9 +274,10 @@ DropResult store_drop(ChunkStore &s, const std::string &key, std::chrono::millis
         s.bytes -= std::min<std::uint64_t>(bytes, s.bytes.load());
         unlink(store_path(s, key).c_str());
     }
-    // The directory is flushed outside the lock. If the node dies before it, the
-    // file may come back after a restart: garbage kept, never data lost.
-    fsync_dir(fan_dir(s.dir, key));
+    // No flush of the directory: if the node dies before the kernel writes the unlink
+    // out, the file comes back after the restart -- garbage kept, never data lost, and
+    // the next collection takes it. A flush per chunk was most of a sweep's time
+    // (BENCHMARKS.md §9).
     return DropResult::Dropped;
 }
 

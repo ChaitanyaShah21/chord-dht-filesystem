@@ -125,7 +125,8 @@ enum class DropResult {
 // Remove a chunk only if it has not been written for at least `grace`. The age
 // check, the removal from the index and the unlink all happen under `mu`, and a
 // duplicate write's "already held: renew" takes `mu` too -- so no write can land
-// between the check and the delete. `bytes` is set to the size freed.
+// between the check and the delete. `bytes` is set to the size freed. The unlink is
+// not flushed: one undone by a crash leaves garbage, which a later collection takes.
 DropResult store_drop(ChunkStore &s, const std::string &key, std::chrono::milliseconds grace, std::uint64_t &bytes);
 
 // Forget write times older than `grace`: such a chunk is old either way, so its
