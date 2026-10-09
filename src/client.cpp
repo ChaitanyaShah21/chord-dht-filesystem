@@ -14,6 +14,8 @@
 //   info <name>              resolve <name> and check its whole manifest tree
 //   resolve <name>           print the manifest key a name stands for
 //   ls                       list every name
+//   delete <name> [<token>]  unname a file with the token its upload printed (D-089);
+//                            its chunks are freed later by `gc` if no other file uses them
 //
 // Options:
 //   --workers <n>       chunks moved at once, 1..64 (default DEFAULT_WORKERS, D-056)
@@ -28,9 +30,16 @@
 //   --log <file>        append structured log lines here (D-086); none without it
 //   --log-level <level> debug, info (default), warn or error
 //   --metrics <port>    serve GET /metrics on this port while the command runs (D-085)
+//   --token-file <file> put: own the name with this secret instead of a random one;
+//                       delete: read the token from this file (keeps it out of `ps`)
+//   --upload-limit <s>  put: register only within this many seconds of starting (default 3600, D-091)
+//   --register-delay <ms>  put: wait this long before registering -- for testing the
+//                       collector's race with an upload in flight (D-091)
 //
 // put and get print one line on standard output, for scripts:
-//   put <name> <key> ok bytes <n> chunks <n> manifests <n> depth <n> chunk_ms <t> manifest_ms <t> total_ms <t>
+//   put <name> <key> ok bytes <n> chunks <n> manifests <n> depth <n> chunk_ms <t> manifest_ms <t> total_ms <t> token <secret|->
+// where the token is the secret that owns the name (D-089) -- printed once, never stored --
+// or "-" when the same content was already registered under the name by an earlier upload.
 //   get <name> <key> ok bytes <n> chunks <n> manifests <n> depth <n> resolve_ms <t> fetch_ms <t>
 //       sync_ms <t> ready_ms <t> total_ms <t>
 // where ready_ms is the time from the start of the program to every chunk verified
@@ -65,6 +74,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -259,16 +269,38 @@ int usage() {
     std::fprintf(stderr,
                  "usage: client --tracker <ip:port>[,<ip:port>...] --ring <ip:port>[,<ip:port>...] [options] <command>\n"
                  "  commands: put <file> <name> | get <name> <file> | get-key <key> <file> | info <name>\n"
-                 "            | resolve <name> | ls\n"
+                 "            | resolve <name> | ls | delete <name> [<token>]\n"
                  "  options:  --workers <1..%d> --w <1..3> --chunk-size <bytes> --fanout <2..%zu>\n"
                  "            --stats <file> --quiet --tracker-wait <ms> --request-id <16 hex>\n"
-                 "            --log <file> --log-level debug|info|warn|error --metrics <port>\n",
+                 "            --log <file> --log-level debug|info|warn|error --metrics <port>\n"
+                 "            --token-file <file> --upload-limit <s> --register-delay <ms>\n",
                  MAX_WORKERS, MANIFEST_FANOUT);
     return 2;
 }
 
 // A note for the person running the command, on standard error -- and, with --log,
 // the same words as a structured line, so the log tells the whole story too.
+// A fresh owner secret: 128 bits from the operating system's random source, as 32
+// lowercase hexadecimal characters (D-089).
+std::string new_secret() {
+    std::random_device rd;
+    std::string out;
+    char buf[9];
+    for (int i = 0; i < 4; ++i) {
+        std::snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(rd()));
+        out += buf;
+    }
+    return out;
+}
+
+// One line from a file: a token, as `ps` would otherwise show it on the command line.
+bool read_token(const std::string &path, std::string &token) {
+    std::ifstream f(path);
+    if (!f || !std::getline(f, token)) return false;
+    while (!token.empty() && (token.back() == '\r' || token.back() == ' ')) token.pop_back();
+    return valid_secret(token);
+}
+
 void say(const std::string &what) {
     std::fprintf(stderr, "client: %s\n", what.c_str());
     log_event(Level::Warn, "client.note", {{"msg", what}});
@@ -298,9 +330,10 @@ int main(int argc, char **argv) {
     std::string err;
     Ring ring;
     TransferOptions opt;
-    std::string stats, request_id, log_path;
+    std::string stats, request_id, log_path, token_file;
     bool quiet = false;
     int metrics_port = 0;
+    long long upload_limit_s = 3600, register_delay_ms = 0;
     Level level = Level::Info;
     std::vector<std::string> words;
     for (int i = 1; i < argc; ++i) {
@@ -320,6 +353,9 @@ int main(int argc, char **argv) {
         else if (a == "--log" && v)               { log_path = argv[++i]; }
         else if (a == "--log-level" && v)         { if (!parse_level(argv[++i], level)) return usage(); }
         else if (a == "--metrics" && v)           { if (!parse_number(argv[++i], 1, 65535, n)) return usage(); metrics_port = static_cast<int>(n); }
+        else if (a == "--token-file" && v)        { token_file = argv[++i]; }
+        else if (a == "--upload-limit" && v)      { if (!parse_number(argv[++i], 1, 100000000, upload_limit_s)) return usage(); }
+        else if (a == "--register-delay" && v)    { if (!parse_number(argv[++i], 0, 100000000, register_delay_ms)) return usage(); }
         else if (a.compare(0, 2, "--") == 0)      { return usage(); }
         else                                      { words.push_back(a); }
     }
@@ -348,7 +384,7 @@ int main(int argc, char **argv) {
 
     if (!quiet) opt.log = say;                    // fprintf locks stderr per call: safe from many workers
 
-    const bool needs_tracker = cmd == "put" || cmd == "get" || cmd == "info" || cmd == "resolve" || cmd == "ls";
+    const bool needs_tracker = cmd == "put" || cmd == "get" || cmd == "info" || cmd == "resolve" || cmd == "ls" || cmd == "delete";
     const bool needs_ring = cmd == "put" || cmd == "get" || cmd == "get-key" || cmd == "info";
     if ((needs_tracker && !have_tracker) || (needs_ring && ring.seeds.empty())) return usage();
     PutFn put = [&ring](const std::string &body) { return ring_put(ring, body); };
@@ -358,26 +394,52 @@ int main(int argc, char **argv) {
     if (cmd == "put" && words.size() == 3) {
         const std::string &file = words[1], &name = words[2];
         if (!valid_name(name)) { say("a name is 1 to 200 visible ASCII characters, no spaces"); return 2; }
+        // The owner's secret (D-089): chosen here, before anything is stored, so a
+        // retried registration carries the same hash. Only the hash leaves this process.
+        std::string secret = new_secret();
+        if (!token_file.empty() && !read_token(token_file, secret)) {
+            say(token_file + " must hold one token of 32 to 64 lowercase hexadecimal characters");
+            return 2;
+        }
         opt.on_chunk = chunk_observer(0);
         const UploadOutcome u = upload_file(file, put, opt);
         if (!stats.empty() && !write_stats(stats, "put", u.timings)) say("could not write " + stats);
         if (!u.ok) { say("upload failed: " + u.message); return 1; }
+        if (register_delay_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(register_delay_ms));
+        // An upload that took longer than the limit must not name its chunks: a
+        // collector may already count them as old garbage (D-091's inequality).
+        if (ms_since(g_start) > static_cast<double>(upload_limit_s) * 1000) {
+            say("the upload took longer than its limit of " + std::to_string(upload_limit_s) + " s, so its chunks may "
+                "already be collected; the name was not registered. Run the same put again.");
+            return 1;
+        }
         // Only now is the name registered: every chunk and manifest is stored, so a
         // name never points at a file that is not all there (D-017).
         std::string reply;
-        if (!ask_tracker(tracker, "REGISTER " + name + " " + u.root_key, reply)) { say(reply); return 1; }
-        if (reply.compare(0, 7, "EXISTS ") == 0) {
-            say(name + " is already registered for another file (" + reply.substr(7) + "); names are written once. "
-                "This upload's chunks stay in the ring, unnamed.");
+        if (!ask_tracker(tracker, "REGISTER " + name + " " + u.root_key + " " + owner_hash(secret), reply)) {
+            say(reply);
             return 1;
         }
-        if (reply != "OK") { say("the tracker answered: " + reply); return 1; }
+        if (reply == "EXISTS " + u.root_key) {
+            // The same content under the same name, registered by an earlier upload with
+            // its own token: the name already means this file, so this succeeds -- but
+            // the earlier upload's token, not a new one, is what can delete it.
+            say(name + " is already registered for this same content by an earlier upload; that upload's token owns it");
+            secret = "-";
+        } else if (reply.compare(0, 7, "EXISTS ") == 0) {
+            say(name + " is already registered for another file (" + reply.substr(7) + "). "
+                "This upload's chunks stay in the ring, unnamed, until a collection removes them.");
+            return 1;
+        } else if (reply != "OK") {
+            say("the tracker answered: " + reply);
+            return 1;
+        }
         log_event(Level::Info, "client.put", {{"name", name}, {"key", u.root_key}, {"result", "ok"},
                                               {"bytes", std::to_string(u.size)}, {"chunks", std::to_string(u.chunks)},
                                               {"manifests", std::to_string(u.manifests)}, {"ms", ms(ms_since(g_start))}});
-        std::printf("put %s %s ok bytes %llu chunks %zu manifests %zu depth %d chunk_ms %s manifest_ms %s total_ms %s\n",
+        std::printf("put %s %s ok bytes %llu chunks %zu manifests %zu depth %d chunk_ms %s manifest_ms %s total_ms %s token %s\n",
                     name.c_str(), u.root_key.c_str(), static_cast<unsigned long long>(u.size), u.chunks, u.manifests, u.depth,
-                    ms(u.chunk_micros).c_str(), ms(u.manifest_micros).c_str(), ms(ms_since(g_start)).c_str());
+                    ms(u.chunk_micros).c_str(), ms(u.manifest_micros).c_str(), ms(ms_since(g_start)).c_str(), secret.c_str());
         return 0;
     }
 
@@ -425,6 +487,22 @@ int main(int argc, char **argv) {
         std::string key, err;
         if (!resolve(tracker, words[1], key, err)) { say(err); return 1; }
         std::printf("%s\n", key.c_str());
+        return 0;
+    }
+
+    // ---- delete <name> [<token>]: unname it; the chunks wait for a collection (D-089) ----
+    if (cmd == "delete" && (words.size() == 2 || words.size() == 3)) {
+        std::string secret;
+        if (words.size() == 3) secret = words[2];
+        else if (token_file.empty() || !read_token(token_file, secret)) { say("delete needs the token: <token> or --token-file"); return 2; }
+        if (!valid_name(words[1]) || !valid_secret(secret)) { say("a token is 32 to 64 lowercase hexadecimal characters"); return 2; }
+        std::string reply;
+        if (!ask_tracker(tracker, "UNREGISTER " + words[1] + " " + secret, reply)) { say(reply); return 1; }
+        if (reply == "MISSING") { say("no file is named " + words[1] + " (if a retry was needed, an earlier attempt may have deleted it)"); return 1; }
+        if (reply == "DENIED") { say("that token does not own " + words[1]); return 1; }
+        if (reply != "OK") { say("the tracker answered: " + reply); return 1; }
+        log_event(Level::Info, "client.delete", {{"name", words[1]}, {"result", "ok"}});
+        std::printf("delete %s ok\n", words[1].c_str());
         return 0;
     }
 

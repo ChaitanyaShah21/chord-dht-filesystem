@@ -219,7 +219,12 @@ std::string Replica::client_request(const std::string &line, std::unique_lock<st
     if (raft_->role() != Raft::Role::Leader) return not_leader();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.commit_wait_ms);
 
-    if (r.kind == NamesRequest::Kind::Register) {
+    if (r.kind == NamesRequest::Kind::Register || r.kind == NamesRequest::Kind::Unregister) {
+        // A deletion is hashed here, before it goes anywhere: the log holds the owner
+        // hash, never the secret (D-089).
+        const std::string command = r.kind == NamesRequest::Kind::Register
+                                        ? register_command(r.name, r.key, r.owner)
+                                        : unregister_command(r.name, owner_hash(r.secret));
         // The waiter is registered BEFORE proposing, at the index and term the entry
         // will get: in a group of one the entry is committed and applied inside
         // propose() itself, and the result must not be missed.
@@ -229,7 +234,7 @@ std::string Replica::client_request(const std::string &line, std::unique_lock<st
         const auto it = writes_.emplace(expect, &waiter);
         Index index = 0;
         Term term = 0;
-        if (!raft_->propose(register_command(r.name, r.key), index, term, now_ms())) {
+        if (!raft_->propose(command, index, term, now_ms())) {
             if (!waiter.done) writes_.erase(it);
             dispatch();
             check_fatal(lock);
@@ -243,7 +248,7 @@ std::string Replica::client_request(const std::string &line, std::unique_lock<st
         return UNKNOWN_OUTCOME;
     }
 
-    // RESOLVE and LIST: ReadIndex (D-076). Like a write, the waiter is in place
+    // RESOLVE, LIST and ENTRIES: ReadIndex (D-076). Like a write, the waiter is in place
     // before the core can resolve it.
     ReadWaiter waiter;
     const std::uint64_t id = ++next_read_;

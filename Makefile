@@ -2,8 +2,8 @@
 # Makefile for chord-dht-filesystem
 # -----------------------------
 #
-#   make            the programs: tracker, node, client, chunk, lookup, sim-hops, sim-balance
-#   make check      build and run the ten unit-test binaries
+#   make            the programs: tracker, node, client, gc, chunk, lookup, sim-hops, sim-balance
+#   make check      build and run the eleven unit-test binaries
 #   make tsan       ThreadSanitizer builds of the node, the client, the tracker and test-replica
 #   make clean
 #
@@ -51,8 +51,8 @@ RING    = stabilize $(ROUTING)
 CHUNKS  = chunk store $(RING)
 RAFT    = raft raft_log raft_wire
 
-PROGRAMS = tracker client node chunk lookup sim-hops sim-balance
-TESTS    = test-chord test-net test-lookup test-stabilize test-chunk test-transfer test-names test-raft test-replica test-obs
+PROGRAMS = tracker client node gc chunk lookup sim-hops sim-balance
+TESTS    = test-chord test-net test-lookup test-stabilize test-chunk test-transfer test-names test-raft test-replica test-obs test-gc
 
 all: $(PROGRAMS)
 
@@ -74,7 +74,11 @@ client: $(call obj,client transfer names group http $(CHUNKS))
 
 # A ring process: its members' maintenance, the chunk store and re-replication; http
 # serves its metrics (D-083).
-node: $(call obj,node repair http $(CHUNKS))
+node: $(call obj,node repair http names $(CHUNKS))
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
+# The collector (D-090): marks through the tracker group and the ring, sweeps every node.
+gc: $(call obj,gc_main collect transfer group names $(CHUNKS))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
 # Tools: one chunk, or one lookup per line of input, through a ring.
@@ -122,6 +126,9 @@ test-raft: $(call obj,test_raft group names $(RAFT) store $(ROUTING))
 test-replica: $(call obj,test_replica replica group names $(RAFT) store $(ROUTING))
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
 
+test-gc: $(call obj,test_gc collect transfer names $(CHUNKS))
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(CRYPTO_LDLIBS)
+
 test-obs: $(call obj,test_obs http $(NET))
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
@@ -163,7 +170,7 @@ $(BUILD)/flags: FORCE
 TSAN_FLAGS = -std=c++17 -Wall -pthread -g -O1 -fsanitize=thread -Isrc
 src = $(addprefix src/,$(addsuffix .cpp,$(1)))
 
-node-tsan: $(call src,node repair http $(CHUNKS)) $(wildcard src/*.h)
+node-tsan: $(call src,node repair http names $(CHUNKS)) $(wildcard src/*.h)
 	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^) $(CRYPTO_LDLIBS)
 
 client-tsan: $(call src,client transfer names group http $(CHUNKS)) $(wildcard src/*.h)
@@ -182,9 +189,13 @@ test-replica-tsan: tests/test_replica.cpp $(call src,replica group names $(RAFT)
 test-obs-tsan: tests/test_obs.cpp $(call src,http $(NET)) $(wildcard src/*.h)
 	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^)
 
-tsan: node-tsan client-tsan tracker-tsan test-replica-tsan test-obs-tsan
+# The store's drop racing its writes, and whole collections (D-091).
+test-gc-tsan: tests/test_gc.cpp $(call src,collect transfer names $(CHUNKS)) $(wildcard src/*.h)
+	$(CXX) $(TSAN_FLAGS) -o $@ $(filter %.cpp,$^) $(CRYPTO_LDLIBS)
+
+tsan: node-tsan client-tsan tracker-tsan test-replica-tsan test-obs-tsan test-gc-tsan
 
 clean:
-	rm -rf $(BUILD) $(PROGRAMS) $(TESTS) node-tsan client-tsan tracker-tsan test-replica-tsan test-obs-tsan
+	rm -rf $(BUILD) $(PROGRAMS) $(TESTS) node-tsan client-tsan tracker-tsan test-replica-tsan test-obs-tsan test-gc-tsan
 
 .PHONY: all check tsan clean FORCE

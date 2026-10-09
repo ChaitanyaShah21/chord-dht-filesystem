@@ -15,6 +15,8 @@
 //   --read-deadline <ms>  a request line, or a body, must arrive whole within this (D-061)
 //                         (default DEFAULT_READ_DEADLINE_MS)
 //   --metrics <port>      serve GET /metrics on this port (D-083); none without it
+//   --gc-key <file>       accept DROP from a collector holding this key (D-092); without it, never
+//   --gc-grace <s>        drop only chunks not written for this long (D-091; default DEFAULT_GC_GRACE_S)
 //   --log-level <level>   debug, info (default), warn or error (D-086)
 //
 // Ring requests are answered by handle_request() in stabilize.cpp and chunk
@@ -28,6 +30,7 @@
 #include "log.h"
 #include "lookup.h"
 #include "metrics.h"
+#include "names.h"      // valid_secret: the collection key is written as owner secrets are
 #include "net.h"
 #include "repair.h"
 #include "stabilize.h"
@@ -103,7 +106,7 @@ std::map<std::string, Histogram *> g_chunk_seconds;   // by verb
 std::map<std::string, Counter *> g_lookup_failures;   // by lookup_error_name
 std::map<std::string, Counter *> g_repair;            // by what a repair round did
 
-const char *const CHUNK_VERBS[] = {"put", "store", "get", "have"};
+const char *const CHUNK_VERBS[] = {"put", "store", "get", "have", "keys", "drop"};
 const char *const CHUNK_RESULTS[] = {"ok", "missing", "busy", "error"};
 const char *const ERROR_TYPES[] = {"deadline", "line_too_long", "malformed", "too_large", "busy", "closed_mid_body"};
 
@@ -129,7 +132,7 @@ std::string verb_of(const std::string &line) {
 // What a chunk reply means, as one of CHUNK_RESULTS.
 const char *result_of(const std::string &reply) {
     if (reply == "OK" || reply.compare(0, 3, "OK ") == 0 || reply.compare(0, 6, "CHUNK ") == 0 ||
-        reply.compare(0, 5, "HAVE ") == 0)
+        reply.compare(0, 5, "HAVE ") == 0 || reply.compare(0, 5, "KEYS ") == 0 || reply.compare(0, 8, "DROPPED ") == 0)
         return "ok";
     if (reply == "MISSING") return "missing";
     if (reply == "ERR busy") return "busy";
@@ -145,13 +148,16 @@ void record_chunk(const std::string &line, const std::string &reply, std::uint64
     count(g_chunk_requests, verb + "/" + result);
     const auto h = g_chunk_seconds.find(verb);
     if (h != g_chunk_seconds.end()) h->second->observe(seconds);
-    // HAVE is repair's bookkeeping, many per round: debug. The rest is one line per chunk.
-    const Level level = verb == "have" ? Level::Debug : Level::Info;
+    // HAVE and KEYS are bookkeeping, many per round: debug. The rest is one line per
+    // chunk, or per DROP batch. A DROP's first word after the verb is the collection
+    // key, so it is never logged (D-092): its "key" field is left empty.
+    const Level level = verb == "have" || verb == "keys" ? Level::Debug : Level::Info;
     if (!log_enabled(level)) return;
     char ms[32];
     std::snprintf(ms, sizeof ms, "%.3f", seconds * 1000);
     const std::size_t a = line.find(' ');
-    const std::string key = a == std::string::npos ? "" : line.substr(a + 1, line.find(' ', a + 1) - a - 1);
+    const std::string key =
+        a == std::string::npos || verb == "drop" ? "" : line.substr(a + 1, line.find(' ', a + 1) - a - 1);
     log_event(level, ("chunk." + verb).c_str(),
               {{"key", key}, {"result", result}, {"reply", reply.substr(0, 120)}, {"bytes", std::to_string(bytes)},
                {"ms", ms}});
@@ -470,6 +476,14 @@ void register_metrics(double started) {
              g_chunks.replication_lag);
     r.expose("chordfs_put_copies_short_total", "Coordinated writes whose copies ended below three.", g_chunks.copies_short);
 
+    // Collection (D-090, D-091).
+    r.expose("chordfs_gc_dropped_chunks_total", "Chunks dropped at a collector's request.", g_chunks.dropped_chunks);
+    r.expose("chordfs_gc_dropped_bytes_total", "Bytes freed by dropping chunks.", g_chunks.dropped_bytes);
+    r.expose("chordfs_gc_kept_young_total", "Chunks a collector asked to drop, kept because they were written within the grace.",
+             g_chunks.kept_young);
+    r.gauge("chordfs_gc_grace_seconds", "How long a chunk must go unwritten before it may be dropped.",
+            [] { return static_cast<double>(g_chunks.gc_grace.count()) / 1000; });
+
     // Repair (D-050).
     for (const char *what : {"rounds", "full_scans", "chunks_sent", "failures", "handed_off", "scrubbed"})
         g_repair[what] = &r.counter(std::string("chordfs_repair_") + what + "_total",
@@ -484,7 +498,8 @@ int usage(const char *argv0) {
                  "       %s <ip> <port> (--create | --join <ip:port> | --wired <file>)\n"
                  "                      [--period <ms>] [--timeout <ms>] [--succ <1..%d>]\n"
                  "                      [--vnodes <1..%d>] [--store <dir>] [--scan <rounds>] [--read-deadline <ms>]\n"
-                 "                      [--metrics <port>] [--log-level debug|info|warn|error]\n",
+                 "                      [--metrics <port>] [--log-level debug|info|warn|error]\n"
+                 "                      [--gc-key <file>] [--gc-grace <s>]\n",
                  argv0, argv0, MAX_SUCCESSORS, MAX_VNODES);
     return 2;
 }
@@ -505,7 +520,8 @@ int main(int argc, char **argv) {
     enum class Mode { Fixed, Create, Join, Wired } mode = Mode::Fixed;
     std::string file, known_text, store_dir;
     int period_ms = DEFAULT_PERIOD_MS, successors = DEFAULT_SUCCESSORS;
-    int vnodes = DEFAULT_VNODES, scan_rounds = DEFAULT_SCAN_ROUNDS, metrics_port = 0;
+    int vnodes = DEFAULT_VNODES, scan_rounds = DEFAULT_SCAN_ROUNDS, metrics_port = 0, gc_grace_s = DEFAULT_GC_GRACE_S;
+    std::string gc_key_file;
     Level level = Level::Info;
     if (argc == 4 && argv[3][0] != '-') {
         file = argv[3];                                   // Phase 2's form, unchanged
@@ -527,6 +543,8 @@ int main(int argc, char **argv) {
             else if (a == "--store" && has_value && store_dir.empty()) { store_dir = argv[++i]; if (store_dir.empty()) return usage(argv[0]); }
             else if (a == "--metrics" && has_value) { if (!parse_int(argv[++i], 1, 65535, metrics_port)) return usage(argv[0]); }
             else if (a == "--log-level" && has_value) { if (!parse_level(argv[++i], level)) return usage(argv[0]); }
+            else if (a == "--gc-key" && has_value)  { gc_key_file = argv[++i]; }
+            else if (a == "--gc-grace" && has_value) { if (!parse_int(argv[++i], 0, 9999999, gc_grace_s)) return usage(argv[0]); }
             else return usage(argv[0]);
         }
         if (!chosen) return usage(argv[0]);
@@ -603,7 +621,19 @@ int main(int argc, char **argv) {
         }
     }
 
-    // ---- the chunk store (D-045) ----
+    // ---- the chunk store (D-045) and collection (D-091, D-092) ----
+    g_chunks.gc_grace = std::chrono::milliseconds(static_cast<long long>(gc_grace_s) * 1000);
+    if (!gc_key_file.empty()) {
+        std::ifstream f(gc_key_file);
+        std::string key;
+        if (!f || !std::getline(f, key)) key.clear();
+        while (!key.empty() && (key.back() == '\r' || key.back() == ' ')) key.pop_back();
+        if (!valid_secret(key)) {
+            log_event(Level::Error, "node.start", {{"msg", gc_key_file + " must hold one key of 32 to 64 lowercase hexadecimal characters"}});
+            return 1;
+        }
+        g_chunks.gc_key = key;
+    }
     g_chunks.send = frame_transport;
     g_chunks.log = [](const std::string &event) { log_event(Level::Info, "storage", {{"msg", event}}); };
     for (const auto &m : g_members) g_chunks.members.push_back(m.get());

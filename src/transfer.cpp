@@ -288,6 +288,7 @@ Resolved resolve_manifest(const std::string &root_key, const GetFn &get, int att
             std::string why;
             if (!parse_manifest(g.body, m, why)) { r.message = "manifest " + p.key + ": " + why; return r; }
             ++r.manifests;
+            r.manifest_keys.push_back(p.key);
             if (p.depth == 1) {
                 r.size = m.size;
                 r.chunk = m.chunk;

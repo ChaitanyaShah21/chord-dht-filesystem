@@ -9,6 +9,7 @@
 #include "store.h"
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -21,6 +22,8 @@
 //   STORE <key> <length>    + body   keep one copy, forward nothing  (D-046)
 //   GET <key>                        -> CHUNK <length> + body | MISSING  (D-049)
 //   HAVE <key> [<key> ...]           -> HAVE <0/1 per key>           (D-050)
+//   KEYS <after|->                   -> KEYS <n> <grace-s> <key> ... (D-090: a page of what is held)
+//   DROP <gc-key> <key> [<key> ...]  -> DROPPED <0/1 per key> <bytes> (D-090, D-091, D-092)
 //
 // Chunk requests are for a PROCESS, not a ring member: the store belongs to the
 // process (D-047). Like stabilize.cpp, nothing here opens a socket. Calls to
@@ -32,6 +35,8 @@ constexpr int RF               = 3;      // copies of every chunk, on distinct p
 constexpr int DEFAULT_W        = 2;      // copies confirmed before a write is acknowledged (D-015)
 constexpr int MAX_BODIES       = 32;     // chunk bodies held in memory at once, per process (D-052)
 constexpr int MAX_HAVE_KEYS    = 20;     // keys in one HAVE request; 20 x 41 characters fits MAX_LINE
+                                         // (also per KEYS page and per DROP)
+constexpr long DEFAULT_GC_GRACE_S = 7200; // a chunk is dropped only if not written for this long (D-091)
 
 // One message of the chunk plane: a header line and, for PUT, STORE and CHUNK,
 // a body (net.h's body_length decides which).
@@ -66,6 +71,12 @@ struct ChunkNode {
     // RF copies -- and the writes whose copies ended short of RF.
     Histogram replication_lag{latency_buckets()};
     Counter   copies_short;
+
+    // Collection (D-090 to D-092). Set once before any request thread starts.
+    // An empty gc_key refuses every DROP: deletion is off unless a key is given.
+    std::string               gc_key;
+    std::chrono::milliseconds gc_grace{DEFAULT_GC_GRACE_S * 1000};
+    Counter dropped_chunks, dropped_bytes, kept_young;     // what DROP did
 };
 
 // A claim on one of MAX_BODIES body slots. While the returned pointer (or a copy
@@ -83,7 +94,7 @@ struct ChunkHandled {
     std::shared_ptr<void> hold;
 };
 
-// Is this line a chunk request (PUT, STORE, GET or HAVE)?
+// Is this line a chunk request (PUT, STORE, GET, HAVE, KEYS or DROP)?
 bool is_chunk_request(const std::string &line);
 
 // Answer one chunk request whose body, if it has one, has already been read.
@@ -101,6 +112,11 @@ std::vector<Peer> replica_set(const NodeState &member, int rf = RF);
 // successor list of the member just before a key, which a reader gets from
 // NEIGHBOURS (D-049).
 std::vector<Peer> distinct_processes(const std::vector<Peer> &from_owner, int rf = RF);
+
+// Equal, in time that does not depend on where the first difference is (D-092): a
+// secret cannot be guessed one character at a time by timing the answers. Only the
+// length is compared in the ordinary way; it is not secret.
+bool same_secret(const std::string &a, const std::string &b);
 
 // Of a process's members, the one that owns `k` if this process owns it at all:
 // the first member at or after k, clockwise. `members` must not be empty.

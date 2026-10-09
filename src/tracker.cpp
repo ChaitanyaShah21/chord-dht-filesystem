@@ -68,8 +68,9 @@ std::map<std::string, Counter *> g_requests;        // by "verb/result"
 std::map<std::string, Histogram *> g_seconds;       // by verb
 std::map<std::string, Counter *> g_errors;          // by type
 
-const char *const VERBS[] = {"register", "resolve", "list", "ping", "vote", "append", "status", "other"};
-const char *const RESULTS[] = {"ok", "exists", "missing", "redirect", "unavailable", "error"};
+const char *const VERBS[] = {"register", "unregister", "resolve", "list", "entries", "ping",
+                             "vote", "append", "status", "other"};
+const char *const RESULTS[] = {"ok", "exists", "missing", "denied", "redirect", "unavailable", "error"};
 
 void count(std::map<std::string, Counter *> &family, const std::string &which) {
     const auto it = family.find(which);
@@ -105,6 +106,7 @@ const char *result_of(const std::string &reply) {
     const std::string w = reply.substr(0, reply.find(' '));
     if (w == "EXISTS") return "exists";
     if (w == "MISSING") return "missing";
+    if (w == "DENIED") return "denied";
     if (w == "REDIRECT") return "redirect";
     if (w == "UNAVAILABLE") return "unavailable";
     if (w == "ERR") return "error";
@@ -118,9 +120,10 @@ void record(const std::string &line, const std::string &reply, std::chrono::stea
     count(g_requests, verb + "/" + result_of(reply));
     const auto h = g_seconds.find(verb);
     if (h != g_seconds.end()) h->second->observe(seconds);
-    // A registration and a resolve are one per file: info. Replication traffic, LIST
-    // and PING are many: debug.
-    const Level level = verb == "register" || verb == "resolve" ? Level::Info : Level::Debug;
+    // A registration, a deletion and a resolve are one per file: info. Replication
+    // traffic, LIST, ENTRIES and PING are many: debug. Only the name is logged from a
+    // request line -- an UNREGISTER's secret never reaches a log (D-089).
+    const Level level = verb == "register" || verb == "unregister" || verb == "resolve" ? Level::Info : Level::Debug;
     if (!log_enabled(level)) return;
     const std::vector<std::string> w = split_single_spaces(line);
     char ms[32];

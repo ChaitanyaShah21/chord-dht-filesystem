@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -40,7 +41,8 @@ std::string handle(Namespace &ns, const std::string &line) {
     switch (r.kind) {
         case NamesRequest::Kind::Invalid:  return r.error;
         case NamesRequest::Kind::Ping:     return "PONG";
-        case NamesRequest::Kind::Register: return apply_command(ns, register_command(r.name, r.key));
+        case NamesRequest::Kind::Register: return apply_command(ns, register_command(r.name, r.key, r.owner));
+        case NamesRequest::Kind::Unregister: return apply_command(ns, unregister_command(r.name, owner_hash(r.secret)));
         default:                           return answer_read(ns, r);
     }
 }
@@ -65,10 +67,10 @@ void test_commands() {
     Namespace ns;
     check(apply_command(ns, "NOOP").empty() && ns.names.empty(), "a NOOP changes nothing and answers nobody");
     check(apply_command(ns, "BOGUS x y").empty() && ns.names.empty(), "an invalid command changes nothing");
-    check(apply_command(ns, register_command("a", key(1))) == "OK" && ns.names.at("a") == key(1), "the first registration of a name takes it");
+    check(apply_command(ns, register_command("a", key(1))) == "OK" && ns.names.at("a").key == key(1), "the first registration of a name takes it");
     check(apply_command(ns, register_command("a", key(1))) == "OK" && ns.names.size() == 1,
           "the same name and key again: OK, and nothing changes (a retry, D-075)");
-    check(apply_command(ns, register_command("a", key(2))) == "EXISTS " + key(1) && ns.names.at("a") == key(1),
+    check(apply_command(ns, register_command("a", key(2))) == "EXISTS " + key(1) && ns.names.at("a").key == key(1),
           "another key: EXISTS naming the first, and nothing changes");
 
     // Two replicas applying the same entries in the same order agree; that is all
@@ -110,6 +112,56 @@ void test_requests() {
     check(s.names.size() == 1, "and none of them changed the namespace");
 }
 
+// Owners and deletion (D-089).
+void test_owners() {
+    const std::string s1(32, 'a'), s2 = std::string(31, 'a') + "b";
+    check(valid_secret(s1) && valid_secret(std::string(64, 'f')), "a secret is 32 to 64 lowercase hex characters");
+    check(!valid_secret(std::string(31, 'a')) && !valid_secret(std::string(65, 'a')) && !valid_secret(std::string(32, 'A')) &&
+              !valid_secret(std::string(31, 'a') + "g") && !valid_secret(""),
+          "31 or 65 characters, capitals and non-hex are refused");
+    check(owner_hash(s1) == chunk_key(s1) && owner_hash(s1) != owner_hash(s2) && valid_key(owner_hash(s1)),
+          "the owner hash is the secret's SHA-1, 40 lowercase hex characters");
+    const std::string h1 = owner_hash(s1), h2 = owner_hash(s2);
+    check(unregister_command("a", h1) == "UNREGISTER a " + h1 && unregister_command("a", h1).find(s1) == std::string::npos,
+          "a deletion's entry carries the owner hash, never the secret");
+    check(register_command("a", key(1), h1) == "REGISTER a " + key(1) + " " + h1, "a registration with an owner");
+    check(valid_command(register_command("a", key(1), h1)) && valid_command(unregister_command("a", h1)),
+          "both forms with owners are commands");
+    check(!valid_command("UNREGISTER a") && !valid_command("UNREGISTER a " + s1) && !valid_command("REGISTER a " + key(1) + " xyz") &&
+              !valid_command("UNREGISTER a " + h1 + " x"),
+          "an UNREGISTER entry with a secret in it, or a bad hash, is not a command");
+
+    Namespace ns;
+    check(handle(ns, "REGISTER doc " + key(1) + " " + h1) == "OK", "a registration with an owner hash");
+    check(handle(ns, "REGISTER doc " + key(1) + " " + h1) == "OK", "the same key and owner again: a retry, OK");
+    check(handle(ns, "REGISTER doc " + key(1) + " " + h2) == "EXISTS " + key(1),
+          "the same key under ANOTHER owner: EXISTS -- an owner cannot be taken over by re-registering");
+    check(handle(ns, "REGISTER doc " + key(1)) == "EXISTS " + key(1), "nor by the ownerless form");
+    check(handle(ns, "REGISTER doc " + key(2) + " " + h1) == "EXISTS " + key(1), "and the owner cannot change the key");
+    check(handle(ns, "UNREGISTER doc " + s2) == "DENIED" && handle(ns, "RESOLVE doc") == "FILE " + key(1),
+          "the wrong secret is DENIED, and the name stays");
+    check(handle(ns, "UNREGISTER doc " + h1) == "DENIED" && handle(ns, "RESOLVE doc") == "FILE " + key(1),
+          "sending the owner HASH instead of the secret is DENIED -- it is hashed again, so the hash is not the proof");
+    check(handle(ns, "UNREGISTER doc " + s1) == "OK" && handle(ns, "RESOLVE doc") == "MISSING", "the right secret deletes it");
+    check(handle(ns, "UNREGISTER doc " + s1) == "MISSING", "deleting it again: MISSING");
+    check(handle(ns, "REGISTER doc " + key(3) + " " + h2) == "OK" && handle(ns, "RESOLVE doc") == "FILE " + key(3),
+          "once deleted, the name is free: anyone may take it");
+    check(handle(ns, "REGISTER old " + key(4)) == "OK" && handle(ns, "UNREGISTER old " + s1) == "DENIED" &&
+              handle(ns, "UNREGISTER old " + s2) == "DENIED" && handle(ns, "RESOLVE old") == "FILE " + key(4),
+          "a name registered with no owner can never be deleted");
+
+    const std::vector<std::string> log = {register_command("x", key(5), h1), unregister_command("x", h2),
+                                          unregister_command("x", h1), register_command("x", key(6), h2), "NOOP",
+                                          unregister_command("y", h1), register_command("y", key(7))};
+    Namespace one, two;
+    std::vector<std::string> r1, r2;
+    for (const std::string &c : log) r1.push_back(apply_command(one, c));
+    for (const std::string &c : log) r2.push_back(apply_command(two, c));
+    check(one.names == two.names && r1 == r2 &&
+              r1 == std::vector<std::string>{"OK", "DENIED", "OK", "OK", "", "MISSING", "OK"},
+          "registrations and deletions applied in log order: the same state and answers every time");
+}
+
 void test_list() {
     Namespace ns;
     check(handle(ns, "LIST") == "NAMES 0", "an empty namespace lists nothing");
@@ -140,6 +192,26 @@ void test_list() {
     check(got.size() == 300 && std::set<std::string>(got.begin(), got.end()) == expect && std::is_sorted(got.begin(), got.end()),
           "every name exactly once, in order");
     check(handle(ns, "LIST " + std::string(200, '~')) == "NAMES 0", "listing after the last name ends the listing");
+
+    // ENTRIES: the same paging, with each name's key (the collector's mark, D-090).
+    std::map<std::string, std::string> pairs;
+    after.clear();
+    bool entries_ok = true;
+    for (pages = 0; pages < 200; ++pages) {
+        const std::string reply = handle(ns, after.empty() ? "ENTRIES" : "ENTRIES " + after);
+        entries_ok = entries_ok && reply.size() <= MAX_LINE;
+        std::istringstream in(reply);
+        std::string word, name, k;
+        int n = -1;
+        in >> word >> n;
+        if (word != "ENTRIES" || n < 0) { entries_ok = false; break; }
+        if (n == 0) break;
+        for (int i = 0; i < n && in >> name >> k; ++i) { entries_ok = entries_ok && !pairs.count(name); pairs[name] = k; after = name; }
+    }
+    bool right = pairs.size() == 300;
+    for (const auto &e : ns.names) right = right && pairs.count(e.first) && pairs[e.first] == e.second.key;
+    check(entries_ok && right && pages > 2, "ENTRIES pages every name with its key exactly once, each page one line (" +
+                                                std::to_string(pages) + " pages)");
     NamesRequest w;
     w.kind = NamesRequest::Kind::Register;
     check(answer_read(ns, w).compare(0, 4, "ERR ") == 0, "answer_read refuses anything but a read");
@@ -152,6 +224,7 @@ int main() {
     test_names();
     test_commands();
     test_requests();
+    test_owners();
     test_list();
     std::printf("%s  %d/%d checks passed\n", failures == 0 ? "PASS" : "FAIL", checks - failures, checks);
     return failures == 0 ? 0 : 1;

@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 namespace {
 
@@ -100,6 +101,7 @@ const char *put_result_name(PutResult r) {
 
 bool store_open(ChunkStore &s, const std::string &dir, std::string &report, std::string &err) {
     s.dir = dir;
+    s.opened = StoreClock::now();         // every chunk found below counts as written now (D-091)
     if (!make_dir(dir, err) || !make_dir(dir + "/tmp", err)) return false;
     for (char a : std::string(HEX))
         for (char b : std::string(HEX))
@@ -146,7 +148,16 @@ PutResult store_put(ChunkStore &s, const std::string &key, const std::string &bo
     if (!valid_key(key)) return PutResult::BadKey;
     if (body.size() > MAX_CHUNK) return PutResult::TooLarge;
     if (chunk_key(body) != key) return PutResult::HashMismatch;
-    if (store_has(s, key)) return PutResult::AlreadyHeld;
+    {
+        // Held already: nothing to write, but it counts as written now (D-091). The
+        // check and the renewal hold `mu`, as store_drop's check and delete do, so a
+        // drop can never come between this answer and the chunk it promises.
+        std::lock_guard<std::mutex> lock(s.mu);
+        if (s.keys.count(key)) {
+            s.touched[key] = StoreClock::now();
+            return PutResult::AlreadyHeld;
+        }
+    }
 
     // A name no other writer in this process will choose. Two processes never
     // share a store directory, so the process number is not needed.
@@ -173,6 +184,7 @@ PutResult store_put(ChunkStore &s, const std::string &key, const std::string &bo
 
     std::lock_guard<std::mutex> lock(s.mu);
     if (s.keys.insert(key).second) s.bytes += body.size();     // counted once, if two writers raced
+    s.touched[key] = StoreClock::now();
     return PutResult::Stored;
 }
 
@@ -240,4 +252,45 @@ bool store_remove(ChunkStore &s, const std::string &key) {
     const bool ok = unlink(store_path(s, key).c_str()) == 0 || errno == ENOENT;
     fsync_dir(fan_dir(s.dir, key));
     return ok;
+}
+
+DropResult store_drop(ChunkStore &s, const std::string &key, std::chrono::milliseconds grace, std::uint64_t &bytes) {
+    bytes = 0;
+    if (!valid_key(key)) return DropResult::BadKey;
+    {
+        std::lock_guard<std::mutex> lock(s.mu);
+        if (!s.keys.count(key)) return DropResult::NotHeld;
+        const auto t = s.touched.find(key);
+        const StoreClock::time_point written = t == s.touched.end() ? s.opened : t->second;
+        if (StoreClock::now() - written < grace) return DropResult::TooYoung;
+
+        // Old enough. Unlinked while `mu` is held: a store_put of this key that
+        // arrives now waits for the lock, finds the key gone, and writes a new file
+        // after this unlink -- never before it, where the unlink would destroy it.
+        struct stat st;
+        if (stat(store_path(s, key).c_str(), &st) == 0) bytes = static_cast<std::uint64_t>(st.st_size);
+        s.keys.erase(key);
+        if (t != s.touched.end()) s.touched.erase(t);
+        s.bytes -= std::min<std::uint64_t>(bytes, s.bytes.load());
+        unlink(store_path(s, key).c_str());
+    }
+    // The directory is flushed outside the lock. If the node dies before it, the
+    // file may come back after a restart: garbage kept, never data lost.
+    fsync_dir(fan_dir(s.dir, key));
+    return DropResult::Dropped;
+}
+
+void store_forget_old(ChunkStore &s, std::chrono::milliseconds grace) {
+    const StoreClock::time_point now = StoreClock::now();
+    std::lock_guard<std::mutex> lock(s.mu);
+    for (auto it = s.touched.begin(); it != s.touched.end();)
+        it = now - it->second >= grace ? s.touched.erase(it) : std::next(it);
+}
+
+std::vector<std::string> store_keys_after(const ChunkStore &s, const std::string &after, std::size_t limit) {
+    std::vector<std::string> out;
+    std::lock_guard<std::mutex> lock(s.mu);
+    for (auto it = after.empty() ? s.keys.begin() : s.keys.upper_bound(after); it != s.keys.end() && out.size() < limit; ++it)
+        out.push_back(*it);
+    return out;
 }

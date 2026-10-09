@@ -181,7 +181,17 @@ std::shared_ptr<void> hold_body(ChunkNode &n) {
 
 bool is_chunk_request(const std::string &line) {
     const std::string verb = line.substr(0, line.find(' '));
-    return verb == "PUT" || verb == "STORE" || verb == "GET" || verb == "HAVE";
+    return verb == "PUT" || verb == "STORE" || verb == "GET" || verb == "HAVE" || verb == "KEYS" || verb == "DROP";
+}
+
+bool same_secret(const std::string &a, const std::string &b) {
+    if (a.size() != b.size()) return false;
+    // Every byte is compared whatever the earlier ones were: OR together the
+    // differences, then look once at the end.
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+    return diff == 0;
 }
 
 std::vector<Peer> distinct_processes(const std::vector<Peer> &from_owner, int rf) {
@@ -252,6 +262,38 @@ ChunkHandled handle_chunk_request(ChunkNode &n, Frame request) {
             bits += store_has(*n.store, w[i]) ? '1' : '0';
         }
         return reply("HAVE " + bits);
+    }
+
+    // A page of what this process holds, and how long its grace is, for the
+    // collector (D-090): it checks the grace against its own settings (D-091).
+    if (verb == "KEYS" && w.size() == 2) {
+        if (w[1] != "-" && !valid_key(w[1])) return reply("ERR key must be 40 lowercase hexadecimal characters");
+        // A listing from the start begins a collection: a good moment to forget write
+        // times that no longer matter, so they do not pile up between collections.
+        if (w[1] == "-") store_forget_old(*n.store, n.gc_grace);
+        const std::vector<std::string> page = store_keys_after(*n.store, w[1] == "-" ? "" : w[1], MAX_HAVE_KEYS);
+        std::string line = "KEYS " + std::to_string(page.size()) + " " + std::to_string(n.gc_grace.count() / 1000);
+        for (const std::string &k : page) line += " " + k;
+        return reply(line);
+    }
+
+    // Drop what the collector found unreferenced -- each only if old enough (D-091),
+    // and only for a caller holding the key (D-092).
+    if (verb == "DROP" && w.size() >= 3 && w.size() <= 2 + static_cast<std::size_t>(MAX_HAVE_KEYS)) {
+        if (n.gc_key.empty()) return reply("ERR deletion is not enabled on this node");
+        if (!same_secret(w[1], n.gc_key)) return reply("ERR wrong collection key");
+        for (std::size_t i = 2; i < w.size(); ++i)
+            if (!valid_key(w[i])) return reply("ERR key must be 40 lowercase hexadecimal characters");
+        std::string bits;
+        std::uint64_t freed = 0;
+        for (std::size_t i = 2; i < w.size(); ++i) {
+            std::uint64_t bytes = 0;
+            const DropResult r = store_drop(*n.store, w[i], n.gc_grace, bytes);
+            if (r == DropResult::Dropped) { n.dropped_chunks.add(); n.dropped_bytes.add(bytes); freed += bytes; }
+            if (r == DropResult::TooYoung) n.kept_young.add();
+            bits += r == DropResult::Dropped ? '1' : '0';
+        }
+        return reply("DROPPED " + bits + " " + std::to_string(freed));
     }
 
     return reply("ERR malformed chunk request");

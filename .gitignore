@@ -15,6 +15,7 @@ CMakeFiles/
 /tracker
 /client
 /node
+/gc
 /lookup
 /sim-hops
 /test-chord
@@ -34,7 +35,9 @@ CMakeFiles/
 /tracker-tsan
 /test-replica-tsan
 /test-obs
+/test-gc
 /test-obs-tsan
+/test-gc-tsan
 
 # ---- Test blobs and generated data: large, uninteresting, and they bloat clones ----
 # Regenerate deterministically with scripts/make-testdata.sh

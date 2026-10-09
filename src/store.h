@@ -4,8 +4,10 @@
 #include "chord.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -43,11 +45,22 @@ bool valid_key(const std::string &key);
 // must be stored under, and what a reader compares against the key it asked for.
 std::string chunk_key(const std::string &bytes);
 
+// The monotonic clock: it never jumps when the wall clock is set, so an age measured
+// with it is real elapsed time (D-091).
+using StoreClock = std::chrono::steady_clock;
+
 struct ChunkStore {
     std::string dir;                        // set once by store_open, then only read
 
-    mutable std::mutex mu;                  // guards `keys`
+    mutable std::mutex mu;                  // guards `keys` and `touched`
     std::set<std::string> keys;             // every key held, sorted
+
+    // When each chunk was last written -- stored, or stored again (D-091). Only
+    // chunks written since this process started are here; any other chunk counts
+    // as written at `opened`, so a restart makes every chunk young. In memory only:
+    // a crash can only make chunks younger, never older.
+    std::map<std::string, StoreClock::time_point> touched;
+    StoreClock::time_point opened;          // set once by store_open
 
     // A number unique within this process, for temporary file names. Atomic so
     // two request threads never draw the same one.
@@ -76,7 +89,9 @@ const char *put_result_name(PutResult r);
 
 // Keep `body` under `key`. Checks, in order: the key, the size, the hash. Then
 // writes <dir>/tmp/<key>.<suffix>, fsyncs it, renames it over the final name and
-// fsyncs the directory (D-045). Safe to call from many threads at once.
+// fsyncs the directory (D-045). Safe to call from many threads at once. A chunk
+// already held is not written again, but counts as written now (D-091): an upload
+// that reuses an old chunk renews it.
 PutResult store_put(ChunkStore &s, const std::string &key, const std::string &body);
 
 enum class GetResult { Found, Missing, BadKey, IoError };
@@ -97,6 +112,28 @@ std::vector<std::string> store_keys_in_arc(const ChunkStore &s, Id from, Id to);
 // Remove a chunk from disk and from the index. Used only by the scrub, for a
 // file that no longer hashes to its name (D-050).
 bool store_remove(ChunkStore &s, const std::string &key);
+
+// ---- Collection (D-090, D-091) -------------------------------------------------
+
+enum class DropResult {
+    Dropped,     // removed from the index and the disk
+    TooYoung,    // written less than `grace` ago: kept
+    NotHeld,     // not in the store
+    BadKey,
+};
+
+// Remove a chunk only if it has not been written for at least `grace`. The age
+// check, the removal from the index and the unlink all happen under `mu`, and a
+// duplicate write's "already held: renew" takes `mu` too -- so no write can land
+// between the check and the delete. `bytes` is set to the size freed.
+DropResult store_drop(ChunkStore &s, const std::string &key, std::chrono::milliseconds grace, std::uint64_t &bytes);
+
+// Forget write times older than `grace`: such a chunk is old either way, so its
+// entry can go, and `touched` holds only what was written within one grace period.
+void store_forget_old(ChunkStore &s, std::chrono::milliseconds grace);
+
+// Up to `limit` keys after `after` ("" for the start), in order: a page of a listing.
+std::vector<std::string> store_keys_after(const ChunkStore &s, const std::string &after, std::size_t limit);
 
 // The path a key is stored at. `key` must already be valid. Exposed for tests,
 // which corrupt files on purpose.

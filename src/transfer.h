@@ -97,6 +97,7 @@ struct Resolved {
     std::vector<ChunkRef> chunks;           // tiling [0, size), each chunk once
     int                   depth = 0;
     std::size_t           manifests = 0;
+    std::vector<std::string> manifest_keys; // every manifest read, the root first (the collector's mark, D-090)
 };
 Resolved resolve_manifest(const std::string &root_key, const GetFn &get, int attempts = CHUNK_ATTEMPTS,
                           int backoff_ms = 250);

@@ -24,6 +24,27 @@ IPv4, no encryption or authentication.
   close. A server answers requests on a connection until the peer closes it.
 - **`SIGPIPE` is ignored** by every program (D-011), so a peer hanging up is an error value, not a
   process exit.
+- **A request id may come first** (D-087): `RID <16 lowercase hexadecimal characters> <request>`. A server
+  takes it off before anything else reads the line, logs it with every line about that request, and puts it on
+  every call it makes for that request (a coordinator's `STORE`s, for example). The body rule looks past it:
+  `RID 6f1c2a9e0b3d4c5a PUT <key> 2 524288` carries a body. A line that starts `RID ` but is not exactly that shape
+  is answered `ERR malformed request id` and the connection closed.
+
+## The metrics port
+
+A process started with `--metrics <port>` answers on that port, on one thread, one connection at a time (D-083):
+
+| Request | Reply |
+|---|---|
+| `GET /metrics HTTP/1.0` or `HTTP/1.1` (a query string is ignored) | `200`, `Content-Type: text/plain; version=0.0.4; charset=utf-8`, the Prometheus text format |
+| another path | `404` |
+| another method | `405` |
+| anything that is not a request line | `400` |
+| a request head over 4 KiB | `431` |
+
+The whole head must arrive within 2 s and the response is sent within 2 s; then the connection is closed (after
+`shutdown` and a brief drain, so that unread request bytes cannot make the kernel reset away the response). There
+is no keep-alive. The metrics are listed in [`observability.md`](observability.md).
 
 ## Identifiers, keys and peers
 
@@ -71,13 +92,17 @@ carry no `TO` prefix (D-047). A node started without `--store` answers every one
 | `STORE <key> <length>` + body | `OK` | D-046 — keep one copy, forward nothing |
 | `GET <key>` | `CHUNK <length>` + body · `MISSING` | D-049 — the reader checks the bytes against the key itself |
 | `HAVE <key> [<key> …]` (1 to 20 keys) | `HAVE <one 0/1 digit per key>` | D-050 — used by repair |
+| `KEYS <after>` (`-` for the start) | `KEYS <n> <grace-seconds> <key> …` — up to 20 keys held after `<after>`, in order; `KEYS 0 <grace>` at the end | D-090 — the collector's listing; the grace lets it check D-091's inequality |
+| `DROP <collection-key> <key> [<key> …]` (1 to 20 keys) | `DROPPED <one 0/1 digit per key> <bytes freed>` — `1`: dropped; `0`: written within the grace, or not held | D-090 – D-092 — each chunk is dropped only if nothing has written it for the node's grace |
 
 `w` is `1`, `2` or `3`. Errors: `ERR key must be 40 lowercase hexadecimal characters`,
 `ERR w must be 1, 2 or 3`, `ERR bytes do not hash to the key`, `ERR malformed chunk request`,
 `ERR malformed body length` and `ERR chunk larger than <n> bytes` (both followed by a close, since
 the stream position is then unknown), `ERR disk error`, and **`ERR busy`** — the process already
 holds 32 chunk bodies in memory (D-052); the announced body is read and discarded so the reply is
-not lost, and the sender treats it as a failed copy and may retry.
+not lost, and the sender treats it as a failed copy and may retry. `DROP` answers
+`ERR deletion is not enabled on this node` without `--gc-key`, and `ERR wrong collection key`; a `DROP` with a bad
+key in it, or more than 20, is refused whole before anything is dropped.
 
 ## Tracker messages
 
@@ -89,12 +114,19 @@ space, no control character).
 
 | Request | Reply |
 |---|---|
-| `REGISTER <name> <manifest-key>` | `OK` — this registration, or an earlier one with the same key, holds the name · `EXISTS <key>` — taken by a different key; nothing changes (D-059) |
+| `REGISTER <name> <manifest-key> [<owner-hash>]` | `OK` — this registration, or an earlier one with the same key and the same owner hash, holds the name · `EXISTS <key>` — taken by a different key, or by the same key under another owner; nothing changes (D-059, D-089) |
+| `UNREGISTER <name> <secret>` | `OK` — deleted · `DENIED` — the secret's SHA-1 is not the name's owner hash, or the name has no owner · `MISSING` (D-089) |
 | `RESOLVE <name>` | `FILE <key>` · `MISSING` |
 | `LIST [<after>]` | `NAMES <n> <name> …` — sorted, names after `<after>`, as many as fit in one line; `NAMES 0` means no more |
+| `ENTRIES [<after>]` | `ENTRIES <n> <name> <key> …` — the same paging, with each name's manifest key: the collector's mark (D-090) |
 | `PING` | `PONG` — any replica, leader or not |
 
-`REGISTER`, `RESOLVE` and `LIST` are answered only by the leader. A registration is answered once its own log entry
+An **owner hash** is the SHA-1 of the uploader's secret, 40 lowercase hexadecimal characters; a **secret** is 32 to 64
+lowercase hexadecimal characters. The leader hashes an `UNREGISTER`'s secret before anything is logged: the Raft log
+holds `UNREGISTER <name> <owner-hash>`, never the secret. A name registered without an owner hash can never be
+deleted.
+
+`REGISTER`, `UNREGISTER`, `RESOLVE`, `LIST` and `ENTRIES` are answered only by the leader. A registration is answered once its own log entry
 is applied (D-075); a read once the leader has confirmed, through a majority, that it still leads (ReadIndex, D-076).
 Any other replica, or a leader that cannot do either in time, answers instead:
 
@@ -120,7 +152,8 @@ APPEND <group> <term> <leader> <prev-index> <prev-term> <commit> <seq> <count> <
 success, the last index the follower now matches; on failure, where the leader should try next. `<seq>` numbers the
 leader's calls for ReadIndex. A body holds at most about 64 KiB of commands; its entries' terms must not fall and
 must not exceed the call's term, and each command must be `NOOP` or `REGISTER <name> <key>`, or the whole call is
-refused (`ERR malformed APPEND`).
+refused (`ERR malformed APPEND`). Since D-089 a command may also be `REGISTER <name> <key> <owner-hash>` or
+`UNREGISTER <name> <owner-hash>`.
 
 ### For harnesses
 
@@ -171,6 +204,10 @@ output file.
 | A request line, or a body, arriving at a node or the tracker | the **whole** line or body within 10 s, enforced with `poll` on the time remaining | `--read-deadline <ms>` | D-061 |
 | Every call one tracker replica makes to another | E (the election timeout base, 150 ms by default) on connect, send and receive | `tracker --election <ms>` | D-073 |
 | A client request waiting at the tracker's leader for its commit or read confirmation | 2 s, then `UNAVAILABLE` | — | D-075, D-076 |
+| A request head on a metrics port, and its response | 2 s each | `HTTP_DEADLINE_MS` | D-083 |
+| An upload, from the client's start to its registration | 1 h, or the name is not registered | `client --upload-limit <s>` | D-091 |
+| A chunk's age before a node will drop it | 2 h since it was last written, or since the node started | `node --gc-grace <s>` | D-091 |
+| The collector's last `DROP`, after it began listing names | 30 min | `gc --deadline <s>` | D-091 |
 | Each exchange a client makes with one tracker replica | 3 s; 10 s overall across replicas and retries | `client --tracker-wait <ms>` | D-081 |
 
 The send and receive timeouts are set **before** `connect`, so a host that never answers the
