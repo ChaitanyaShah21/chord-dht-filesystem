@@ -10,7 +10,7 @@ measurement.
 > **Status:** every entry is measured — §1, the single-peer transfer baseline; §2, lookup hop count
 > versus ring size; §4, time to reconverge after nodes are killed, and §4a, the 256-node false
 > evictions explained; §5, parallel chunked transfer, deduplication and the tracker; §6, chunk
-> placement, replication and repair. §1 was taken deliberately *before* any optimisation, because a
+> placement, replication and repair; §7, the replicated tracker. §1 was taken deliberately *before* any optimisation, because a
 > "before" number cannot be recovered afterwards. (There is no §3; section numbers are kept stable
 > because other documents cite them.)
 
@@ -57,6 +57,8 @@ The headline results. Each links to its full entry below.
 |---|---|---|---|---|
 | *Single-peer transfer baseline, 100 MB* | **71.2 MB/s** (median of 3) | — this **is** the before | `e381179` | §1 |
 | *Ring reconverges after node failure* | **0.63 s median** to every successor and predecessor correct, one of 64 nodes killed, 1 s stabilisation period (9 of 10 runs under 1 s) | 8 adjacent deaths, the whole successor list: 1.49 s, worst 4.14 s → **0.36 s**, worst 0.81 s (D-043) | `b171554` (before: `5b6830d`) | §4 |
+| *Tracker failover, three Raft replicas* | **219 ms median** to a new leader after the leader is killed (164–407 ms, 20 kills, E = 150 ms); the client's first acknowledged write **231 ms** after the kill | the single tracker: no failover — down until restarted | `0d5c1c9` | §7 |
+| *Tracker writes, three Raft replicas* | **131 registrations/s** at one client (p50 6.9 ms), **264/s** at 16 | the single tracker re-run at its own commit (`629e87e`): 269/s (p50 3.4 ms) and 276/s | `e3d6c65` | §7 |
 | *Parallel chunked transfer, 100 MB* | **378 MB/s** download (median of 5; 16 processes × 8, 8 workers, 512 KiB chunks, every chunk hash-verified) — 293 MB/s including the final flush; uploads 77 MB/s with W = 2 flushed | **70.1 MB/s**, the single-seeder system re-run the same day at `e381179` (5.4×); and 103 MB/s for the same ring at 1 worker (3.7×, parallelism alone) | `2e7c445` | §5 |
 | *Deduplication* | identical content: 100 % shared; an in-place edit: 199 of 201 chunks shared; **20 real commits of this repository as tar files: 1 of 97** | — measured against predictions stated first | `2e7c445` | §5 |
 | *Virtual nodes even out storage* | busiest of 64 processes stores **1.52×** the mean with 8 virtual nodes per process; CV of copies per process **0.20** (median of 20 address sets; the real ring matched the simulation file for file) | **2.80×**, CV 0.57 with one member per process | `7d99fc0` | §6 |
@@ -729,6 +731,141 @@ would let repair use many disks at once; this host cannot show that, and no clai
 - **Repair counts processes whose repair thread sent anything during the whole run**, not per chunk.
 - **The coordinator-crash test races a kill against copies already in flight on loopback**; with real network latency
   the copies would land later and a W = 1 crash would leave a longer single-copy window.
+
+---
+
+### §7 · The replicated tracker: elections, failover, writes — **MEASURED 9 Oct 2026**
+
+**What it answers.** The tracker became a Raft group (D-069 – D-082). This measures what that bought and what it cost:
+how long the group has no leader after its leader dies, against the election-timeout base E, and how long a client is
+without an acknowledged write; whether a healthy group under load ever elects for no reason (the rule that chooses E,
+D-073); and what a registration and a resolve cost through one, three and five replicas against the single tracker it
+replaced, with the logs on disk and on `tmpfs`, where a flush costs nothing (D-082).
+
+![Election time and client unavailability after a leader kill, against E](docs/figures/raft-election.png)
+
+**Method.** `scripts/bench-raft.py`, harness committed, then `make clean && make` on a clean tree. Every repetition
+starts fresh `tracker` processes in fresh directories, on this one host over loopback. Times come from the harness's
+monotonic clock around real requests, each on a fresh connection; replicas are asked only for their role and term
+(`STATUS`), to find the leader and count elections. The harness's client follows the real client's rules (D-081):
+redirects at once, the next replica on `UNAVAILABLE`, a refusal or a timeout, a 100 ms pause after a round with no
+answer, 3 s per exchange.
+
+- **The rule for E** (at `6e490bc`; `--spurious 150,300,600,1200 --runs 3 --seconds 30 --clients 16`): a three-replica
+  group under 16 writers registering back to back, nothing injected; every replica's role and term polled every 50 ms.
+  A leader change is any new term with a leader.
+- **Election and unavailability** (at `0d5c1c9`; `--election 150,300,600,1200 --kills 20`): a three-replica group; one
+  writer registers distinct names back to back; every 0.5 s the leader is found and `SIGKILL`ed, then restarted, and the
+  group allowed to converge before the next kill. *Election time*: from the kill to a surviving replica reporting itself
+  leader in a higher term (polled every 5 ms, so up to 5 ms late). *Unavailability*: from the kill to the writer's first
+  registration acknowledged by a surviving replica. 20 kills per E. (A first run at `6e490bc` ended the unavailability
+  window at any acknowledgement, and the dying leader's last reply sometimes landed just after the kill — minimums of
+  0 ms; the harness was corrected and the sweep re-run. Its election times agreed: medians 225 / 430 / 775 / 1512 ms.)
+- **Writes and reads** (at `e3d6c65`, whose tracker sources are those of `0d5c1c9`; `--writes --reps 5 --clients 16 --default-election 150`; 1,600 registrations a
+  run, then 500 resolves of existing names by one client): the single tracker built at its own commit (`629e87e`, the
+  last before Raft) and groups of 1, 3 and 5; logs on the WSL ext4 disk and on `/dev/shm` (`tmpfs`); 1 client and 16.
+  Throughput is acknowledged registrations over wall time; latency is per request as the client sees it.
+- **Replay** (at `e3d6c65`; `--replay 10000,100000`): a log of N registrations written directly in the file's format;
+  from starting a group of one to its answer `FILE` for the last name — replay, election, commit and apply included.
+
+#### The rule for E (decision D-073)
+
+| E | Leader changes in 3 × 30 s, 16 writers, no failure | Registrations a second during the runs (median) |
+|---:|---:|---:|
+| 150 ms | **0** | 252 |
+| 300 ms | 0 | 257 |
+| 600 ms | 0 | 255 |
+| 1200 ms | 0 | 256 |
+
+**The rule chose E = 150 ms**, the smallest candidate, replacing the 300 ms estimate (`136cc01`). The load saturated the
+leader: about 255 registrations a second is its flush ceiling (below). What the rule cannot see: this host's
+multi-second machine-wide stalls (§4a) happened at 256 node processes, not under this load; a stall longer than 2E
+(300 ms) would cause an election, and safety does not depend on it not happening.
+
+#### Election and failover
+
+| E | **New leader after a leader kill**: median (min – max) | Split votes (term +2 or more) | **Client's first acknowledged write after the kill**: median (min – max) |
+|---:|---|---:|---|
+| **150 ms** | **219 ms (164 – 407)** | 2 of 20 | **231 ms (217 – 426)** |
+| 300 ms | 435 ms (334 – 744) | 2 of 20 | 529 ms (422 – 844) |
+| 600 ms | 783 ms (639 – 1120) | 0 of 20 | 843 ms (736 – 1152) |
+| 1200 ms | 1559 ms (1275 – 2174) | 0 of 20 | 1656 ms (1348 – 2283) |
+
+With 20 kills a "p99" is the maximum, so the maximum is what is reported. **Election time is 1.3 – 1.45 E**, close to
+what the mechanism predicts (`ESTIMATE`, arithmetic): each survivor's timer was drawn from [E, 2E) at its last
+heartbeat; the earlier of two such draws is on average E + E/3; the kill comes on average E/10 after the last
+heartbeat (heartbeats every E/5); so about 1.23 E, plus the vote round (a round trip and two flushes, a few
+milliseconds), up to 5 ms of ticker granularity and up to 5 ms of polling — relatively more at small E. **The floor is
+E**: no follower can stand sooner. **Split votes** — both survivors standing in the same term — came in 6 of 40 kills
+at E = 150 ms and 6 of 40 at 300 ms across both runs, 0 of 40 at 600 and 1 of 40 at 1200; each costs another timeout,
+which is the long tail. Both survivors' timers restart at the same heartbeat, so a split needs them to fire within one
+vote round of each other, more likely when that round is a larger fraction of E. The client sees the election plus,
+at most, one 100 ms pause and a redirect: **231 ms** median at the default.
+
+#### Writes and reads (decision D-082)
+
+![Registrations per second and latency: the single tracker against groups of 1, 3 and 5](docs/figures/raft-writes.png)
+
+| Medians of 5 | 1 client: registrations/s | p50 · p99 | 16 clients: registrations/s | Resolve p50 (1 client) |
+|---|---:|---|---:|---:|
+| the single tracker, before (`629e87e`) | 269 | 3.39 · 8.4 ms | 276 | 0.34 ms |
+| a group of 1 | 275 | 3.39 · 8.3 ms | 282 | 0.37 ms |
+| **a group of 3** | **131** | **6.87** · 15.8 ms | **264** | **0.84 ms** |
+| a group of 5 | 118 | 7.95 · 16.1 ms | 256 | 0.98 ms |
+
+Logs on `tmpfs`, where a flush costs nothing:
+
+| Medians of 5 | 1 client: registrations/s | p50 | 16 clients |
+|---|---:|---:|---:|
+| the single tracker, before | 2,325 | 0.41 ms | 1,755 |
+| a group of 1 | 2,130 | 0.44 ms | 1,725 |
+| a group of 3 | 1,000 | 0.95 ms | 1,691 |
+| a group of 5 | 866 | 1.09 ms | 1,602 |
+
+Spread across the five repetitions (slowest to fastest, as a share of the median): the single tracker on disk varies
+most — 16 % at one client, 29 % at 16 — because its rate is one flush at a time and the WSL disk's flush time
+wanders; every figure above is a median, and the rule that sent these points to five repetitions (more than 10 %
+spread at three) is the reason there are five.
+
+- **One code path costs almost nothing.** A group of one — the single tracker since D-080 — matches the single tracker
+  it replaced on disk (275 against 269 a second) and is 8 % slower on `tmpfs`, where the Raft bookkeeping is no longer
+  hidden behind the flush.
+- **At one client, three replicas halve the rate**: a write waits for the leader's flush, then a follower's — two
+  flushes in series — and 6.9 ms against 3.4.
+  On `tmpfs` the same write takes 0.95 ms, so **about 86 % of a replicated
+  write's time on this disk is flushing**; the network round trip and the second process are the rest.
+- **Under 16 clients the ceiling is the leader's flush**, for the group as for the single tracker:
+  264 against 276 registrations a second.
+  Followers flush once per `APPEND`, and an `APPEND` carries everything pending, so they keep up; the leader flushes
+  each proposal under the lock (D-072). **Group commit** would lift exactly this ceiling, and **flushing in parallel with
+  replicating** (Raft thesis §10.2.1) would take one flush off the one-client latency. Neither is built: a registration
+  is one per uploaded file (D-082).
+- **Five replicas cost little more than three** here: the leader waits for the second-fastest of four followers instead
+  of the faster of two.
+- **Reads cost a round trip**: a ReadIndex resolve is 0.84 ms against
+  0.34 ms — a heartbeat round to a majority, no flush.
+- **With 16 clients on `tmpfs` every configuration lands near the same rate, below the one-client single tracker**: that
+  ceiling is the harness's Python clients, not the replicas, and no claim is made for it.
+
+#### Replay (decision D-078)
+
+| Names in the log | Log size | Bytes per name | From start to the last name answered | Resident memory |
+|---:|---:|---:|---:|---:|
+| 10,000 | 898,940 B | 89.9 | 0.039 s | 9.8 MiB |
+| 100,000 | 9,088,942 B | 90.9 | 0.324 s | 37.9 MiB |
+
+About 91 bytes of log per name, against 77 for the single tracker's records (`ENTRY <index> <term>` adds its numbers),
+and start-up proportional to the history, as D-078 accepted.
+
+**Limits of these numbers.**
+- **One host.** Every replica's flush lands on one virtual disk, and the round trips are loopback's. On separate
+  machines a replicated write would cost a network round trip more and the flushes would overlap on separate disks.
+- **WSL's disk.** `fdatasync` on the ext4 image inside WSL takes about 3 ms (`ESTIMATE`: a group of one's
+  one-client p50, which is little more than one flush); on a laptop SSD natively, or on a server's
+  write-back cached disk, it is very different, and the flush share with it.
+- **The harness is Python**; at 16 clients on `tmpfs` it is the bottleneck.
+- **Kills, not partitions.** Failover is measured for a dead leader. A frozen or partitioned leader is tested for
+  correctness (`e2e-raft.sh`, `test-replica`), not timed.
 
 ---
 

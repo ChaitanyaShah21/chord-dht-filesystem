@@ -523,3 +523,64 @@ insertion cost about 10 GB × 3 replicas.
 **Would do:** content-defined chunking (FastCDC), which places boundaries by content so they resynchronise after an
 insertion; it changes what a chunk is and would need its own before/after. **Confidence:** `MEASURED`.
 
+---
+
+### 9 Oct 2026 — a replicated registration waits for two flushes, and the leader flushes one proposal at a time
+
+**Observed:** `MEASURED` at `e3d6c65`. Three replicas: 131 registrations a second at one
+client (p50 6.87 ms) against 269 for the single
+tracker; on `tmpfs` the same write takes 0.95 ms, so about 86 % of it is
+flushing. Under 16 clients the group reaches 264 a second — the leader's flush rate,
+the same ceiling the single tracker had.
+
+**At 10x:** registrations follow uploads, one per file; 2,500 a second of small uploads would need ten times the
+leader's flush rate. Followers would keep up (one flush per `APPEND`, which batches everything pending); the leader
+would not.
+
+**Would do:** group commit on the leader — one flush for every proposal that arrived during the last — which lifts
+the concurrent ceiling by the batch size; and the leader flushing in parallel with sending (Raft thesis §10.2.1), which
+takes one flush off each write's latency. **Confidence:** `MEASURED` at this scale; the 10x figure is arithmetic.
+
+---
+
+### 9 Oct 2026 — every tracker request goes to the leader, and every read costs a round trip
+
+**Observed:** `MEASURED` at `e3d6c65`. A resolve through three replicas takes 0.84 ms
+against 0.34 ms for the single tracker: a ReadIndex heartbeat round to a
+majority, with no flush. Followers answer nothing but `REDIRECT`.
+
+**At 10x:** all client traffic lands on one replica's cores and one thread per connection (the node's model, D-061),
+and each read adds one call to each follower. Read-heavy load scales with the leader alone.
+
+**Would do:** batch reads — one heartbeat round confirms every read waiting at the leader, which the core already
+allows (a round sent after several reads arrived confirms all of them); or serve found names from followers, correct
+only while names are write-once (D-076 rejected it for that reason); leases only with a clock bound that can be
+defended. **Confidence:** `MEASURED` latency; the scaling is `REASONED`.
+
+---
+
+### 9 Oct 2026 — a fresh connection per Raft call leaves sockets in TIME_WAIT at the sender
+
+**Observed:** `REASONED` from D-071. Heartbeats every E/5 (30 ms at the default) to each follower, plus one `APPEND` per
+round trip under load: about 33 connections a second per follower when idle, a few hundred under load, each leaving a
+socket in `TIME_WAIT` for 60 s at the leader.
+
+**At 10x:** with five replicas and a 10x write rate, tens of thousands of sockets in `TIME_WAIT` at the leader, against
+about 28,000 ephemeral ports per destination — on loopback Linux reuses them (`tcp_tw_reuse`), across machines it would
+not by default.
+
+**Would do:** a persistent connection per peer with a call identifier in each request, which D-071 rejected for
+simplicity at this scale. **Confidence:** `REASONED`; not measured.
+
+---
+
+### 9 Oct 2026 — restart and catch-up replay the whole history
+
+**Observed:** `MEASURED` at `e3d6c65`. A group of one replaying 100,000 registrations answers in
+0.324 s; the log is 90.9 bytes a name. There are no snapshots (D-078).
+
+**At 10x:** a million names: about 9 MB of log per replica and a few seconds' replay (`ESTIMATE`, linear); a new or
+empty follower is caught up through `APPEND` calls of 64 KiB — several hundred entries each — one flush per call.
+
+**Would do:** nothing until deletion exists: names are never removed, so a snapshot would be as large as the log. With
+deletion, snapshots and `InstallSnapshot`. **Confidence:** `MEASURED` replay; the 10x figures are arithmetic.

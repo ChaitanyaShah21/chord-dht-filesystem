@@ -1,0 +1,21 @@
+what,config,n,median,max,min,extra
+election ms,E=150,20,218.8,407.4,164.4,"unavailable median 231 ms, max 426 ms; split votes 2"
+election ms,E=300,20,434.6,744.2,334.0,"unavailable median 529 ms, max 844 ms; split votes 2"
+election ms,E=600,20,783.0,1120.2,638.7,"unavailable median 843 ms, max 1152 ms; split votes 0"
+election ms,E=1200,20,1559.3,2173.8,1275.3,"unavailable median 1656 ms, max 2283 ms; split votes 0"
+registrations/s,"single tracker (before), disk, 1 client(s)",5,268.9,302.2,258.3,latency p50 3.39 ms p99 8.45 ms; resolve p50 0.343 ms
+registrations/s,"group of 1, disk, 1 client(s)",5,275.3,278.8,258.3,latency p50 3.39 ms p99 8.35 ms; resolve p50 0.367 ms
+registrations/s,"group of 3, disk, 1 client(s)",5,131.3,133.8,120.9,latency p50 6.87 ms p99 15.82 ms; resolve p50 0.843 ms
+registrations/s,"group of 5, disk, 1 client(s)",5,118.3,126.2,113.7,latency p50 7.95 ms p99 16.06 ms; resolve p50 0.976 ms
+registrations/s,"single tracker (before), disk, 16 client(s)",5,275.6,349.9,268.8,latency p50 55.46 ms p99 83.57 ms; resolve p50 0.347 ms
+registrations/s,"group of 1, disk, 16 client(s)",5,281.7,299.6,262.2,latency p50 52.70 ms p99 121.25 ms; resolve p50 0.333 ms
+registrations/s,"group of 3, disk, 16 client(s)",5,264.3,274.1,257.6,latency p50 58.74 ms p99 105.67 ms; resolve p50 0.859 ms
+registrations/s,"group of 5, disk, 16 client(s)",5,255.7,264.4,248.8,latency p50 60.49 ms p99 112.82 ms; resolve p50 0.968 ms
+registrations/s,"single tracker (before), tmpfs, 1 client(s)",5,2324.6,2518.1,2242.4,latency p50 0.41 ms p99 0.82 ms; resolve p50 0.307 ms
+registrations/s,"group of 1, tmpfs, 1 client(s)",5,2129.6,2261.9,2030.2,latency p50 0.44 ms p99 1.00 ms; resolve p50 0.347 ms
+registrations/s,"group of 3, tmpfs, 1 client(s)",5,1000.1,1021.5,987.2,latency p50 0.95 ms p99 2.07 ms; resolve p50 0.847 ms
+registrations/s,"group of 5, tmpfs, 1 client(s)",5,866.4,899.9,862.5,latency p50 1.09 ms p99 2.35 ms; resolve p50 1.010 ms
+registrations/s,"single tracker (before), tmpfs, 16 client(s)",5,1755.3,1807.2,1471.0,latency p50 8.09 ms p99 28.39 ms; resolve p50 0.332 ms
+registrations/s,"group of 1, tmpfs, 16 client(s)",5,1724.7,1746.8,1687.7,latency p50 8.15 ms p99 22.30 ms; resolve p50 0.327 ms
+registrations/s,"group of 3, tmpfs, 16 client(s)",5,1690.7,1772.7,1653.3,latency p50 8.21 ms p99 23.04 ms; resolve p50 0.820 ms
+registrations/s,"group of 5, tmpfs, 16 client(s)",5,1601.5,1732.6,1569.2,latency p50 8.65 ms p99 26.60 ms; resolve p50 0.973 ms
