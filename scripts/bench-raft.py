@@ -13,7 +13,7 @@ Modes (any combination; run in this order):
                         SIGKILLed --kills times (default 20), restarted after each. Per
                         kill: the election time (kill -> a surviving replica leads in a
                         higher term, polled every 5 ms) and the client's unavailability
-                        (kill -> the first registration acknowledged after it).
+                        (kill -> the first registration acknowledged by a surviving replica).
   --spurious E[,E...]   D-073's rule: for each E, --runs (default 3) runs of --seconds
                         (default 30) of a three-replica group under saturating write load
                         (--clients, default 16), no failure injected; counts leader changes.
@@ -62,7 +62,7 @@ class GroupClient:
     """The client's leader-finding loop (group.cpp), in Python for the harness."""
 
     def __init__(self, ports, wait=10.0):
-        self.ports, self.wait, self.preferred = ports, wait, 0
+        self.ports, self.wait, self.preferred, self.answered = ports, wait, 0, None
 
     def ask(self, line):
         end = time.monotonic() + self.wait
@@ -81,6 +81,7 @@ class GroupClient:
                         break
                     if port in self.ports:
                         self.preferred = self.ports.index(port)
+                    self.answered = port                   # which replica gave the answer
                     return reply
             time.sleep(min(0.1, max(0.0, end - time.monotonic())))
         return None
@@ -172,7 +173,7 @@ def mode_election(a, summary, label):
         try:
             g.start_all()
             done = threading.Event()
-            acks = []                                # completion times of acknowledged writes
+            acks = []                                # (completion time, port that answered) of acknowledged writes
             lock = threading.Lock()
 
             def writer():
@@ -181,7 +182,7 @@ def mode_election(a, summary, label):
                     name = f"e{e}-{n:06d}"
                     if c.ask(f"REGISTER {name} {key(name)}") == "OK":
                         with lock:
-                            acks.append(time.monotonic())
+                            acks.append((time.monotonic(), c.answered))
                     n += 1
 
             th = threading.Thread(target=writer)
@@ -207,15 +208,18 @@ def mode_election(a, summary, label):
                         break
                     time.sleep(0.005)
                 elect_ms = (new[2] - t0) * 1000 if new else float("nan")
+                # The window ends at the first acknowledgement from a SURVIVING replica: the dying
+                # leader's last reply can arrive just after the kill and is not a recovery.
+                dead_port = g.ports[old]
                 while time.monotonic() - t0 < 30:
                     with lock:
-                        after = [t for t in acks if t > t0]
+                        after = [t for t, p in acks if t > t0 and p != dead_port]
                     if after:
                         break
                     time.sleep(0.005)
                 with lock:
-                    before = [t for t in acks if t <= t0]
-                    after = [t for t in acks if t > t0]
+                    before = [t for t, p in acks if t <= t0]
+                    after = [t for t, p in acks if t > t0 and p != dead_port]
                 unavail_ms = (after[0] - t0) * 1000 if after else float("nan")
                 gap_ms = (after[0] - before[-1]) * 1000 if after and before else float("nan")
                 rows.append({"election": e, "kill": k, "elect_ms": round(elect_ms, 1), "unavailable_ms": round(unavail_ms, 1),
