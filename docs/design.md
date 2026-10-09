@@ -250,18 +250,33 @@ linearizable reads by ReadIndex.
 | **etcd, ZooKeeper or a Raft library** | the no-external-libraries rule; the namespace is small and write-once enough for a tested hand-written core |
 | **Client sessions for retries** | a registration is idempotent already (D-059), so a retry after a leader change is safe without them |
 | **Leader leases for reads** | correct only with bounded clock drift and pauses; this host has stalled for seconds |
-| **Snapshots** | names are never deleted, so a snapshot would be as large as the log |
+| **Snapshots** | names were never deleted, so a snapshot would have been as large as the log (since D-089 names can be deleted, and the log outgrows the state; still not built) |
 | **Membership change (joint consensus)** | not needed for a fixed group; the cost — a lost replica cannot be replaced live — is stated |
 | **Group commit / a parallel leader flush** | measured first: under load the group already matches the single tracker's flush ceiling |
 
 **Accepted cost:** a write waits for two flushes in series; a majority must be up; a returning partitioned replica
 forces one election (no pre-vote).
 
+## Deletion
+
+Built after the MVP (D-089 – D-092, [`deletion.md`](deletion.md)), to the design D-023 set down: a name is deleted by
+the secret its uploader chose, of which the tracker keeps only a hash; a separate collector marks every chunk any
+remaining name reaches and asks each node to drop the rest — each only if nothing has written it for a grace period,
+renewed by every write, so an upload that has stored its chunks but not yet named them cannot lose them.
+
+| Alternative | Why not |
+|---|---|
+| **Reference counts per chunk** | a mutable counter replicated three times; a crash between naming and counting leaks or deletes a live chunk |
+| **A token the tracker issues** | a retried registration would hand it to anyone who knows the name and key |
+| **The Raft leader collects** | the control plane would delete in the data plane |
+| **Upload leases through Raft** | two more consensus writes per upload, and a crashed client's lease needs a timeout anyway |
+
+**Accepted cost:** garbage lives at least the grace (2 h); the collection key travels in cleartext.
+
 ## Deferred, with a design
 
 | Item | Design | Why not now |
 |---|---|---|
-| Deletion ([D-023](../ARCHITECTURE.md#d-023--no-deletion-in-the-mvp-owner-token-unnaming-and-a-mark-and-sweep-collector-designed-for-later)) | owner token returned at upload; mark-and-sweep collector with a grace period | deleting a file's chunks can destroy another file's, and with no access control a plain delete is a vandalism tool |
 | Content-defined chunking | boundaries chosen by a rolling hash (FastCDC) | changes what a chunk is, and every chunk-size comparison with it |
 | Hinted handoff ([D-015](../ARCHITECTURE.md#d-015--rf--3-w--2-r--1-and-w-is-a-runtime-parameter)) | a down replica's copy is written to the next node with a note | `W = 2` was enough under the measured failures |
 | Connection reuse, owner caching | per-node connections; owners cached per arc | per-hop connections give one unambiguous failure signal; the cost is measured, not yet limiting |

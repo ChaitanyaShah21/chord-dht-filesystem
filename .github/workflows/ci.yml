@@ -66,3 +66,7 @@ jobs:
           scripts/e2e-observe.sh
           setarch $(uname -m) -R ./test-obs-tsan
           NODE_CMD="setarch $(uname -m) -R ./node-tsan" TRACKER_CMD="setarch $(uname -m) -R ./tracker-tsan" scripts/e2e-observe.sh
+      - name: Deletion (its checks wait out an 8 s grace), and ThreadSanitizer through the store's drop
+        run: |
+          scripts/e2e-gc.sh
+          setarch $(uname -m) -R ./test-gc-tsan

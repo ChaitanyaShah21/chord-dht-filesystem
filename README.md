@@ -171,7 +171,7 @@ has every alternative considered and what it would have cost.
 | **`OK` after the entry is applied; no client sessions** (D-075) | a write-once registration is idempotent, so a retry after a leader change is safe | sessions to deduplicate what already deduplicates itself |
 | **ReadIndex reads** (D-076) | linearizable with no clock assumption; a round trip, no flush | leases, which a paused leader can outlive |
 | **Check-quorum** (D-077) | a leader cut off from the majority steps down instead of stalling its clients | pre-vote (deferred; costs one election per healed partition) |
-| **No snapshots** (D-078) | names are never overwritten or deleted, so a snapshot would be as large as the log | `InstallSnapshot`, a second replication path that saves almost nothing |
+| **No snapshots** (D-078) | names were written once, so a snapshot would have been as large as the log (deletion, D-089, changes that; still not built) | `InstallSnapshot`, a second replication path that saves almost nothing |
 | **Fixed membership with a fingerprint** (D-079) | a replica started with a different member list is refused, not counted | joint consensus (deferred) |
 | **A one-replica group is the single tracker** (D-080) | one code path, so every existing suite tests the replicated code | keeping the old tracker as a mode |
 | **Every replica's address, then redirects** (D-081) | as the client already finds the ring | followers forwarding requests to the leader |
@@ -221,10 +221,12 @@ chord-dht-filesystem/
 │   ├── metrics.{h,cpp}     # Counters, histograms and gauges, rendered in the Prometheus text format
 │   ├── http.{h,cpp}        # The metrics port: just enough HTTP/1.0, one hardened thread
 │   ├── log.{h,cpp}         # One key=value line per event, written with one system call; request ids
+│   ├── collect.{h,cpp}     # The collector: mark every live tree, walk the ring, sweep each node
 │   ├── sha1.h              # Header-only wrapper over OpenSSL SHA1(), hex-encoded
 │   ├── node.cpp            # `node`: a ring process -- members (virtual nodes), a chunk store, maintenance and repair
 │   ├── tracker.cpp         # `tracker`: one replica of the namespace's Raft group (alone: the single tracker)
-│   ├── client.cpp          # `client`: put, get, ls, info, resolve -- files through the ring, names through the tracker
+│   ├── client.cpp          # `client`: put, get, ls, info, resolve, delete -- files through the ring, names through the tracker
+│   ├── gc_main.cpp         # `gc`: one collection of the chunks no name uses any more
 │   ├── chunk_main.cpp      # `chunk`: put and get single chunks through a ring
 │   ├── lookup_main.cpp     # `lookup`: one lookup per identifier on stdin; prints owner, hops and path
 │   ├── sim_hops.cpp        # `sim-hops`: the same routing code and loop with the whole ring in one process
@@ -326,12 +328,13 @@ runs once the repository is pushed, and no badge is shown until it has passed.
   group runs — membership change is not built — and losing a majority stops registration and resolution
   (downloads by manifest key still work). Pre-vote is not built, so a replica returning from a partition
   forces one election.
-- **Files cannot be deleted, and storage only grows.** Deleting a file's chunks could destroy another
-  file that shares them, and with no access control a delete command would let anyone remove anyone's
-  file. An owner-token and mark-and-sweep design exists (D-023); it is not built.
+- **Deleting is two steps, and garbage lives at least two hours.** A name is deleted at once by its uploader's token;
+  its chunks are freed only by a `gc` run, only once no remaining file uses them and nothing has written them for the
+  grace period. A lost token means the name can never be deleted, and a name pointing at a manifest that does not
+  exist stops every collection until its owner deletes it. The collection key travels in cleartext.
 - **No authentication or encryption.** Any process that can reach a node can join the ring, register a
-  name, or send `ERR orphaned` on a member's behalf. Names are written once, so a mistaken upload
-  holds its name.
+  name, or send `ERR orphaned` on a member's behalf. A name is written once per owner: a mistaken upload
+  holds its name until its token deletes it.
 - **One thread per connection**, bounded in time by the read deadline but not in number; there are no
   per-source limits. An event loop is the known fix.
 - **At 256 nodes on one 8-core machine, live nodes were wrongly evicted in 3 of 55 runs**, each during a
