@@ -53,6 +53,7 @@ downloads*/
 
 # ---- Benchmark raw output: the summary belongs in BENCHMARKS.md, the raw dumps do not ----
 bench/raw/
+bench/work-raft/
 *.csv.gz
 
 # ---- Keep the figures. They are the Results section. ----

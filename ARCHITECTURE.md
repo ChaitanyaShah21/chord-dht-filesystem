@@ -6,8 +6,9 @@ the alternatives it rejected, and the evidence that has since confirmed or contr
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
 
-> **State as of 8 Oct 2026.** Files are cut into content-addressed chunks stored three times on a
-> Chord ring, and a small tracker maps names to manifest keys. Everything in the current-state
+> **State as of 9 Oct 2026.** Files are cut into content-addressed chunks stored three times on a
+> Chord ring, and a small tracker — a Raft group of three replicas — maps names to manifest keys.
+> Everything in the current-state
 > sections below is built, tested and measured ([`BENCHMARKS.md`](BENCHMARKS.md)). The coursework
 > system this repository began as — a tracker with users, groups and seeder lists, and peers serving
 > pieces to each other — was retired in Phase 5 (D-060); it is described in the decisions that
@@ -21,15 +22,16 @@ README's design rationales and [`docs/design.md`](docs/design.md) summarise it; 
 Distributed file storage. A file is cut into 512 KiB chunks, each named by the SHA-1 of its own
 bytes and stored on the first three distinct processes clockwise from that name on a Chord ring. A
 **manifest** — the list of a file's chunk names and sizes — is itself a chunk in the ring. A small
-**tracker** holds only `name → manifest key`. A client asks the tracker for one key, then routes to
+**tracker** holds only `name → manifest key`, replicated by Raft across three replicas so that it survives the loss
+of any one. A client asks the tracker for one key, then routes to
 every chunk itself in O(log N) hops, fetches the chunks in parallel, verifies each against the name
 it asked for, and assembles the file under a temporary name that is renamed into place only when it
 is complete.
 
 **Where it came from:** a BitTorrent-style file sharer — a tracker that knew which peers held which
 files, and peers that served pieces to each other. The decisions in the log below turned it into
-storage one at a time; D-022 records the shift and what it cost. **Where it is going:** the tracker is
-the single point of failure that remains; replicating it with Raft is the planned next step.
+storage one at a time; D-022 records the shift and what it cost. The tracker, the last single point of
+failure, became a Raft group in Phase 7 (D-069 – D-082; [`docs/consensus.md`](docs/consensus.md)).
 
 **Scope boundary — what it deliberately does not do:**
 
@@ -62,8 +64,13 @@ as first drawn, before any of it was built, is kept further down as a historical
 flowchart TB
     C["<b>client</b><br/>put / get · workers pull chunk numbers from one counter (D-056)<br/>verifies every chunk · part file, fsync, rename (D-055)"]
 
-    subgraph control["CONTROL PLANE"]
-        T["<b>tracker</b><br/>name → manifest key, nothing else (D-058)<br/>effect log, flushed before every OK"]
+    subgraph control["CONTROL PLANE — a Raft group (D-069 – D-082)"]
+        direction LR
+        T["<b>tracker replica · leader</b><br/>name → manifest key, nothing else (D-058)<br/>answers after its entry is applied (D-075)"]
+        T2["<b>replica · follower</b><br/>log flushed before every reply (D-074)"]
+        T3["<b>replica · follower</b><br/>redirects clients to the leader"]
+        T -- "APPEND entries · heartbeats" --> T2
+        T -- "APPEND" --> T3
     end
 
     subgraph ring["DATA PLANE — node processes, 8 ring members each (D-047, D-051)"]
@@ -93,9 +100,9 @@ a user.
 
 | Component | Code | Responsibility | Owns | Talks to |
 |---|---|---|---|---|
-| `tracker` | `src/tracker.cpp`, `src/names.cpp` | The namespace: `REGISTER`, `RESOLVE`, `LIST`, `PING` (D-058) | the `name → key` map and its log, `names_<port>.log` | clients, one detached thread per connection |
+| `tracker` | `src/tracker.cpp`; `replica.cpp`, `raft.cpp`, `raft_log.cpp`, `raft_wire.cpp`, `names.cpp` | One replica of the namespace's Raft group: `REGISTER`, `RESOLVE`, `LIST`, `PING` for clients (D-058); `VOTE`, `APPEND` between replicas (D-071); a group of one is the single tracker (D-080) | its term, vote and log, `raft_<port>.log`; the `name → key` map applied from it | clients and the other replicas, one detached thread per connection; a ticker; a sender per peer |
 | `node` | `src/node.cpp`; `stabilize.cpp`, `chunk.cpp`, `repair.cpp`, `store.cpp` | One process: several ring members, their routing state and maintenance; a chunk store; coordinating writes; repair | each member's successor list, fingers, predecessor; the store's files and index | other nodes and clients, one detached thread per connection; a maintenance thread and a repair thread |
-| `client` | `src/client.cpp`; `transfer.cpp` | Upload and download of whole files; names through the tracker | nothing persistent; during a transfer, one chunk per worker and the part file | the tracker, and ring nodes over a fresh connection per exchange |
+| `client` | `src/client.cpp`; `transfer.cpp`, `group.cpp` | Upload and download of whole files; names through the tracker group's leader, found by redirects (D-081) | nothing persistent; during a transfer, one chunk per worker and the part file | the tracker replicas, and ring nodes, over a fresh connection per exchange |
 | `chunk`, `lookup` | `src/chunk_main.cpp`, `src/lookup_main.cpp` | Tools: one chunk, or one lookup, through the ring | nothing | ring nodes |
 | `sim-hops`, `sim-balance` | `src/sim_hops.cpp`, `src/sim_balance.cpp` | Benchmark replays: the same routing (D-027) and placement (D-051) code with the ring in one process | nothing | — |
 | framing | `src/net.cpp` | The one framing layer: lines, bodies, connect deadline, server read deadline (D-010, D-044, D-025, D-061) | nothing | — |
@@ -114,26 +121,29 @@ coursework system, where all but I1 were violated; they are restated for the sys
 |---|---|---|---|---|
 | I1 | A chunk written to a file hashes to the key its manifest names | `get_chunk` hashes every chunk it accepts (D-049); its length is checked against the manifest (D-055) | `test-chunk`, `test-transfer`, `e2e-transfer.sh` (a corrupt copy) | ✓ |
 | I2 | **A failed download leaves no file behind** | the part file is the only file written; it is renamed only when complete, and deleted on failure (D-055) | `test-transfer`, `e2e-transfer.sh` | ✓ (was ✗, R2b) |
-| I3 | **Tracker state after restart equals state before restart** | the log is flushed before `OK`; replay applies the same function the live path does (D-009, D-058) | `test-names`, `e2e-persistence.sh` | ✓ (was ✗, R1) |
+| I3 | **Tracker state after restart equals state before restart** | every step's term, vote and entries are flushed before anything is sent; replay rebuilds the log, and committed entries are applied through the one apply function (D-009, D-074, D-080) | `test-raft`, `e2e-persistence.sh`, `e2e-raft.sh` | ✓ (was ✗, R1) |
 | I4 | A node serves only chunks, by a key validated before any path is built | `valid_key` before every path (D-045); there is no other way to name a file | `test-chunk`, `e2e-chunk.sh` (traversal keys) | ✓ (was ✗, D3) |
 | I5 | Malformed input from any peer cannot terminate a process | strict parsers that return errors (no throwing conversions on peer input); `SIGPIPE` ignored (D-011) | `test-lookup`, `test-chunk`, `test-transfer`, `test-names`, `e2e-framing.sh` | ✓ (was ✗, D4) |
 | I6 | Every reply read is the reply to the request just sent | one exchange per fresh connection everywhere (D-024); no connection is shared between threads | by construction | ✓ (was ✗, D2) |
 | I7 | **A routing identifier decides which *node*; it never decides which *object*.** The chunk store is keyed by the full 160-bit hash | D-019 — truncation is applied to placement only; the store (D-045) names every file by the full 40-character key, validated before any path is built | `test-chunk` (keys, store), `e2e-chunk.sh` | ✓ |
 | I8 | **"Am I alone in the ring?" is answered by comparing *addresses*, never identifiers alone** — because `(n, n]` evaluates to the whole ring, so `successor.id == my_id` silently means "I own everything". With virtual nodes (D-047) a ring member is an address *and* an identifier, and a process is an address | D-019, D-047 — `same_node` compares address and identifier, `same_process` the address | `test-stabilize`, `test-chunk` (siblings) | ✓ |
 | I9 | **A name never points at a file that is not all there** | the client registers a name only after every chunk and manifest is stored (D-017, D-058) | `e2e-transfer.sh` (a failed upload leaves its name unregistered) | ✓ |
+| I10 | **At most one tracker leader per term, and no two replicas apply different entries at one index** | one vote per term, flushed before it is sent; votes only for logs at least as up to date; the commit rule counts only the leader's own term (D-074, Figure 8) | `test-raft`: checked after every step of seeded histories with loss, duplication, reordering, partitions and crashes | ✓ |
+| I11 | **An acknowledged registration survives the loss of any minority of tracker replicas, and every answer is linearizable** | `OK` only after the request's own entry is committed by a majority and applied (D-075); reads by ReadIndex (D-076) | `test-raft` (a linearizability checker per history), `test-replica`, `e2e-raft.sh` (a writer through a leader kill) | ✓ |
 
 ---
 
 ## Concurrency model
 
-### Tracker
+### Tracker replica
 
 | Shared state | Protected by | Held for how long | Why |
 |---|---|---|---|
-| the `name → key` map, the log descriptor, `log_broken` | `Namespace::mu` — one mutex | one request; for a new registration that includes the append and the `fdatasync` | The log's order must be the map's order, and `OK` must follow the flush, so the append happens under the same lock. The cost is that registrations are serialised at the disk's flush rate (D-058); group commit would lift it |
+| the Raft core (term, vote, log, commit index, each peer's progress), the `name → key` map, waiting requests, each peer's pending call | `Replica::mu_` — one mutex (D-072) | one call into the core, **including its flush**; never a network call | No thread can see, and no reply can carry, state that is not yet durable. The cost: while a flush runs nothing else on that replica proceeds, and the leader's proposals are serialised at the flush rate (D-082) |
 
-**Threads:** one `accept` loop and one detached thread per connection, each ending when its peer
-closes, a send fails, or the next request line misses the read deadline (D-061).
+**Threads:** one `accept` loop and one detached thread per connection (a client's request waits on a
+condition variable until its entry is applied or its read confirmed, at most 2 s); a ticker every 5 ms
+(elections, heartbeats, check-quorum); one sender per peer, which makes its calls with the lock released.
 
 ### Node
 
@@ -167,14 +177,17 @@ acknowledged, so a kill loses nothing acknowledged. Worker threads are joined.
 | A node is frozen | two timed-out calls (D-035) | about two periods | as above, once evicted | §4, §6 |
 | A chunk copy rots on disk | the reader's hash check; the scrub | at read time; within a full scan | read from the next replica; the copy replaced (D-050) | `e2e-chunk.sh`, `e2e-transfer.sh` |
 | A chunk is lost from every replica | every replica fails the read | at read time | none: the download fails and writes nothing (D-055) | `e2e-transfer.sh` |
-| The tracker dies | the client's connection is refused | immediate | none until it restarts; a download by manifest key still works (D-057) | `e2e-transfer.sh` |
-| The tracker restarts | — | — | the log is replayed; torn and damaged records are skipped and reported (D-058) | `e2e-persistence.sh` |
+| The tracker leader dies or freezes | followers stop hearing heartbeats | an election timeout, E to 2E | a follower with an up-to-date log is elected; clients are redirected to it (D-073, D-081) | `BENCHMARKS.md` §7; `e2e-raft.sh` |
+| A tracker leader is cut off from the majority | no replies from a majority | 2E (check-quorum, D-077) | it steps down; it could never commit or answer a read meanwhile | `e2e-raft.sh`, `test-replica` |
+| A majority of tracker replicas is down | — | — | none until a majority is back: requests answer `UNAVAILABLE` and the client fails, never acknowledges; a download by manifest key still works (D-057) | `e2e-raft.sh`, `e2e-transfer.sh` |
+| A tracker replica restarts | — | — | its log is replayed; a crash's torn tail is cut off and reported, damage further back refuses to start (D-074); it catches up from the leader | `e2e-persistence.sh`, `e2e-raft.sh` |
 | A client dies mid-download | — | — | a `.part-` file is left (SIGKILL) or removed (SIGINT, SIGTERM) | `e2e-transfer.sh` |
 | A peer sends slowly or not at all | the server's read deadline (D-061) | the deadline (10 s by default) | the connection is closed; its body slot and thread freed | `e2e-deadline.sh` |
 
-**What this system does not survive:** the tracker's loss (a single point of failure — replicating it with
-Raft is the planned fix, not built); losing every replica of a chunk at once; and, on one host, a machine-wide stall longer than
-the failure detector's patience (`BENCHMARKS.md` §4a).
+**What this system does not survive:** the loss of a majority of tracker replicas (names cannot be registered or
+resolved until it is back); losing every replica of a chunk at once; and, on one host, a machine-wide stall longer than
+the failure detector's patience (`BENCHMARKS.md` §4a). A tracker replica that loses its disk cannot be replaced
+safely while the group runs: membership change is not built (D-079).
 
 ---
 
@@ -194,15 +207,15 @@ possible, so each plane is described separately.
   loses every node it knew refuses to route rather than claim the whole ring (D-040): it cannot tell
   "everyone else died" from "I am cut off", and claiming the ring under a partition would build a
   second, disjoint ring.
-- **Control plane — one tracker.** One process holds the namespace, so there is nothing to be
-  consistent *between*, and it is not available under its own failure. The namespace is write-once
-  (D-059) and its log is a list of effects (D-058), which is what a Raft group would replicate. Not
-  built.
+- **Control plane — consistency over availability, by majority.** The namespace is replicated by Raft
+  (D-069 – D-082): every registration and every read is linearizable, and the group serves while a majority of its
+  replicas is up and connected. A minority — a cut-off leader included — refuses rather than answer: it cannot
+  commit, and it cannot confirm a read (D-076, D-077).
 
 **To move it:** `W` is per request (1, 2 or 3), so the data plane's durability/availability point is a
 measured curve rather than a constant (D-046, D-053). Hinted handoff would raise write availability
-without lowering `W` (named in D-015, not built). A Raft group behind the tracker would keep the
-namespace available while a majority of its replicas is up, and linearizable.
+without lowering `W` (named in D-015, not built). On the control plane the knob is the group's size: five replicas
+would survive two failures (D-069).
 
 ---
 
@@ -319,7 +332,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 *Not the current system — see "The system as it exists today" above.* This diagram was drawn in
 Phase 1, after the first forks were resolved and before any Chord code existed: a diagram made
 earlier would have decided them by implication. It is kept as the record of what was designed.
-Since then: the Raft group behind the tracker was not built; each node is a process with 8 ring
+Since then: the Raft group behind the tracker was built in Phase 7 (D-069 – D-082); each node is a process with 8 ring
 members (D-047) and a chunk's copies are on distinct processes (D-048); stabilisation asks
 `NEIGHBOURS` and runs to its fixed point (D-031, D-043); finger repair fills every finger one lookup
 covers (D-034); and the tracker holds names written once, with an effect log (D-058, D-059).
@@ -375,8 +388,8 @@ finger per round), and `check_predecessor`. Failure detection rides on these plu
 call to the successor from any code path (D-013). Nothing is event-driven; everything is
 re-derived, so the ring converges from any state.
 
-**What this diagram deliberately does not show**, because they do not exist yet: the Raft group
-behind the tracker (planned, not built). Since Phase 4 each node in the drawing is a
+**What this diagram deliberately does not show**, because it did not exist yet: the Raft group
+behind the tracker (built in Phase 7). Since Phase 4 each node in the drawing is a
 process with several ring members — virtual nodes, D-047 — and a chunk's three copies are on three different
 processes (D-048).
 

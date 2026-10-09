@@ -14,7 +14,7 @@ IPv4, no encryption or authentication.
   disconnected rather than buffered.
 - **Words are separated by single spaces.** A leading, trailing or doubled space produces an empty
   word, so the message fails its word count instead of being quietly accepted.
-- **Bodies.** A line whose first word is `PUT`, `STORE` or `CHUNK` is followed by a binary body,
+- **Bodies.** A line whose first word is `PUT`, `STORE`, `CHUNK` or `APPEND` is followed by a binary body,
   and its **last word is the body's length in bytes**: digits only, no sign, no leading zero (`0`
   alone is an empty body), at most 7 digits, at most 512 KiB (`MAX_BODY`, D-044). The length is
   checked before any memory is allocated. The line reader reads one byte per call and never past
@@ -81,33 +81,68 @@ not lost, and the sender treats it as a failed copy and may retry.
 
 ## Tracker messages
 
-The tracker holds `name → manifest key` and nothing else (D-058). A **name** is 1 to 200 bytes of
-visible ASCII (no space, no control character).
+The tracker is a Raft group of replicas (D-069 – D-082; [`consensus.md`](consensus.md)); a single tracker is a group
+of one. It holds `name → manifest key` and nothing else (D-058). A **name** is 1 to 200 bytes of visible ASCII (no
+space, no control character).
+
+### From clients
 
 | Request | Reply |
 |---|---|
-| `REGISTER <name> <manifest-key>` | `OK` — recorded and flushed to the log, or already registered with this key · `EXISTS <key>` — taken by a different key; nothing changes (D-059) |
+| `REGISTER <name> <manifest-key>` | `OK` — this registration, or an earlier one with the same key, holds the name · `EXISTS <key>` — taken by a different key; nothing changes (D-059) |
 | `RESOLVE <name>` | `FILE <key>` · `MISSING` |
 | `LIST [<after>]` | `NAMES <n> <name> …` — sorted, names after `<after>`, as many as fit in one line; `NAMES 0` means no more |
-| `PING` | `PONG` |
+| `PING` | `PONG` — any replica, leader or not |
+
+`REGISTER`, `RESOLVE` and `LIST` are answered only by the leader. A registration is answered once its own log entry
+is applied (D-075); a read once the leader has confirmed, through a majority, that it still leads (ReadIndex, D-076).
+Any other replica, or a leader that cannot do either in time, answers instead:
+
+| Reply | Meaning | What a client does |
+|---|---|---|
+| `REDIRECT <ip>:<port>` | not the leader; this replica believes the leader is there | ask that address at once |
+| `UNAVAILABLE <reason>` | no leader is known (an election), or the request was not committed or confirmed within 2 s, or a later leader replaced it | ask the next replica; retrying is always safe (D-075) |
 
 Errors: `ERR usage: …` for a wrong word count, `ERR a name is 1 to 200 visible ASCII characters`,
-`ERR a key is 40 lowercase hexadecimal characters`, `ERR could not write the name log` (nothing is
-applied), `ERR the name log is unavailable` (a failed append could not be undone; later
-registrations are refused), `ERR empty request`, `ERR unknown request`.
+`ERR a key is 40 lowercase hexadecimal characters`, `ERR empty request`, `ERR unknown request`. A replica whose log
+cannot be written stops (fail-stop) rather than answer.
 
-### The tracker's log
-
-`<dir>/names_<port>.log`, one line per registration, appended and `fdatasync`ed under the namespace
-lock **before** `OK` is sent:
+### Between replicas (D-071)
 
 ```
-REGISTER <name> <key> <check>
+VOTE <group> <term> <candidate> <last-index> <last-term>                                  -> VOTED <term> <0|1>
+APPEND <group> <term> <leader> <prev-index> <prev-term> <commit> <seq> <count> <length>   -> APPENDED <term> <0|1> <index>
+       + <length> bytes: <count> lines of "<term> <command>", each ending in '\n'
 ```
 
-`<check>` is the first 8 hexadecimal characters of the SHA-1 of everything before ` <check>`. At
-start-up every record is replayed through the same function the live path uses; a final line with
-no newline (torn by a crash) is cut off, and a line whose check fails is skipped and reported.
+`<group>` is 8 hexadecimal characters of SHA-1 of the ordered member list; a call carrying another is answered
+`ERR group mismatch` (D-079). `<candidate>` and `<leader>` are positions in that list. `APPENDED`'s `<index>` is, on
+success, the last index the follower now matches; on failure, where the leader should try next. `<seq>` numbers the
+leader's calls for ReadIndex. A body holds at most about 64 KiB of commands; its entries' terms must not fall and
+must not exceed the call's term, and each command must be `NOOP` or `REGISTER <name> <key>`, or the whole call is
+refused (`ERR malformed APPEND`).
+
+### For harnesses
+
+| Request | Reply |
+|---|---|
+| `STATUS` | `STATUS <id> <role> <term> <leader-id or -> <commit> <applied> <last-index>` — read-only, any replica |
+
+### The replica's log
+
+`<dir>/raft_<port>.log`, one record per line, each ending in the first 8 hexadecimal characters of the SHA-1 of the
+rest of its line (D-074):
+
+```
+TERM <term> <voted-for | ->
+ENTRY <index> <term> <command>
+CUT <index>                       (entries from <index> on are discarded)
+```
+
+Everything one step changes is appended as one batch and flushed with one `fdatasync` before the replica sends or
+answers anything. At start-up the file is replayed up to the first record that is torn, fails its check, or is out
+of sequence; if that is within the last 256 KiB it is a crash's tail and is cut off and reported, and if it is
+further back the replica refuses to start. The single tracker's earlier `names_<port>.log` is not read.
 
 ## Manifests
 
@@ -134,6 +169,9 @@ output file.
 | Every socket an originator opens (`client`, `chunk`, `lookup`) | 5 s on connect, send and receive — a hang guard | `LOOKUP_TIMEOUT_MS`, `CLIENT_TIMEOUT_MS` | D-024, D-025 |
 | Every call one node makes to another | 200 ms on connect, send and receive | `node --timeout <ms>` | D-039, D-042 |
 | A request line, or a body, arriving at a node or the tracker | the **whole** line or body within 10 s, enforced with `poll` on the time remaining | `--read-deadline <ms>` | D-061 |
+| Every call one tracker replica makes to another | E (the election timeout base, 300 ms by default) on connect, send and receive | `tracker --election <ms>` | D-073 |
+| A client request waiting at the tracker's leader for its commit or read confirmation | 2 s, then `UNAVAILABLE` | — | D-075, D-076 |
+| Each exchange a client makes with one tracker replica | 3 s; 10 s overall across replicas and retries | `client --tracker-wait <ms>` | D-081 |
 
 The send and receive timeouts are set **before** `connect`, so a host that never answers the
 handshake costs the deadline rather than the kernel's ~127 s of SYN retries (D-025). A timeout is

@@ -9,7 +9,7 @@ file — no sockets), [`src/client.cpp`](../src/client.cpp) (the command line),
 ## The client
 
 ```
-client --tracker <ip:port> --ring <ip:port>[,<ip:port>...] [options] <command>
+client --tracker <ip:port>[,<ip:port>...] --ring <ip:port>[,<ip:port>...] [options] <command>
   put <file> <name> | get <name> <file> | get-key <key> <file> | info <name> | resolve <name> | ls
   --workers <1..64>  --w <1..3>  --chunk-size <bytes>  --fanout <2..8192>  --stats <file>  --quiet
 ```
@@ -54,9 +54,10 @@ The coursework client this replaced preallocated the destination at full size be
 byte, so a failed download left a full-size file of zeros under the real name (defects R2, R2b in
 [`failures.md`](failures.md)).
 
-## The tracker: a namespace and nothing else (D-017, D-058, D-059)
+## The tracker: a namespace and nothing else (D-017, D-058, D-059, D-069 – D-082)
 
-`tracker <port> [--dir <dir>] [--ip <ip>] [--read-deadline <ms>]` holds `name → manifest key`.
+`tracker <port> [--dir <dir>] [--ip <ip>] [--read-deadline <ms>] [--group <list> --id <i>] [--election <ms>]`
+holds `name → manifest key`.
 Four messages — `REGISTER`, `RESOLVE`, `LIST`, `PING` (see [`protocol.md`](protocol.md)). It never
 sees a chunk or a node address: a chunk's location is computed from its hash, so there is nothing for
 it to track, and its state is O(files) rather than O(chunks).
@@ -64,11 +65,12 @@ it to track, and its state is O(files) rather than O(chunks).
 - **A name is written once.** Registering a taken name with the same key succeeds and changes nothing
   (so a client that lost its `OK` can retry); with a different key it is refused with
   `EXISTS <key>`. With no access control, a replaceable name would be one anyone could replace.
-- **An effect log, flushed before `OK`.** Each new name is appended to `names_<port>.log` as a
-  self-checking record and `fdatasync`ed under the namespace lock before the tracker answers, so an
-  acknowledged name survives a crash. At start-up the log is replayed through the same function the
-  live path uses; a torn final record is cut off and a damaged one skipped. An ordered list of
-  deterministic effects is exactly what a Raft-replicated tracker would replicate (not built).
+- **Replicated by Raft.** The namespace is the state machine of a Raft group of tracker replicas — three by
+  default, one for a single tracker, on the same code. A registration is a log entry, answered `OK` once it is
+  applied; the first registration of a name to be applied wins on every replica alike. Each replica's log is a file of
+  self-checking records flushed before it answers anything, so an acknowledged name survives a crash, and the group
+  keeps serving while a majority of its replicas is up. Reads are linearizable (ReadIndex). See
+  [`consensus.md`](consensus.md).
 - **Read deadlines.** Like a node, the tracker gives every request line 10 s to arrive whole,
   enforced against the time remaining, so a peer trickling bytes cannot hold a thread (D-061).
 
@@ -98,7 +100,7 @@ written, which is where the old system's clock stopped.
   1 KiB changed in place adds 2 of 201; one byte inserted near the start adds 200; twenty consecutive
   commits of this repository as tar files share **1 chunk of 97** — fixed-size chunks never realign
   after an insertion. Content-defined chunking is the known fix, not built.
-- **The tracker:** 77 bytes of log and about 230 bytes of memory per name; 197–254 registrations a
+- **The tracker** (the single tracker before Raft): 77 bytes of log and about 230 bytes of memory per name; 197–254 registrations a
   second, one flush each; 100,000 names replayed and listening in 0.39 s.
 
 ## Tested by

@@ -5,6 +5,7 @@ each named by the SHA-1 of its own bytes and stored on **three different process
 **Chord ring**; a small **tracker** maps each file name to the hash of the file's manifest and holds
 nothing else. A client resolves a name, routes to every chunk itself in O(log N) hops, fetches the
 chunks in parallel, verifies each against its name, and writes the file only once it is complete.
+The tracker is itself a **Raft group** of three replicas, hand-written, so it survives the loss of any one.
 Nodes join, fail and are repaired out of the ring while it keeps serving; a dead node's chunks are
 copied back to three live processes within seconds. POSIX sockets and threads, OpenSSL for SHA-1,
 a hand-written `Makefile` — no other libraries.
@@ -21,8 +22,13 @@ coursework is in the history, unsquashed.
 flowchart TB
     C["<b>client</b><br/>put · get · ls<br/>a pool of workers · verifies every chunk<br/>part file → fsync → rename"]
 
-    subgraph control["CONTROL PLANE"]
-        T["<b>tracker</b><br/>name → manifest key, nothing else<br/>write-once · effect log flushed before every OK"]
+    subgraph control["CONTROL PLANE — a Raft group of three tracker replicas"]
+        direction LR
+        T["<b>leader</b><br/>name → manifest key, nothing else<br/>write-once · OK once committed and applied"]
+        T2["<b>follower</b>"]
+        T3["<b>follower</b>"]
+        T -- "APPEND" --> T2
+        T -- "APPEND" --> T3
     end
 
     subgraph ring["DATA PLANE — node processes, 8 ring members each"]
@@ -134,8 +140,7 @@ has every alternative considered and what it would have cost.
 | **Distributed storage, not a swarm** (D-022) | a file outlives every uploader | making downloaders serve chunks, which needs an index of holders |
 | **Sources in `src/`, programs at the root** (D-068) | a readable tree; every script and document keeps its paths | binaries in `bin/` — thirty command lines changed for nothing |
 
-**The replicated tracker** — being built; depth and alternatives in
-[`docs/consensus.md`](docs/consensus.md):
+**The replicated tracker** — depth and alternatives in [`docs/consensus.md`](docs/consensus.md):
 
 | Decision | Why | Rejected alternative |
 |---|---|---|
@@ -169,24 +174,30 @@ chord-dht-filesystem/
 │   │                       #   verified reads that fall through to the next replica
 │   ├── repair.{h,cpp}      # Re-replication: owner-driven arc checks, the scrub, the hand-off
 │   ├── transfer.{h,cpp}    # Whole files: chunking, manifests and their tree, the worker pool, the part file
-│   ├── names.{h,cpp}       # The namespace: name -> manifest key, written once, with a self-checking log
+│   ├── names.{h,cpp}       # The namespace: name -> manifest key, written once -- the state machine Raft replicates
+│   ├── raft.{h,cpp}        # Raft as a deterministic core: elections, replication, the commit rule, ReadIndex
+│   ├── raft_log.{h,cpp}    # A replica's term, vote and log as one file of self-checking records
+│   ├── raft_wire.{h,cpp}   # VOTE and APPEND on the line framing, with strict parsers
+│   ├── replica.{h,cpp}     # One replica: a lock around the core, a ticker, a sender per peer, waiting clients
+│   ├── group.{h,cpp}       # The client's side of the group: the address list, redirects and retries
 │   ├── sha1.h              # Header-only wrapper over OpenSSL SHA1(), hex-encoded
 │   ├── node.cpp            # `node`: a ring process -- members (virtual nodes), a chunk store, maintenance and repair
-│   ├── tracker.cpp         # `tracker`: the namespace on a socket
+│   ├── tracker.cpp         # `tracker`: one replica of the namespace's Raft group (alone: the single tracker)
 │   ├── client.cpp          # `client`: put, get, ls, info, resolve -- files through the ring, names through the tracker
 │   ├── chunk_main.cpp      # `chunk`: put and get single chunks through a ring
 │   ├── lookup_main.cpp     # `lookup`: one lookup per identifier on stdin; prints owner, hops and path
 │   ├── sim_hops.cpp        # `sim-hops`: the same routing code and loop with the whole ring in one process
 │   └── sim_balance.cpp     # `sim-balance`: chunk placement with the node's own code, for load-balance curves
-├── tests/                  # Seven unit-test programs (`make check`): hand-built rings, constructed hostile input
+├── tests/                  # Nine unit-test programs (`make check`): hand-built rings, constructed hostile input,
+│                           #   a seeded simulation of the Raft group with its safety properties checked every step
 ├── scripts/                # End-to-end suites (e2e-*.sh), the local cluster launcher (cluster.sh),
 │                           #   benchmark harnesses (bench-*.py), plotters (plot-*.py), test oracles
 ├── docs/                   # A guide per subsystem, the design document, the failure log, the postmortem;
 │                           #   figures/ holds the plots and the summary data each is drawn from
 ├── Makefile                # Hand-written. Objects go to build/, programs to the repository root
-├── Dockerfile, compose.yaml # A tracker and five nodes in containers -- written, not yet run
+├── Dockerfile, compose.yaml # A single tracker and five nodes in containers -- written, not yet run
 ├── .github/workflows/ci.yml # Build, unit tests and the fast end-to-end suites on x86-64 and arm64 -- not yet run
-├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-068)
+├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-082)
 ├── BENCHMARKS.md           # Every number, its method and its commit
 └── SCALE_NOTES.md          # Where the design breaks at 10x, recorded while building
 ```
@@ -213,12 +224,13 @@ Python 3 for the test suites. Developed on Ubuntu 24.04 (aarch64) with g++ 13.3.
 make                         # tracker, node, client, chunk, lookup, sim-hops, sim-balance; zero warnings
 scripts/make-testdata.sh     # deterministic test files in testdata/ (gitignored)
 
-scripts/cluster.sh up 5      # a tracker on :7000 and five nodes on :7001-7005, 8 ring members each
+scripts/cluster.sh up 5      # three tracker replicas on :7000-7002, five nodes on :7010-7014, 8 ring members each
 
-./client --tracker 127.0.0.1:7000 --ring 127.0.0.1:7001,127.0.0.1:7002 put testdata/large.dat movie
-./client --tracker 127.0.0.1:7000 --ring 127.0.0.1:7001,127.0.0.1:7002 get movie /tmp/movie
+T=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002
+./client --tracker $T --ring 127.0.0.1:7010,127.0.0.1:7011 put testdata/large.dat movie
+./client --tracker $T --ring 127.0.0.1:7010,127.0.0.1:7011 get movie /tmp/movie
 cmp testdata/large.dat /tmp/movie && echo identical
-./client --tracker 127.0.0.1:7000 ls
+./client --tracker $T ls
 
 scripts/cluster.sh down      # stops exactly the processes `up` started; `wipe` also deletes the stores
 ```
@@ -229,7 +241,7 @@ and creates `/tmp/movie` only once it is complete. `--workers` sets how many chu
 by manifest key with no tracker at all. Run `./client`, `./node` or `./tracker` with no arguments for
 every option.
 
-**Containers:** `docker compose up -d --build` should bring up the same tracker and five nodes, with
+**Containers:** `docker compose up -d --build` should bring up a single tracker and five nodes, with
 `docker compose run --rm client …` as the client. **These files have not been run** — the development
 machine has no Docker; `scripts/cluster.sh` is the tested way.
 
@@ -262,9 +274,10 @@ runs once the repository is pushed, and no badge is shown until it has passed.
 
 - **All measurements are on one host.** Loopback has no propagation delay, and every process shares
   one page cache and eight cores; nothing has been measured across machines.
-- **The tracker is a single point of failure.** Its log is a list of effects, which is what a Raft
-  group would replicate; that is the planned next step and is not built. Downloads by manifest key
-  work without it.
+- **The tracker group's membership is fixed.** A replica whose disk is lost cannot be replaced while the
+  group runs — membership change is not built — and losing a majority stops registration and resolution
+  (downloads by manifest key still work). Pre-vote is not built, so a replica returning from a partition
+  forces one election.
 - **Files cannot be deleted, and storage only grows.** Deleting a file's chunks could destroy another
   file that shares them, and with no access control a delete command would let anyone remove anyone's
   file. An owner-token and mark-and-sweep design exists (D-023); it is not built.
