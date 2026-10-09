@@ -18,7 +18,7 @@ set +m
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${TMPDIR:-/tmp}/p2p-edge-$$"
-export CLUSTER_DIR="$WORK/cluster" TRACKER_PORT="${TRACKER_PORT:-7105}" NODE_BASE="${NODE_BASE:-7751}" VNODES=4 PERIOD=200
+export CLUSTER_DIR="$WORK/cluster" TRACKERS=1 TRACKER_PORT="${TRACKER_PORT:-7105}" NODE_BASE="${NODE_BASE:-7751}" VNODES=4 PERIOD=200
 
 cleanup() { "$ROOT/scripts/cluster.sh" down >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT

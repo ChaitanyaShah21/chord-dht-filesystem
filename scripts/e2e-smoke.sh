@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # e2e-smoke.sh -- the happy path, verified by hash.
 #
-# Starts a tracker and a five-node ring with scripts/cluster.sh, stores a file
+# Starts a three-replica tracker group and a five-node ring with scripts/cluster.sh, stores a file
 # with the client, fetches it back under its name, and compares SHA-1 end to end.
 # Exits non-zero on any mismatch. Also the test of cluster.sh itself (D-064):
 # `up` must give a working cluster and `down` must stop every process it started.
@@ -17,7 +17,7 @@ set +m
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${TMPDIR:-/tmp}/p2p-smoke-$$"
 SIZE="${SIZE:-300000}"
-export CLUSTER_DIR="$WORK/cluster" TRACKER_PORT="${TRACKER_PORT:-7100}" NODE_BASE="${NODE_BASE:-7741}" VNODES=4 PERIOD=200
+export CLUSTER_DIR="$WORK/cluster" TRACKERS=3 TRACKER_PORT="${TRACKER_PORT:-7100}" NODE_BASE="${NODE_BASE:-7741}" VNODES=4 PERIOD=200
 
 cleanup() { "$ROOT/scripts/cluster.sh" down >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT
@@ -30,7 +30,8 @@ mkdir -p "$WORK"
 
 head -c "$SIZE" /dev/urandom > "$WORK/testfile.bin"
 EXPECT=$(sha1sum "$WORK/testfile.bin" | awk '{print $1}')
-C=("$ROOT/client" --tracker "127.0.0.1:$TRACKER_PORT" --ring "127.0.0.1:$NODE_BASE")
+TRACKER_LIST="127.0.0.1:$TRACKER_PORT,127.0.0.1:$((TRACKER_PORT + 1)),127.0.0.1:$((TRACKER_PORT + 2))"
+C=("$ROOT/client" --tracker "$TRACKER_LIST" --ring "127.0.0.1:$NODE_BASE")
 "${C[@]}" put "$WORK/testfile.bin" smoke.bin > "$WORK/put.out" 2> "$WORK/put.err"
 "${C[@]}" get smoke.bin "$WORK/got.bin" > "$WORK/get.out" 2> "$WORK/get.err"
 LISTED=$("${C[@]}" ls 2>/dev/null)
@@ -46,7 +47,7 @@ echo "listed   : $LISTED"
 
 "$ROOT/scripts/cluster.sh" down > "$WORK/down.out" 2>&1
 LEFT=0
-for p in "$TRACKER_PORT" $(seq "$NODE_BASE" $((NODE_BASE + 4))); do
+for p in $(seq "$TRACKER_PORT" $((TRACKER_PORT + 2))) $(seq "$NODE_BASE" $((NODE_BASE + 4))); do
   ss -ltn 2>/dev/null | grep -qE ":$p[[:space:]]" && LEFT=1
 done
 

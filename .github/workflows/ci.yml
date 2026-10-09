@@ -56,3 +56,8 @@ jobs:
         run: |
           export NODE_CMD="setarch $(uname -m) -R ./node-tsan" CLIENT_CMD="setarch $(uname -m) -R ./client-tsan"
           scripts/e2e-chunk.sh && scripts/e2e-transfer.sh && scripts/e2e-churn.sh
+      - name: The replicated tracker, and ThreadSanitizer through it
+        run: |
+          scripts/e2e-raft.sh
+          setarch $(uname -m) -R ./test-replica-tsan
+          TRACKER_CMD="setarch $(uname -m) -R ./tracker-tsan" scripts/e2e-raft.sh
