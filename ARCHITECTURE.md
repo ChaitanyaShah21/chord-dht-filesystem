@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-088: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-089: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -249,13 +249,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-088 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-089 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 80 recorded here (F1–F79 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 81 recorded here (F1–F80 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -343,6 +343,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F77** | **How does a process log?** A small hand-written logger writing one `key=value` line per event; `spdlog`; JSON lines; or the free-text lines kept. | Decides whether a log line can be parsed by a tool, whether lines from two threads can interleave, and whether the no-external-libraries rule holds. | **RESOLVED** — D-086 |
 | **F78** | **How does one transfer's request id reach every process it touches?** A `RID <id>` prefix on every request line, carried on into a server's onward calls; a trailing field; a separate header line; or deriving it from the chunk key. | Decides whether one upload can be reconstructed from the logs of the client, the tracker and every node, and whether the framing's rules survive the change. | **RESOLVED** — D-087 |
 | **F79** | **Prometheus and Grafana without Docker.** Configuration and a dashboard in the repository, run against the local cluster with the official release binaries downloaded outside it; configuration only; or waiting for Docker. | Decides whether the dashboard is a screenshot of a running system or a description of one. | **RESOLVED** — D-088 |
+| **F80** | **Who may delete a name, and how is it proved?** A secret chosen by the uploader, of which the tracker keeps only a hash; a token the tracker generates and returns; user accounts; or anyone. | Decides whether delete is a vandalism tool, whether a retried registration stays safe without sessions (D-075), and whether a secret ever sits in the Raft log. | **RESOLVED** — D-089 |
 
 ---
 
@@ -4519,3 +4520,42 @@ never rendered is a description.
 
 **Cost accepted.** The scripts depend on the release archives' layout; the versions used are recorded in
 `docs/observability.md`.
+
+---
+
+### D-089 — A name is deleted by its owner's secret: the uploader chooses it, the tracker keeps only its hash, and the deletion is a Raft entry
+
+**Fork:** F80. **Date:** 9 Oct 2026. **Depends on:** D-004, D-023, D-059, D-075. **Gates:** deletion, and the
+collector (D-090).
+
+**The decision.**
+- `client put` makes a random 128-bit secret (or reads one with `--token-file`) and prints it once: whoever holds it
+  owns the name. It sends only the secret's SHA-1:
+  ```
+  REGISTER <name> <manifest-key> <owner-hash>   -> OK | EXISTS <key> | ...
+  UNREGISTER <name> <secret>                    -> OK | MISSING | DENIED | ...
+  ```
+- The leader hashes the secret and proposes `UNREGISTER <name> <owner-hash>`. The state machine applies it in log
+  order like any registration: the name is removed if its stored owner hash matches, `DENIED` otherwise. **No secret
+  is ever in the Raft log** — only hashes, and a hash cannot be turned back into a delete request.
+- A name is written once **per owner** (refining D-059): the same key with the same owner hash is a retry and answers
+  `OK`; a different key, or the same key under another owner, answers `EXISTS`. Once deleted, the name is free.
+- The old three-word `REGISTER <name> <key>` is still accepted, and registers a name with **no owner: it can never be
+  deleted**.
+- Deleting a name frees no storage by itself: its chunks become garbage for the collector (D-090), and a chunk shared
+  with another file stays live through that file's manifest.
+
+**Rejected: a token the tracker generates and returns.** Raft replicas must apply identical entries, so the leader
+would have to choose it and put it in the log. And a retried `REGISTER` (D-075) must be answered `OK`: either the retry
+returns the token — so anyone who knows a name and its key (`RESOLVE` tells them) can re-send the registration and
+receive the token — or it does not, and a client whose first reply was lost never learns its own token.
+
+**Rejected: user accounts.** D-004 removed them; this needs one secret per name, not an identity.
+
+**Rejected: anyone may delete.** With no access control, `DELETE movie.mp4` would let anyone remove anyone's file.
+
+**Rejected: storing the secret itself.** Every owner's secret would sit in every replica's log file.
+
+**Cost accepted.** The secret crosses the network in cleartext, once, when deleting (no TLS, as everywhere — D-004).
+A lost secret means the name can never be deleted. The namespace is no longer write-once, so D-078's "a snapshot would
+be as large as the log" now holds only until names are deleted.

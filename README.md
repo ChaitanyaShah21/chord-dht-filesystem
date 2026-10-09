@@ -188,6 +188,12 @@ has every alternative considered and what it would have cost.
 | **A request id on every request line** (D-087) | one upload can be followed through the client, the tracker and every node it touched | a trailing field, which would break the body-length rule |
 | **Prometheus and Grafana from configuration in `deploy/`** (D-088) | the dashboard is a screenshot of a running cluster, not a description of one | configuration that has never run a query |
 
+**Deletion** — unnaming and collecting; depth in [`docs/deletion.md`](docs/deletion.md):
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **The uploader's secret deletes a name** (D-089) | only whoever uploaded can delete; the tracker and its log hold only the secret's hash; a retried registration stays safe | a token the tracker returns, which a retry would hand to anyone; anyone may delete |
+
 ## Project structure
 
 ```
@@ -245,6 +251,7 @@ chord-dht-filesystem/
 | [`docs/protocol.md`](docs/protocol.md) | every message, its replies and errors, framing, deadlines |
 | [`docs/consensus.md`](docs/consensus.md) | the replicated tracker: Raft, each decision with its alternatives (being built) |
 | [`docs/observability.md`](docs/observability.md) | metrics and why each one, the log format, the request id, the dashboard |
+| [`docs/deletion.md`](docs/deletion.md) | deleting a name with its owner's secret, the mark-and-sweep collector, the race with uploads |
 | [`docs/testing.md`](docs/testing.md) | the test layers, oracles, mutation testing, ThreadSanitizer |
 | [`docs/design.md`](docs/design.md) | each major decision with the alternatives considered |
 | [`docs/failures.md`](docs/failures.md) | every defect reproduced: how it was found, the root cause, why the fix works |
