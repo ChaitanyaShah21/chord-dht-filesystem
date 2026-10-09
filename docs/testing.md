@@ -1,13 +1,13 @@
 # Testing strategy
 
-Seven unit-test programs, eleven end-to-end suites on real processes, a ThreadSanitizer build, and
-mutation testing to check that the tests can fail. The whole set runs in about two minutes on the
-development machine.
+Nine unit-test programs, twelve end-to-end suites on real processes, ThreadSanitizer builds, and
+mutation testing to check that the tests can fail. The whole set runs in about two and a half minutes on
+the development machine.
 
 ```bash
 make clean && make && make check                 # build (warning-free) and the unit tests
 for s in scripts/e2e-*.sh; do "$s" || break; done # the end-to-end suites
-make tsan                                         # ThreadSanitizer builds of node and client
+make tsan                                         # ThreadSanitizer builds: node, client, tracker, test-replica
 ```
 
 ## Two layers, because each catches what the other cannot
@@ -27,7 +27,9 @@ chunk's length, a disk that refuses writes — and can order every node's mainte
 | `test-stabilize` | 97 | a whole ring on one thread: every round order of two joins between the same pair, kills and freezes at chosen moments, fast restarts, collisions, 200 random churn histories |
 | `test-chunk` | 105 | the store, body framing, virtual nodes, replica sets against a brute-force oracle, writes against dead and slow replicas, reads past corrupt copies, repair, the orphaned-sibling livelock |
 | `test-transfer` | 87 | manifests (26 malformed ones refused one rule at a time), trees, the worker pool, whole transfers against an in-memory ring that loses, delays and lies |
-| `test-names` | 39 | the namespace and its log: torn and altered records, `/dev/full`, eight threads racing for one name |
+| `test-names` | 26 | the namespace as a state machine: request parsing, applying entries, write-once, paged listing |
+| `test-raft` | 175 | the Raft core in a seeded simulation — loss, duplication, reordering, partitions, crashes — with the safety properties checked after every step and every client answer checked for linearizability; Figure 8 by hand; the vote, append, commit and ReadIndex rules; the log file; the wire format; the client finding the leader |
+| `test-replica` | 32 | three tracker replicas in one process with real threads: election, redirects, contending clients, a cut-off leader, a waiting request whose entry is replaced, restart, a failing disk |
 
 **On real processes (`scripts/e2e-*.sh`).** These catch what the in-process layer cannot: a program
 that does not use the tested code at all, real sockets, real signals, real disks.
@@ -42,7 +44,8 @@ that does not use the tested code at all, real sockets, real signals, real disks
 | `e2e-edge.sh` | every size across the chunk boundary round-trips — 0, 1, n−1, n, n+1, 2n and multi-chunk |
 | `e2e-deadline.sh` | a silent, trickling or body-withholding peer is cut off at the deadline and frees what it held |
 | `e2e-smoke.sh` | `scripts/cluster.sh up` gives a working cluster; one file round-trips, compared by SHA-1; `down` stops everything it started |
-| `e2e-persistence.sh` | tracker state survives `SIGKILL` and restart, including a torn record and a damaged one |
+| `e2e-persistence.sh` | tracker state survives `SIGKILL` and restart; a crash's damaged tail is cut, damage further back refuses to start |
+| `e2e-raft.sh` | three tracker replicas: the leader killed and frozen, both followers frozen (the lone leader never acknowledges), a majority killed (writes refused, never acknowledged), everything restarted, a writer through a failover, a mismatched member list |
 | `e2e-framing.sh` | one request, one reply, one line, on a raw socket, for every malformed-input path |
 | `e2e-hangup.sh` | a client that vanishes mid-conversation does not take the tracker with it |
 
@@ -76,6 +79,11 @@ deliberately planted bugs, each in a fresh copy of the tree with a clean build:
 | Joins, stabilisation, failure handling | 20 | 17 by the functional tests, 1 more only by ThreadSanitizer | two are independent defences against the same failure — each survives alone, the pair is caught; the third (a read without the lock) is a data race only the sanitizer sees |
 | Chunk plane | 20 | 18 | one is covered twice over (the receiver re-checks the hash anyway); one is a check-then-increment race on an atomic counter that neither a stress test nor ThreadSanitizer can see — a race on an atomic is not a data race — so the single `fetch_add` is correct by construction, not by test |
 | Transfer and namespace | 22 | 20 | both remove a flush before an acknowledgement (a download's `fsync`, a registration's `fdatasync`); a test on a running machine cannot cut the power |
+| The replicated tracker | 24 | 22 by the functional tests, 1 more only by ThreadSanitizer | the flush before a reply (`fdatasync`), again: only a power cut shows it. Three others survived at first — a vote given in a term already held and not saved; a late vote reply from an older term counted; a waiting client told the result of the entry that replaced its own — each a gap in the directed tests, each closed with a test of its own |
+
+In the replicated tracker, the in-process layers caught every functional mutant; the real-process suites caught 7 of
+them as well. Committing an earlier term's entry by counting (Figure 8) is caught by its directed test every time and
+by only 5 of 60 random histories — the subtle cases need tests built for them.
 
 Mutation testing also found weak tests, which were then fixed: a traversal-key test too short to
 reach the character check; a deadline test that hung instead of failing; a log-check test whose
@@ -94,7 +102,10 @@ aarch64 kernel ThreadSanitizer needs address-space randomisation off:
 NODE_CMD="setarch $(uname -m) -R ./node-tsan" CLIENT_CMD="setarch $(uname -m) -R ./client-tsan" scripts/e2e-transfer.sh
 ```
 
-Run through the churn, chunk, transfer and deadline suites with no report. The build was validated by
+Run through the churn, chunk, transfer and deadline suites with no report. The tracker's replica code runs under it in
+`test-replica-tsan` and in `e2e-raft.sh` with `TRACKER_CMD="setarch $(uname -m) -R ./tracker-tsan"`, with no report; a
+planted race in it (a sender reading its slot after releasing the lock) was caught by ThreadSanitizer and by nothing
+else. The build was validated by
 removing one lock on purpose: it reported the race. There is no AddressSanitizer or
 UndefinedBehaviorSanitizer build.
 
@@ -109,6 +120,14 @@ UndefinedBehaviorSanitizer build.
 - **The benchmark harness found a livelock** the tests had not: an orphaned virtual node held out of
   the ring for ever by its own sibling (D-067). It was reproduced in process before it was fixed — 0 of
   20 round orders healed before the fix, 20 of 20 after.
+
+- **A test that assumed leadership survives a heal.** After a partition healed, `test-replica` asked the leader
+  elected during it — and sometimes got `REDIRECT`: the cut-off replica had kept raising its term, and its return
+  forced an election. That is the cost of having no pre-vote (D-077), now measured: 20 of 20 heals forced one. The test
+  now asks whoever leads.
+- **A harness race.** `e2e-chord.sh` waited for a killed node's port to close and treated only "connection refused" as
+  closed; a connect accepted into the dying listener's backlog and then reset crashed the harness. Any other error now
+  means "not closed yet".
 
 Every defect found this way is in [`failures.md`](failures.md) or the decision it changed.
 

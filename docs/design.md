@@ -22,7 +22,7 @@ untrusted volunteers; users and access control (D-004). Deletion is designed but
 
 - **Data plane:** `node` processes, each 8 Chord ring members (virtual nodes) with a chunk store.
   Chunks are content-addressed and stored on three distinct processes.
-- **Control plane:** one `tracker` holding `name → manifest key`, nothing else.
+- **Control plane:** a `tracker` holding `name → manifest key`, nothing else — a Raft group of three replicas.
 - **Client:** drives every lookup hop itself, moves chunks with a pool of workers, verifies every
   chunk, and writes a file only once it is complete.
 
@@ -201,8 +201,8 @@ The size, 8, came off the measured throughput curve by a rule fixed first.
 | **Last writer wins / versions / an overwrite flag** | with no access control, any client could replace any file |
 | **A log without per-record checksums** | a record torn inside its last word replays as a different key |
 
-**Accepted cost:** a single point of failure. Its log is a list of effects — what a Raft group would
-replicate. Not built.
+**Accepted cost (until Phase 7):** a single point of failure. Its log was a list of effects — what a Raft group
+replicates; section 20 is that group.
 
 ## 17. A peer gets a fixed time to send what it announced — [D-061](../ARCHITECTURE.md#d-061--a-server-gives-a-request-line-and-a-body-a-fixed-time-to-arrive-in-full)
 
@@ -238,12 +238,32 @@ of its uploaders going offline.
 - **Predictions are written down first, and failed ones are kept.** Two failed: chunk size is not flat
   on loopback ([D-016](../ARCHITECTURE.md#d-016--512-kb-chunks-held-constant-for-the-headline-claim-and-swept-separately)), and `W = 2` is not faster than `W = 3` with healthy replicas ([D-015](../ARCHITECTURE.md#d-015--rf--3-w--2-r--1-and-w-is-a-runtime-parameter)).
 
+## 20. The tracker is a Raft group — [D-069 – D-082](../ARCHITECTURE.md#d-069--the-tracker-becomes-a-raft-group-of-three-replicas-the-size-is-a-parameter-and-odd); in depth: [consensus.md](consensus.md)
+
+Three replicas, a hand-written Raft core with no sockets, threads or clock (tested in a seeded simulation), one file of
+self-checking records per replica flushed before anything is sent, `OK` once the request's own entry is applied, and
+linearizable reads by ReadIndex.
+
+| Alternative | Why not |
+|---|---|
+| **Two replicas, or primary–backup** | two need both to make progress; primary–backup needs someone to decide failover, and two primaries if it is wrong |
+| **etcd, ZooKeeper or a Raft library** | the no-external-libraries rule; the namespace is small and write-once enough for a tested hand-written core |
+| **Client sessions for retries** | a registration is idempotent already (D-059), so a retry after a leader change is safe without them |
+| **Leader leases for reads** | correct only with bounded clock drift and pauses; this host has stalled for seconds |
+| **Snapshots** | names are never deleted, so a snapshot would be as large as the log |
+| **Membership change (joint consensus)** | not needed for a fixed group; the cost — a lost replica cannot be replaced live — is stated |
+| **Group commit / a parallel leader flush** | measured first: under load the group already matches the single tracker's flush ceiling |
+
+**Accepted cost:** a write waits for two flushes in series; a majority must be up; a returning partitioned replica
+forces one election (no pre-vote).
+
 ## Deferred, with a design
 
 | Item | Design | Why not now |
 |---|---|---|
 | Deletion ([D-023](../ARCHITECTURE.md#d-023--no-deletion-in-the-mvp-owner-token-unnaming-and-a-mark-and-sweep-collector-designed-for-later)) | owner token returned at upload; mark-and-sweep collector with a grace period | deleting a file's chunks can destroy another file's, and with no access control a plain delete is a vandalism tool |
-| A replicated tracker | a Raft group replicating the effect log; every decision made before its code, in [consensus.md](consensus.md) | being built |
 | Content-defined chunking | boundaries chosen by a rolling hash (FastCDC) | changes what a chunk is, and every chunk-size comparison with it |
 | Hinted handoff ([D-015](../ARCHITECTURE.md#d-015--rf--3-w--2-r--1-and-w-is-a-runtime-parameter)) | a down replica's copy is written to the next node with a note | `W = 2` was enough under the measured failures |
 | Connection reuse, owner caching | per-node connections; owners cached per arc | per-hop connections give one unambiguous failure signal; the cost is measured, not yet limiting |
+| Tracker membership change ([D-079](../ARCHITECTURE.md#d-079--membership-is-fixed-every-replica-is-given-the-same-list-and-a-fingerprint-refuses-a-mismatched-one)) | single-server changes through the log, after the new leader's no-op commits | a fixed group needs none; a lost replica cannot be replaced live until it exists |
+| Pre-vote ([D-077](../ARCHITECTURE.md#d-077--a-leader-that-has-not-heard-from-a-majority-for-2e-steps-down-pre-vote-is-not-built)) | a candidate asks whether it could win before raising its term | costs one election per healed partition — measured, 20 of 20 heals in the tests |

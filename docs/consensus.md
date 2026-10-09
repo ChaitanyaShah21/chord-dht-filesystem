@@ -295,3 +295,46 @@ started with a different member list (refused). `TRACKER_CMD` runs it on the Thr
 
 Every suite that used the single tracker — persistence, framing, hangup, deadline, transfer, smoke, edge — now runs
 against the replicated code, because the single tracker *is* a group of one.
+
+**Can the tests fail?** 24 bugs were planted, each in a fresh copy of the tree with a clean build, and every layer run
+against each:
+
+| Planted bug | Caught by |
+|---|---|
+| commit an earlier term's entry by counting copies (Figure 8) | `test-raft` — its directed test every time; 5 of 60 random histories |
+| never persist the vote · a vote in a term already held not saved | `test-raft` |
+| vote for a less up-to-date log · count a late grant from an older term | `test-raft` |
+| apply before commit | `test-raft`, `test-replica`, `e2e-raft.sh` |
+| a stale call truncates the follower's log · the follower's commit not bounded by what the call proved | `test-raft` |
+| a leader ignores a higher term in a reply · timeouts not randomised · entry terms in `APPEND` not checked | `test-raft` |
+| ReadIndex without a majority · without an own-term commit · counting replies to calls sent before the read | `test-raft` |
+| check-quorum off · a follower not restarting its timer on a leader's call | `test-raft`, `test-replica`, `e2e-raft.sh` |
+| a damaged tail not cut · far-back damage cut instead of refused | `test-raft`, `e2e-persistence.sh` |
+| `OK` at propose, before commit · the member-list fingerprint not checked | `test-replica`, `e2e-raft.sh` |
+| a waiting client told the result of the entry that replaced its own | `test-replica` |
+| the client not following redirects | `test-raft` |
+| a sender reading its slot after releasing the lock | ThreadSanitizer only |
+| no `fdatasync` | **survives** — only a power cut shows a missing flush |
+
+Three of these first survived — the vote in a term already held, the late grant, the replaced entry — each because no
+directed test built the history it needs; each now has one. The random histories rarely construct such cases: the
+Figure 8 bug, the one the paper warns about, was caught by 5 of 60.
+
+## What it measured (`BENCHMARKS.md` §7)
+
+One host, loopback, every replica's flush on one virtual disk.
+
+| | Number | At |
+|---|---|---|
+| E chosen by D-073's rule | **150 ms** — no leader change at any candidate in 3 × 30 s of saturating writes | `6e490bc` |
+| A new leader after the leader is killed | **219 ms** median, 164 – 407 ms, 20 kills (E = 150 ms) | `0d5c1c9` |
+| The client's next acknowledged write after the kill | **231 ms** median, 217 – 426 ms | `0d5c1c9` |
+| Election time against E | 219 / 435 / 783 / 1559 ms at E = 150 / 300 / 600 / 1200 — about 1.3 – 1.45 E | `0d5c1c9` |
+| Registrations a second, one client: single tracker → three replicas | 269 → **131** (two flushes in series) | `e3d6c65` |
+| Registrations a second, 16 clients | 276 → **264** (the leader's flush is the ceiling for both) | `e3d6c65` |
+| Share of a replicated write that is flushing | about 86 % (6.87 ms on disk, 0.95 on `tmpfs`) | `e3d6c65` |
+| A resolve (ReadIndex) | 0.84 ms against 0.34 ms | `e3d6c65` |
+| Replay of 100,000 registrations | 0.324 s to the last name answered | `e3d6c65` |
+
+What the numbers decided: E (150 ms, by its rule), and that batching is not built yet (D-082) — under load the group
+already matches the single tracker, and registrations come one per uploaded file.

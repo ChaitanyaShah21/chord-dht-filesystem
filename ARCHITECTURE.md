@@ -236,7 +236,7 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 4 | 8 Oct 2026 | chunk storage, replication, virtual nodes, repair | D-044 – D-053 |
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
-| 7 | 8 Oct 2026 – | the replicated tracker: Raft, every fork decided before its code | D-069 – D-082 |
+| 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
 
 ---
 
@@ -3827,7 +3827,7 @@ slow — two primaries accept writes. Raft's majority rule is that decision.
 Downloads by manifest key still work without any tracker (D-057). Three processes, three logs and three flushes
 per write where there was one.
 
-**Evidence:** pending — `BENCHMARKS.md` §7.
+**Evidence (9 Oct, `BENCHMARKS.md` §7):** three replicas: a new leader 219 ms (median of 20 kills) after the leader is killed; 131 registrations a second at one client. Five replicas: 118 at one client and 256 at 16, against 264 for three — the second tolerated failure is cheap here, because the leader waits for the second-fastest of four followers' flushes on one disk. Failover was timed for three replicas only.
 
 ---
 
@@ -3865,7 +3865,7 @@ rule of no external libraries and its point.
 the waiting clients — is not covered by the simulation; it is covered by an in-process test with real threads, the
 end-to-end suites and ThreadSanitizer (`docs/consensus.md`).
 
-**Evidence:** pending — `test-raft`.
+**Evidence (9 Oct):** `test-raft` — 180 seeded histories (3 and 5 replicas; loss up to 30 %, duplication up to 20 %, reordering, partitions, crashes and restarts) with the four safety properties checked after every step and a linearizability check at the end of each; the leader crashed at 120 points of one replication; Figure 8 reproduced by hand. Mutation testing (24 planted bugs, 23 caught; see `docs/testing.md`) — the one bug that first survived, a vote given in a term already held but not saved, exposed a gap in the directed tests and has a test of its own.
 
 ---
 
@@ -3909,7 +3909,7 @@ every 60 ms (D-073), about 17 per second per follower. Because one call carries 
 is bounded by round trips, not by the write rate. No authentication: anyone who can reach a replica can send it
 `VOTE` or `APPEND` (as for every message in this system).
 
-**Evidence:** pending.
+**Evidence (9 Oct):** a three-replica registration on `tmpfs` — two processes, a round trip and its connection set-up, no flush cost — takes 0.95 ms at p50 (`BENCHMARKS.md` §7), which bounds what a fresh connection per call costs here. A replica with a different member list is refused (`e2e-raft.sh`).
 
 ---
 
@@ -3953,7 +3953,7 @@ a slow disk can delay them past a follower's timeout (D-073's rule tests for exa
 proposals are serialised at the flush rate (D-082 measures it). One lock means the namespace's own mutex is gone:
 the namespace is protected by the replica's lock.
 
-**Evidence:** pending — ThreadSanitizer through `test-replica` and the end-to-end suites.
+**Evidence (9 Oct):** ThreadSanitizer reports nothing through `test-replica-tsan` and `e2e-raft.sh` on `tracker-tsan`; a planted race (a sender taking its slot after releasing the lock): tsan. No election happened in 90 s of saturating writes at any E (`BENCHMARKS.md` §7), so flushes under the lock did not delay heartbeats past a timeout.
 
 ---
 
@@ -4000,7 +4000,7 @@ relationship to be correct, offered as if they were independent.
 **Cost accepted.** The ratios are reasoned, not swept. A replica's timeout is drawn from its own generator, so two
 replicas can still collide; the next round redraws.
 
-**Evidence:** pending — `BENCHMARKS.md` §7.
+**Evidence (9 Oct, `BENCHMARKS.md` §7):** no leader change at any candidate in 3 × 30 s at the saturating load (about 255 registrations a second) — **E = 150 ms** (`136cc01`). Election after a leader kill: median 219 / 435 / 783 / 1559 ms at E = 150 / 300 / 600 / 1200 (20 kills each), about 1.3 – 1.45 E; split votes 6 of 40 at 150 and 300 ms across two runs. The ratios (E/5, [E, 2E), call deadline E) were reasoned, not swept.
 
 ---
 
@@ -4049,7 +4049,7 @@ flushed data within the last 256 KiB is indistinguishable from a crash's tail an
 model, as in the paper, which assumes stable storage. A replica that refuses to start needs replacing, which needs a
 membership change (D-079).
 
-**Evidence:** pending — `test-raft` (the file), `e2e-persistence.sh`.
+**Evidence (9 Oct):** `test-raft` (a torn tail, an altered record with an intact one after it, an entry out of sequence, a second vote in one term, damage hundreds of KiB from the end refused, a write the disk refuses) and `e2e-persistence.sh` on a real tracker. Found while testing: damage that is not a crash's but lies inside the last 256 KiB is cut as one — a run cut 3,010 acknowledged records and took the term from 4 back to 1 — the cost stated above, demonstrated. Planted: no `fdatasync` SURVIVED; the tail not cut test-raft, e2e-persistence; far-back damage cut instead of refused test-raft, e2e-persistence.
 
 ---
 
@@ -4091,7 +4091,7 @@ conflicts, and would become wrong if names ever could change (D-023).
 records effects. If an operation that is not idempotent is ever added — deletion (D-023) — client sessions are
 needed.
 
-**Evidence:** pending — the linearizability checker in `test-raft`, `test-replica`, `e2e-raft.sh`.
+**Evidence (9 Oct):** the linearizability checker in `test-raft` passed every history and crash point; `test-replica` and `e2e-raft.sh` (a writer through a leader kill: every acknowledged name found afterwards). Planted: `OK` at propose, before commit — test-replica, e2e-raft; a waiter given the applied result though its entry was replaced — test-replica (survived the full run; a test was added for it).
 
 ---
 
@@ -4130,7 +4130,7 @@ write-once — deletion (D-023) would make it silently wrong.
 **Cost accepted.** Every read costs a heartbeat round to a majority, and all client traffic lands on one replica. A
 new leader serves no reads until its no-op commits — one round trip after it wins.
 
-**Evidence:** pending — the linearizability checker in `test-raft` (with planted stale reads), `BENCHMARKS.md` §7.
+**Evidence (9 Oct):** planted — no majority confirmation: test-raft; no own-term commit first: test-raft; replies to calls sent before the read counted: test-raft. A resolve costs 0.84 ms through three replicas against 0.34 ms for the single tracker (`BENCHMARKS.md` §7).
 
 ---
 
@@ -4159,7 +4159,7 @@ per healed partition, which the failover measurements put a number on.
 unavailability (D-073's measurement). A leader that steps down while a majority is merely slow — every reply delayed
 past 2E — causes an election that nothing needed.
 
-**Evidence:** pending — `test-raft`, `e2e-raft.sh` (the minority leader).
+**Evidence (9 Oct):** `e2e-raft.sh` (both followers frozen: the lone leader answered `UNAVAILABLE`, never `OK`, and stepped down), `test-replica`, `test-raft`. The cost, measured: in 20 of 20 heals in `test-replica` the returning replica's raised term forced an election. Check-quorum disabled (planted): test-raft, test-replica, e2e-raft.
 
 ---
 
@@ -4186,7 +4186,7 @@ them). Bounds the file, not catch-up, and still adds a snapshot format and its r
 **Cost accepted.** Restart and catch-up are proportional to the whole history, not to the state. If deletion is ever
 built, names leave the state but not the log, and snapshots become worth having.
 
-**Evidence:** pending — replay time against log size, `BENCHMARKS.md` §7.
+**Evidence (9 Oct, `BENCHMARKS.md` §7):** a group of one replays 100,000 registrations and answers in 0.324 s (0.039 s for 10,000); 90.9 bytes of log a name.
 
 ---
 
@@ -4218,7 +4218,7 @@ entry of its own term before changing membership. Worth building next; not neede
   short, tolerating one fewer failure.
 - Restarting the whole group with a new list is an operator procedure, not a tested path.
 
-**Evidence:** pending — `test-replica` (a mismatched group is refused).
+**Evidence (9 Oct):** a replica started with a different member list is refused and refuses (`e2e-raft.sh`, `test-replica`); with the check removed (planted): test-replica, e2e-raft.
 
 ---
 
@@ -4250,7 +4250,7 @@ flushes per write, and two files that can disagree after a crash.
 (stop at the first damaged record) rather than D-058 (skip it and continue). A log written by the old tracker is not
 imported.
 
-**Evidence:** pending — every existing suite against the new tracker.
+**Evidence (9 Oct):** every earlier suite — persistence, framing, hangup, deadline, transfer, smoke, edge — passes against the group of one; it registers 275 names a second at one client against 269 for the tracker it replaced (`BENCHMARKS.md` §7).
 
 ---
 
@@ -4284,7 +4284,7 @@ open on someone else's behalf, the pattern iterative routing was chosen to avoid
 **Cost accepted.** Every invocation carries the whole list. The client is a one-shot program, so it remembers no
 leader between runs: the first request of every run starts at the first address.
 
-**Evidence:** pending — `test-raft` (the group client), `e2e-raft.sh`.
+**Evidence (9 Oct):** `test-raft` (scripted replicas: redirects, an election, two replicas naming each other, the deadline); `e2e-raft.sh`. From a leader's kill to the client's next acknowledged write: 231 ms median (217 – 426) at E = 150 ms. Redirects not followed (planted): test-raft. The client's exchange deadline with one replica is 3 s, longer than a replica's 2 s commit wait; a frozen leader costs a client that 3 s before it moves on (tested, not timed).
 
 ---
 
@@ -4312,4 +4312,4 @@ of the three.
 **Cost accepted.** Until measured, throughput under concurrent clients is bounded by one flush per registration on
 the leader.
 
-**Evidence:** pending — `BENCHMARKS.md` §7.
+**Evidence (9 Oct, `BENCHMARKS.md` §7):** one client: 131 registrations a second through three replicas, 269 for the single tracker (p50 6.9 against 3.4 ms — two flushes in series); on `tmpfs` 0.95 ms, so about 86 % of a replicated write is flushing. Sixteen clients: 264 against 276 — followers batch, and the ceiling is the leader's flush, as before. **Decision from the numbers:** neither group commit nor the parallel leader flush is built — a registration is one per uploaded file, and under load the group already matches the single tracker; group commit would lift the concurrent ceiling, the parallel flush the one-client latency.

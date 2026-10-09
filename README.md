@@ -118,6 +118,24 @@ coordinator crashes. Commit `7d99fc0`. [`BENCHMARKS.md`](BENCHMARKS.md) §6.
 
 ![Write latency and acknowledgement against W](docs/figures/chunks-wsweep.png)
 
+### The tracker survives its leader: a new one in 219 ms, writes again in 231 ms
+
+![Election time and client unavailability after a leader kill](docs/figures/raft-election.png)
+
+The tracker is a hand-written **Raft** group of three replicas. Killing its leader: a new leader in a median
+**219 ms** (164–407 ms over 20 kills) and the client's next acknowledged write **231 ms** after the kill, at an election
+timeout of 150 ms — chosen by a rule fixed before measuring: the smallest value with no election in 90 s of saturating
+writes. Election time runs at 1.3–1.45× the timeout, close to what the mechanism predicts. A write now waits for two flushes in
+series instead of one: **131 registrations a second** at one client against
+269 for the single tracker it replaced, and 264
+against 276 under 16 clients, where the leader's flush is the ceiling for
+both. Correctness is checked in a seeded simulation — loss, duplication, reordering, partitions and crashes, with
+Raft's four safety properties checked after every step and every client answer checked for linearizability — and on
+real processes with `SIGKILL` and `SIGSTOP`. Commits `0d5c1c9` (failover) and `e3d6c65` (writes). [`BENCHMARKS.md`](BENCHMARKS.md) §7,
+[`docs/consensus.md`](docs/consensus.md).
+
+![Registrations per second and latency against replicas](docs/figures/raft-writes.png)
+
 ## Key design rationales
 
 Each row is a decision in [`ARCHITECTURE.md`](ARCHITECTURE.md); [`docs/design.md`](docs/design.md)
@@ -248,24 +266,27 @@ machine has no Docker; `scripts/cluster.sh` is the tested way.
 ## Testing
 
 ```bash
-make check                              # seven unit-test programs, 562 checks
-for s in scripts/e2e-*.sh; do "$s" || break; done   # eleven suites on real processes, about two minutes
+make check                              # nine unit-test programs, 756 checks
+for s in scripts/e2e-*.sh; do "$s" || break; done   # twelve suites on real processes, about two and a half minutes
 ```
 
 Two layers, because each catches what the other cannot. **In process**, every module takes the network
 as a parameter, so tests build rings by hand — stale tables, replies that point backwards, nodes that
-lie, manifests that lie, a disk that refuses writes — and order every node's rounds by hand. **On real
+lie, manifests that lie, a disk that refuses writes — and order every node's rounds by hand; the tracker's Raft
+core runs in a **seeded simulation** that loses, duplicates and reorders messages, partitions and crashes replicas,
+and checks Raft's safety properties after every step and every client answer for linearizability. **On real
 processes**, the suites kill, freeze and restart nodes mid-operation, corrupt chunks on disk, kill the
 client mid-download, and trickle bytes at servers. Correctness is always judged by an **oracle in the
 harness**, computed from the live addresses alone — never by asking the system under test.
 
-The tests were themselves tested by **mutation**: 62 bugs planted in the ring, chunk and transfer
-code, each in a fresh build; 55 were caught by the functional tests and one more only by
+The tests were themselves tested by **mutation**: 86 bugs planted in the ring, chunk, transfer and
+consensus code, each in a fresh build; 77 were caught by the functional tests and two more only by
 ThreadSanitizer. Every survivor is explained: redundant defences (two independent fixes for one
 failure; a hash checked twice), a race on an atomic counter that no test can see, and the flushes
-before an acknowledgement, which only a power cut would show. The node and the
-client also run under ThreadSanitizer through the churn, chunk, transfer and deadline suites with no
-report. Details: [`docs/testing.md`](docs/testing.md).
+before an acknowledgement, which only a power cut would show. Among the consensus bugs — committing an
+earlier term's entry by counting, forgetting a vote, voting for a stale log, applying before commit —
+three first survived, and each became a new test. The node, the client and the tracker also run under
+ThreadSanitizer with no report. Details: [`docs/testing.md`](docs/testing.md).
 
 A continuous-integration workflow is written (`.github/workflows/ci.yml`) but **has not run yet**; it
 runs once the repository is pushed, and no badge is shown until it has passed.
@@ -289,7 +310,10 @@ runs once the repository is pushed, and no badge is shown until it has passed.
 - **At 256 nodes on one 8-core machine, live nodes were wrongly evicted in 3 of 55 runs**, each during a
   5–9 s stall of the whole host. A fixed deadline cannot tell a stall that long from a freeze.
 - **Fixed-size chunks deduplicate poorly after an insertion**; content-defined chunking is not built.
-- **Registrations are serialised by one flush each**, about 200–250 a second; group commit would lift it.
+- **A registration waits for two flushes in series** (the leader's, then a follower's), and under load the leader
+  flushes one proposal at a time: about 131 a second at one client and
+  264 at 16 on this disk. Group commit and a parallel leader flush are the known fixes;
+  neither is built.
 - **No resumable downloads**, and a `SIGKILL`ed client leaves a `.part-` file behind.
 - **The container files and the CI workflow have not been run.**
 - **No licence has been chosen yet.**
