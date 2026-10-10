@@ -222,6 +222,12 @@ has every alternative considered and what it would have cost.
 |---|---|---|
 | **A digest per arc before any listing** (D-093) | a healthy replica set is checked in one exchange per arc, not one per twenty chunks; read repair has nothing to fix when copies cannot differ | Merkle trees on every node; read repair of missing copies by the reader |
 
+**Fault injection** — depth in [`docs/faults.md`](docs/faults.md):
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **Faults as signals and netem, judged by invariants** (D-094) | real processes killed, frozen and restarted under a live workload, and packets lost and delayed without root, from a seed; four invariants decide, not the absence of errors | a proxy between every pair, which would change every address and so the ring |
+
 ## Project structure
 
 ```
@@ -282,6 +288,7 @@ chord-dht-filesystem/
 | [`docs/consensus.md`](docs/consensus.md) | the replicated tracker: Raft, each decision with its alternatives (being built) |
 | [`docs/observability.md`](docs/observability.md) | metrics and why each one, the log format, the request id, the dashboard |
 | [`docs/deletion.md`](docs/deletion.md) | deleting a name with its owner's secret, the mark-and-sweep collector, the race with uploads |
+| [`docs/faults.md`](docs/faults.md) | the fault-injection harness, its invariants, the recovery plots and what the runs found |
 | [`docs/testing.md`](docs/testing.md) | the test layers, oracles, mutation testing, ThreadSanitizer |
 | [`docs/design.md`](docs/design.md) | each major decision with the alternatives considered |
 | [`docs/failures.md`](docs/failures.md) | every defect reproduced: how it was found, the root cause, why the fix works |

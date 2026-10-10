@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-093: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-094: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -254,13 +254,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-093 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-094 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 85 recorded here (F1–F84 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 86 recorded here (F1–F85 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -353,6 +353,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F82** | **An upload has stored its chunks but not yet registered its name, and the collector runs. What stops it deleting them?** A grace period measured by each node's monotonic clock, renewed whenever a chunk is written again, with a restart counting as a write; generations with upload leases through Raft; a pin per chunk; or stopping uploads during a collection. | The race that turns garbage collection into data loss — made worse by deduplication, where an upload's chunk may be an old orphan the collector already marked. | **RESOLVED** — D-091 |
 | **F83** | **Who may tell a node to drop a chunk?** A shared key held by the nodes and the collector; anyone; a signed request with a nonce; or the node checking reachability itself. | `DROP` is the first request on the data plane that destroys anything; without access control any process that can reach a node could delete old chunks. | **RESOLVED** — D-092 |
 | **F84** | **What do read repair and anti-entropy mean when replicas cannot disagree?** Record them as subsumed and measure only the window with fewer than three copies; compare a digest of each arc's keys with each replica before listing them; Merkle trees kept by every node; or read repair of *missing* copies by the reader. | Decides whether repair's periodic check costs a message per twenty chunks or one per arc, and what "the staleness window" means for content-addressed data. | **RESOLVED** — D-093 |
+| **F85** | **How are faults injected, and what counts as passing?** Signals to real processes (kill, freeze, restart) under a live workload, plus packet loss and delay with netem inside an unprivileged network namespace; signals only; a hand-written proxy between every pair of processes; or partitions with firewall rules. | Decides which failures the system is shown to survive, what "survive" means, and whether the run can be reproduced from a seed. | **RESOLVED** — D-094 |
 
 ---
 
@@ -4725,3 +4726,38 @@ the ring has moved, the reader often cannot tell which process *should* hold the
 
 **Cost accepted.** The replica computes its digest by scanning its keys (O(keys held) of CPU, no I/O); a replica with
 extra copies in an arc costs the old `HAVE` listing on every check until the hand-off moves them.
+
+---
+
+### D-094 — Faults are signals to real processes and netem in a private network namespace, under a live workload, judged by four invariants
+
+**Fork:** F85. **Date:** 10 Oct 2026. **Depends on:** D-013, D-050, D-069, D-075. **Gates:** the fault-injection runs
+and their recovery plots.
+
+**The decision.** `scripts/faults.py` starts a cluster (three tracker replicas, six node processes × 8), runs two
+uploaders and two downloaders of the real `client` for three minutes, and every 8–15 s — from a seed — injects one fault:
+a node killed and restarted from its store 5–10 s later, a node frozen (`SIGSTOP`) for 4 s, the tracker leader killed
+and restarted 3 s later, or a tracker follower frozen for 3 s; at most one node and one tracker replica at a time.
+With `--netem` the whole run is inside a new user and network namespace (`unshare -rn`), where the harness owns the
+loopback interface and adds 5 % loss with 10 ± 5 ms of delay to every connection for 10 s at a time. Afterwards:
+
+| Invariant | Checked by |
+|---|---|
+| I-a no acknowledged name is lost | every acknowledged upload's name resolves to the key its upload printed |
+| I-b no acknowledged data is lost | every acknowledged upload downloads, and hashes to what was uploaded |
+| I-c three copies come back | every chunk of every acknowledged upload is on its three correct processes within 60 s of the last fault, by the harness's own placement oracle |
+| I-d no download is ever wrong | every download during the run that succeeded hashed to what was uploaded |
+
+Failed operations during a fault are availability, not violations: they are counted and plotted, not excused.
+
+**Rejected: signals only.** No packet is ever lost or late on loopback, so the timeout paths — strikes, retries, the
+read deadline — would only ever see a frozen process, never a slow network.
+
+**Rejected: a proxy between every pair of processes** (toxiproxy's approach). Per-link partitions and latency, at the
+price of rewriting every address the system computes identifiers from (D-019) — the proxy would change the ring.
+
+**Rejected: firewall partitions.** Needs root, or `nftables` inside the namespace, for a fault (a clean partition)
+the Raft suite already covers with `SIGSTOP`.
+
+**Cost accepted.** Netem shapes every connection alike; there are no asymmetric partitions. One host: a killed process
+is a crash, not a power cut, so the disk always keeps what was flushed — and also what was not (D-045).
