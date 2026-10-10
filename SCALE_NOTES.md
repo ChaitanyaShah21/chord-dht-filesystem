@@ -584,3 +584,64 @@ empty follower is caught up through `APPEND` calls of 64 KiB — several hundred
 
 **Would do:** nothing until deletion exists: names are never removed, so a snapshot would be as large as the log. With
 deletion, snapshots and `InstallSnapshot`. **Confidence:** `MEASURED` replay; the 10x figures are arithmetic.
+
+---
+
+### 9 Oct 2026 — the metrics port serves one connection at a time
+
+**Observed:** `MEASURED` at `dcf18f8` (`e2e-observe.sh`). Three idle connections to a node's metrics port delay the next
+scrape by 6 s — 2 s each, the head deadline — while the protocol port answers at once. A scrape itself is 0.33 ms
+at the median (§8).
+
+**At 10x:** a node's exposition grows with its series, not its load: about 12.8 KB now, a fixed set of verbs, results
+and buckets. What grows is the number of targets: 190 processes scraped every 2 s is about 1.2 MB/s of text for
+Prometheus, still small. A hostile client opening N connections starves scrapes for 2N seconds — visible as `up == 0`.
+
+**Would do:** serve the metrics port from a `poll` loop (as the protocol port should be, D-061); a longer scrape
+interval than this cluster's 2 s for large rings. **Confidence:** `MEASURED` at this scale; the rest arithmetic.
+
+---
+
+### 9 Oct 2026 — at debug level every routing hop is a log line
+
+**Observed:** `MEASURED` at `dcf18f8` (§8). For one 100 MB upload, the cluster's logs grow by 149 KB at `info` and
+491 KB at `debug`; a download by 38 KB and 285 KB.
+
+**At 10x:** hops grow as log N per chunk, so a larger ring makes debug logs grow faster than the data; at 1,000 MB/s of
+uploads, `info` alone is about 1.5 MB/s of log across the cluster. There is no rotation.
+
+**Would do:** debug only while tracing a problem; log rotation by size; sampling `chunk.*` lines above a rate.
+**Confidence:** `MEASURED` volumes; the projection is arithmetic.
+
+---
+
+### 9 Oct 2026 — a collection's work is proportional to everything stored
+
+**Observed:** `MEASURED` at `478cee0` (§9). Listing what the nodes hold costs a `KEYS` exchange per 20 chunks: 48,009
+copies listed in about 2.2 s. The mark reads every live manifest tree.
+
+**At 10x:** a million chunks on 100 nodes (3 million copies) is 150,000 `KEYS` exchanges a collection, and the
+collector holds every live key — about 100 MB of strings at a million keys (`ESTIMATE`). A node's in-memory write
+times grow with what was written within one grace period.
+
+**Would do:** `KEYS` pages as a body, not a line (thousands of keys a page); the node computing its own garbage from a
+Bloom filter of the live set, which would err only towards keeping; collections by arc, in parallel across nodes.
+**Confidence:** `MEASURED` listing rate; the rest arithmetic.
+
+---
+
+### 10 Oct 2026 — a chunk written while a joining ring converges can land where the converged ring never looks
+
+**Observed:** `MEASURED`, twice, by the benchmarks of §8 and §9 (not by any test). `scripts/cluster.sh up` starts 8–16
+processes that join one after another and returns after three periods; a file uploaded at once and read 1–20 s later
+failed with every asked replica answering `MISSING`. The request ids showed why: the upload's copies were on three
+processes, the read asked three *others*. The writes had routed on a ring still converging; once it converged, the
+chunk's owner was a process that never received it, and `get_chunk` asks only the owner and its successors (D-049).
+Nothing was lost — the full scan's hand-off (D-050) moves each chunk to its owner within a scan period (60 s by default).
+
+**At 10x:** every join moves ownership; a ring that keeps changing keeps some recently written chunks unreadable for up
+to a scan period after each change.
+
+**Would do:** a read that, after the replica set misses, asks a bounded number of further successors and predecessors;
+or a hand-off run when a node's owned arcs shrink, not only on the full scan; and `cluster.sh up` waiting for
+convergence. **Confidence:** `MEASURED` (the two failures, diagnosed from the logs); the scale effect `REASONED`.

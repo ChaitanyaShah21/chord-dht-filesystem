@@ -6,7 +6,9 @@ second one dangerous: two files that share a chunk store it once, so a file's ch
 This guide covers the decisions and the alternatives considered for each; every decision links to its full entry in
 [`ARCHITECTURE.md`](../ARCHITECTURE.md). The design was first written down in D-023.
 
-> **Status:** built and tested; measured in [`BENCHMARKS.md`](../BENCHMARKS.md) §9 (pending).
+> **Status:** built, tested and measured ([`BENCHMARKS.md`](../BENCHMARKS.md) §9): a collection freed exactly what only
+> the deleted files used — 62,928,030 bytes on disk in each of 3 runs, every remaining file whole — and drops 5,634
+> copies a second.
 
 ## The decisions
 

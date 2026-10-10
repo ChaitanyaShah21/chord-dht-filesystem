@@ -136,6 +136,25 @@ real processes with `SIGKILL` and `SIGSTOP`. Commits `0d5c1c9` (failover) and `e
 
 ![Registrations per second and latency against replicas](docs/figures/raft-writes.png)
 
+### Deleting a file frees exactly what no other file uses
+
+![Copies dropped per second, and a collection's time against chunks held](docs/figures/gc.png)
+
+Twenty files in pairs sharing half their chunks; one of each pair deleted with its owner's token; one `gc` run:
+**62,928,030 bytes freed on disk** — exactly three copies of what the deleted files used alone, plus their manifests —
+in each of 3 runs, matching the collector's own report, with every remaining file downloading whole. A sweep drops
+**5,634 copies a second** (48,009 in 8.5 s), 22× faster than when every drop flushed its directory. An upload that has
+stored its chunks but not yet named them survives a collection, and so does one reusing old orphans of a deleted
+file: each node drops only what nothing has written for the grace period. Commit `478cee0`.
+[`BENCHMARKS.md`](BENCHMARKS.md) §9, [`docs/deletion.md`](docs/deletion.md).
+
+### Every process is observable, at no measurable cost
+
+Every node, tracker replica and client serves Prometheus metrics, and every request line carries a request id that
+`scripts/trace.py` follows through every process's log. A 100 MB download runs at 375 MB/s against 384 before
+(medians of 10 alternating runs; 10 MB: 287 against 284 over 20); a scrape is 0.33 ms at the median and 2.3 ms at p99
+during transfers. Commit `dcf18f8`. [`BENCHMARKS.md`](BENCHMARKS.md) §8, [`docs/observability.md`](docs/observability.md).
+
 ## Key design rationales
 
 Each row is a decision in [`ARCHITECTURE.md`](ARCHITECTURE.md); [`docs/design.md`](docs/design.md)
@@ -231,7 +250,7 @@ chord-dht-filesystem/
 │   ├── lookup_main.cpp     # `lookup`: one lookup per identifier on stdin; prints owner, hops and path
 │   ├── sim_hops.cpp        # `sim-hops`: the same routing code and loop with the whole ring in one process
 │   └── sim_balance.cpp     # `sim-balance`: chunk placement with the node's own code, for load-balance curves
-├── tests/                  # Nine unit-test programs (`make check`): hand-built rings, constructed hostile input,
+├── tests/                  # Eleven unit-test programs (`make check`): hand-built rings, constructed hostile input,
 │                           #   a seeded simulation of the Raft group with its safety properties checked every step
 ├── scripts/                # End-to-end suites (e2e-*.sh), the local cluster launcher (cluster.sh), Prometheus and
 │                           #   Grafana against it (observe.sh), one request across every log (trace.py),
@@ -295,8 +314,8 @@ machine has no Docker; `scripts/cluster.sh` is the tested way.
 ## Testing
 
 ```bash
-make check                              # nine unit-test programs, 756 checks
-for s in scripts/e2e-*.sh; do "$s" || break; done   # twelve suites on real processes, about two and a half minutes
+make check                              # eleven unit-test programs, 948 checks
+for s in scripts/e2e-*.sh; do "$s" || break; done   # fourteen suites on real processes, about four and a half minutes
 ```
 
 Two layers, because each catches what the other cannot. **In process**, every module takes the network

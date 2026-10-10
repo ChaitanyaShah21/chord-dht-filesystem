@@ -10,7 +10,7 @@ measurement.
 > **Status:** every entry is measured — §1, the single-peer transfer baseline; §2, lookup hop count
 > versus ring size; §4, time to reconverge after nodes are killed, and §4a, the 256-node false
 > evictions explained; §5, parallel chunked transfer, deduplication and the tracker; §6, chunk
-> placement, replication and repair; §7, the replicated tracker. §1 was taken deliberately *before* any optimisation, because a
+> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion. §1 was taken deliberately *before* any optimisation, because a
 > "before" number cannot be recovered afterwards. (There is no §3; section numbers are kept stable
 > because other documents cite them.)
 
@@ -64,6 +64,9 @@ The headline results. Each links to its full entry below.
 | *Virtual nodes even out storage* | busiest of 64 processes stores **1.52×** the mean with 8 virtual nodes per process; CV of copies per process **0.20** (median of 20 address sets; the real ring matched the simulation file for file) | **2.80×**, CV 0.57 with one member per process | `7d99fc0` | §6 |
 | *Three copies restored after a process dies* | **2.2 s median** (1.8–2.9 s, 5 runs) from the kill until every chunk the dead process held is back on three correct live processes (16 processes × 8, 300 chunks of 512 KiB) | — | `7d99fc0` | §6 |
 | *W: what it buys* | with one replica dead, W = 2 acknowledged **300/300** writes and W = 3 **244/300**; W = 1 answers in 14 ms against 31 ms but each acknowledged chunk is on one disk for ~18 ms | — a trade-off curve, not an optimisation | `7d99fc0` | §6 |
+| *Observability's cost on the transfer path* | **none measurable**: 100 MB download 375 vs 384 MB/s, 10 MB 287 vs 284 (medians of 10 and 20 alternating runs, spread ±25 %); a scrape p99 under 2.4 ms during transfers | the commit before it (`f1ad66f`) | `dcf18f8` | §8 |
+| *Storage reclaimed by a collection* | **exactly what only the deleted files used**: 62,928,030 bytes on disk, 3 of 3 runs, equal to the collector's report; every remaining file whole | — | `478cee0` | §9 |
+| *A collection's sweep* | **5,634 copies dropped a second**; 48,009 copies collected in 8.5 s | 255 a second, a directory flush per drop (`7a08d90`) — 22× | `478cee0` | §9 |
 | *Lookup hops track ½ log₂ N* | **9.87 hops mean** at 2²⁰ nodes (½ log₂ N = 10); **5.38** on 2048 real processes (½ log₂ N = 5.5) | — a scaling curve, not an optimisation | `e042857` | §2 |
 
 
@@ -866,6 +869,103 @@ and start-up proportional to the history, as D-078 accepted.
 - **The harness is Python**; at 16 clients on `tmpfs` it is the bottleneck.
 - **Kills, not partitions.** Failover is measured for a dead leader. A frozen or partitioned leader is tested for
   correctness (`e2e-raft.sh`, `test-replica`), not timed.
+
+---
+
+### §8 · Observability: what metrics, logs and request ids cost — **MEASURED 9 Oct 2026**
+
+**What it answers.** Every process now counts, times and logs what it does, and every request line carries an id
+(D-083 – D-087). Does that slow the data path? What does a scrape cost, how big is it, and how fast do the logs grow?
+
+**Method.** Harnesses committed, then each commit built with `make clean && make` in its own clean worktree, on this one
+host over loopback.
+- **The transfer path, before and after** (`scripts/bench-ab.py`, at `8c420d8`): the commit before observability
+  (`f1ad66f`) against `dcf18f8`, each with *its own* `bench-transfer.py` — a fresh ring of 16 wired processes × 8
+  members, upload, download, SHA-1 check, as §5 — run alternately, A then B, so that drift on the machine falls on both.
+  8 workers; 100 MB, 10 runs each; 10 MB, 20 runs each. Throughput as §5: the download's `ready_ms`.
+- **Scrapes and log volume** (`scripts/bench-observe.py dcf18f8 --reps 3`): `scripts/cluster.sh up 16` (three tracker
+  replicas, 16 node processes × 8 members, every process with a metrics port), waiting for the ring oracle before any
+  write; one 100 MB upload and download; then 300 scrapes of every process one after another, the cluster idle, and 300
+  of each of four nodes while a client downloads the file back to back. A scrape is the whole exchange — connect, request,
+  response, close — timed by the harness. Log growth is every process's log file size before and after one upload and one
+  download, at `info` and, in a second cluster, at `debug`.
+
+| Transfer, 8 workers | before (`f1ad66f`) | after (`dcf18f8`) |
+|---|---:|---:|
+| 100 MB download, median of 10 (min – max) | 383.6 MB/s (225 – 452) | **374.9 MB/s** (276 – 422) |
+| 100 MB upload | 71.4 MB/s (62 – 80) | 75.6 MB/s (57 – 82) |
+| 10 MB download, median of 20 | 283.9 MB/s (169 – 355) | **286.8 MB/s** (147 – 329) |
+| 10 MB upload | 60.2 MB/s (46 – 71) | 60.2 MB/s (48 – 69) |
+
+**No cost on the transfer path is visible above run-to-run spread**, which is itself ±25 % here. One caution, kept
+because it nearly became a claim: a first, non-alternating pair of runs (`bench-transfer.py --sizes --reps 5` at each
+commit, one after the other) put the 10 MB download 29 % slower after; twenty alternating runs showed no difference —
+the earlier gap was the machine drifting between the two batches.
+
+| Scrapes and logs | median of 3 runs |
+|---|---:|
+| a scrape, idle: p50 / p99 | 0.33 ms / 0.98 ms |
+| a scrape while 100 MB downloads run back to back: p50 / p99 | 0.37 ms / 2.34 ms |
+| exposition size: a node / a tracker replica | 12.8 KB / 15.1 KB |
+| log growth for one 100 MB upload, every process, `info` | 149 KB |
+| … one 100 MB download, `info` | 38 KB |
+| … upload / download at `debug` (every routing hop a line) | 491 KB / 285 KB |
+
+At `info` a node writes one line per chunk request it serves (`chunk.put`, `chunk.store`, `chunk.get`) and one per
+coordinated write's copies — about 1.5 KB of log per MB uploaded, 0.4 KB per MB downloaded, across the whole cluster.
+A scrape every 2 s of 19 processes is under 300 KB/s of text for Prometheus to parse.
+
+---
+
+### §9 · Deletion: storage reclaimed, and what a collection costs — **MEASURED 10 Oct 2026**
+
+**What it answers.** Names can now be deleted and unused chunks collected (D-089 – D-092). Does a collection free
+exactly what only the deleted files used — and nothing a remaining file needs — and how long does one take as the
+store grows?
+
+![Copies dropped per second, and a collection's time against chunks held](docs/figures/gc.png)
+
+**Method.** `scripts/bench-gc.py`, harness committed, each commit built with `make clean && make` in its own clean
+worktree. Every repetition starts `scripts/cluster.sh up 8` (three tracker replicas, 8 node processes × 8 members, a
+collection key), **waits for the ring oracle and three more periods before writing anything** — a chunk written while a freshly
+joined ring is still converging can land on a replica set the converged ring never asks (found by these benchmarks;
+SCALE_NOTES, 10 Oct) — and drives it with the real `client` and `gc`. Bytes on disk are counted by walking
+every store directory, not taken from any process.
+- **Reclaim** (at `478cee0`, 3 runs): 20 files of 4 MiB (8 chunks of 512 KiB), in pairs that share half their chunks;
+  delete one of each pair; wait out a 6 s grace; collect; collect again; download every remaining file and compare it.
+- **The chunk curve** (at `7a08d90` and `478cee0`, 3 runs each): one file of N chunks of 4 KiB — small chunks, because
+  a collection's work is per chunk, not per byte — collected while named (everything live: the mark and the listing),
+  then deleted, a 40 s grace waited out, and collected again (everything garbage: the listing and every `DROP`), with a
+  30 s deadline. *Drops per second* is copies dropped over the sweep's duration, listing included.
+
+| Reclaim, 8 nodes, 3 copies | every run (3 of 3 identical) |
+|---|---:|
+| bytes freed on disk by the first collection | **62,928,030** |
+| bytes the collector reported freeing | 62,928,030 |
+| what the deleted files used alone: 40 chunks × 512 KiB × 3 copies | 62,914,560 (+ 13,470 of their own manifests) |
+| copies dropped | 150 |
+| remaining files downloaded whole | **10 of 10** |
+| garbage found by a second collection | 0 |
+| one collection's time | 100 – 150 ms |
+
+| Chunk curve | copies held | mark | list (all live) | sweep (all garbage) | drops / s |
+|---|---:|---:|---:|---:|---:|
+| before (`7a08d90`), 4,000 chunks | 12,003 | 12 ms | 0.59 s | **30 s, cut off by the deadline: 7,650 of 8,758 dropped** | 255 |
+| before, 16,000 chunks | 48,009 | 30 ms | 2.30 s | 30 s, cut off: 7,566 of 12,642 | 252 |
+| **after (`478cee0`)**, 1,000 chunks | 3,003 | 14 ms | 0.18 s | 0.58 s | 5,162 |
+| after, 4,000 chunks | 12,003 | 18 ms | 0.60 s | 2.13 s | 5,628 |
+| after, 16,000 chunks | 48,009 | 51 ms | 2.33 s | **8.52 s** | **5,634** |
+
+**What changed between the two commits:** a node flushed the chunk's fan-out directory after every drop, and that
+flush was the sweep: 255 drops a second. Dropping is the one write here that needs no flush — an unlink undone by a
+crash leaves garbage, which the next collection takes — so `478cee0` removed it: **22× faster**, and a collection of
+48,009 copies now finishes in 8.5 s where before it ran into its 30 s deadline with 40 % left. Listing is about 21,000
+copies a second (a `KEYS` exchange per 20); the mark reads the manifest tree, a few at 4 KiB chunks, in tens of
+milliseconds. Both grow linearly with what is stored (SCALE_NOTES).
+
+**What these numbers do not show.** The upload race (D-091) is a correctness property, tested rather than measured:
+`test-gc` and `e2e-gc.sh`. Repair's full scan was off in the chunk curve (`--scan 0`) and on in the reclaim runs, where
+no dropped copy was put back.
 
 ---
 

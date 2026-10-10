@@ -4650,6 +4650,12 @@ the argument allows. Losing an acknowledged chunk that way needs every copy's no
 for most of a grace period; a `DROP` carrying the time it was sent would close it, at the price of trusting clocks to
 agree.
 
+
+**Evidence (10 Oct, `BENCHMARKS.md` §9; `test-gc`, `e2e-gc.sh`):** an upload paused between storing and registering, and
+one reusing old orphans of a deleted file, both survive a collection on real processes; 2,000 rounds of a write racing
+a drop leave the index, the disk and the byte count agreeing. **One change from the numbers:** `store_drop` flushed the
+fan-out directory after every unlink, which held a sweep to 255 drops a second; an unlink undone by a crash is garbage
+kept — the safe direction — so the flush was removed (`478cee0`): 5,634 drops a second.
 ---
 
 ### D-092 — `DROP` carries a key shared by the nodes and the collector, compared in constant time
