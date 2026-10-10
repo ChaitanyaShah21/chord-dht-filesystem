@@ -645,3 +645,17 @@ to a scan period after each change.
 **Would do:** a read that, after the replica set misses, asks a bounded number of further successors and predecessors;
 or a hand-off run when a node's owned arcs shrink, not only on the full scan; and `cluster.sh up` waiting for
 convergence. **Confidence:** `MEASURED` (the two failures, diagnosed from the logs); the scale effect `REASONED`.
+
+---
+
+### 10 Oct 2026 — a replica answers a digest by scanning every key it holds
+
+**Observed:** `MEASURED` at `bc1e6c7` (§10). A full scan of a healthy 8-node ring holding 12,288 copies is 258 one-line
+digests, 30 KB. Each answer is computed by walking the replica's whole key index and keeping the keys in the arc.
+
+**At 10x:** the messages stay one per arc and replica; the CPU per answer grows with everything the replica holds, and
+every arc it replicates asks — O(arcs × keys) per scan per node.
+
+**Would do:** keep keys in an index ordered by ring identifier (a key's first 16 hex characters already sort as its
+identifier), so an arc is a range, not a scan; cache each arc's digest until a write lands in it.
+**Confidence:** `MEASURED` message counts; the CPU growth `REASONED`.

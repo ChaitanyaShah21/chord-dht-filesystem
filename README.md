@@ -148,6 +148,13 @@ stored its chunks but not yet named them survives a collection, and so does one 
 file: each node drops only what nothing has written for the grace period. Commit `478cee0`.
 [`BENCHMARKS.md`](BENCHMARKS.md) §9, [`docs/deletion.md`](docs/deletion.md).
 
+### Checking three copies costs one message per arc, and the third copy lands within milliseconds
+
+Copies named by their own hash cannot disagree, so anti-entropy only has to find *missing* ones. Repair's periodic scan
+of a healthy ring holding 12,288 copies on 8 nodes now exchanges one digest per arc — **258 messages, 29,928 bytes** —
+instead of a listing per twenty chunks: 932 messages, 813,636 bytes (27×). An acknowledged write has its third copy
+within 5–7 ms at p99. Commit `bc1e6c7`. [`BENCHMARKS.md`](BENCHMARKS.md) §10, [`docs/storage.md`](docs/storage.md).
+
 ### Every process is observable, at no measurable cost
 
 Every node, tracker replica and client serves Prometheus metrics, and every request line carries a request id that
@@ -327,7 +334,7 @@ machine has no Docker; `scripts/cluster.sh` is the tested way.
 ## Testing
 
 ```bash
-make check                              # eleven unit-test programs, 948 checks
+make check                              # eleven unit-test programs, 956 checks
 for s in scripts/e2e-*.sh; do "$s" || break; done   # fourteen suites on real processes, about four and a half minutes
 ```
 
@@ -340,11 +347,12 @@ processes**, the suites kill, freeze and restart nodes mid-operation, corrupt ch
 client mid-download, and trickle bytes at servers. Correctness is always judged by an **oracle in the
 harness**, computed from the live addresses alone — never by asking the system under test.
 
-The tests were themselves tested by **mutation**: 86 bugs planted in the ring, chunk, transfer and
-consensus code, each in a fresh build; 77 were caught by the functional tests and two more only by
-ThreadSanitizer. Every survivor is explained: redundant defences (two independent fixes for one
-failure; a hash checked twice), a race on an atomic counter that no test can see, and the flushes
-before an acknowledgement, which only a power cut would show. Among the consensus bugs — committing an
+The tests were themselves tested by **mutation**: 132 bugs planted in the ring, chunk, transfer, consensus,
+observability, deletion and anti-entropy code, each in a fresh build; 120 were caught by the functional tests and three
+more only by ThreadSanitizer. Every survivor is explained: redundant defences (two independent fixes for one
+failure; a hash checked twice), a race on an atomic counter that no test can see, the flushes
+before an acknowledgement, which only a power cut would show, a reset that Linux loopback never makes visible, and a
+race on a file between a drop and a write, which no sanitizer sees and 2,000 racing rounds never hit. Among the consensus bugs — committing an
 earlier term's entry by counting, forgetting a vote, voting for a stale log, applying before commit —
 three first survived, and each became a new test. The node, the client and the tracker also run under
 ThreadSanitizer with no report. Details: [`docs/testing.md`](docs/testing.md).

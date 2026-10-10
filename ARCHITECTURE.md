@@ -4727,6 +4727,12 @@ the ring has moved, the reader often cannot tell which process *should* hold the
 **Cost accepted.** The replica computes its digest by scanning its keys (O(keys held) of CPU, no I/O); a replica with
 extra copies in an arc costs the old `HAVE` listing on every check until the hand-off moves them.
 
+
+**Evidence (10 Oct, `BENCHMARKS.md` §10, `bc1e6c7` against `854e2b0`):** a full scan of a healthy ring holding 12,288
+copies on 8 nodes went from 932 `HAVE` listings (813,636 bytes) to 258 digests (29,928 bytes), 27× less, re-sending
+nothing either way. Found while testing it: the full scan's *hand-off* — each process asking the owner of every chunk
+it holds as a replica — was two thirds of that traffic; it now digests the owner's arc too. The window with fewer than
+three copies: p50 0 ms, p99 5–7 ms after acknowledgement.
 ---
 
 ### D-094 — Faults are signals to real processes and netem in a private network namespace, under a live workload, judged by four invariants

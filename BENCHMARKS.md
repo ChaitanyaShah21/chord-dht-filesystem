@@ -10,7 +10,7 @@ measurement.
 > **Status:** every entry is measured — §1, the single-peer transfer baseline; §2, lookup hop count
 > versus ring size; §4, time to reconverge after nodes are killed, and §4a, the 256-node false
 > evictions explained; §5, parallel chunked transfer, deduplication and the tracker; §6, chunk
-> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion. §1 was taken deliberately *before* any optimisation, because a
+> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion; §10, anti-entropy and the window with fewer than three copies. §1 was taken deliberately *before* any optimisation, because a
 > "before" number cannot be recovered afterwards. (There is no §3; section numbers are kept stable
 > because other documents cite them.)
 
@@ -67,6 +67,8 @@ The headline results. Each links to its full entry below.
 | *Observability's cost on the transfer path* | **none measurable**: 100 MB download 375 vs 384 MB/s, 10 MB 287 vs 284 (medians of 10 and 20 alternating runs, spread ±25 %); a scrape p99 under 2.4 ms during transfers | the commit before it (`f1ad66f`) | `dcf18f8` | §8 |
 | *Storage reclaimed by a collection* | **exactly what only the deleted files used**: 62,928,030 bytes on disk, 3 of 3 runs, equal to the collector's report; every remaining file whole | — | `478cee0` | §9 |
 | *A collection's sweep* | **5,634 copies dropped a second**; 48,009 copies collected in 8.5 s | 255 a second, a directory flush per drop (`7a08d90`) — 22× | `478cee0` | §9 |
+| *Repair's full scan of a healthy ring* | **29,928 bytes** a scan (258 one-line digests) for 12,288 copies on 8 nodes | 813,636 bytes, 932 `HAVE` listings (`854e2b0`) — 27× | `bc1e6c7` | §10 |
+| *Acknowledged with fewer than three copies* | p50 **0 ms**, p99 5–7 ms from acknowledgement to the third copy (W = 2, 4,097 writes) | — | `bc1e6c7` | §10 |
 | *Lookup hops track ½ log₂ N* | **9.87 hops mean** at 2²⁰ nodes (½ log₂ N = 10); **5.38** on 2048 real processes (½ log₂ N = 5.5) | — a scaling curve, not an optimisation | `e042857` | §2 |
 
 
@@ -966,6 +968,50 @@ milliseconds. Both grow linearly with what is stored (SCALE_NOTES).
 **What these numbers do not show.** The upload race (D-091) is a correctness property, tested rather than measured:
 `test-gc` and `e2e-gc.sh`. Repair's full scan was off in the chunk curve (`--scan 0`) and on in the reclaim runs, where
 no dropped copy was put back.
+
+---
+
+### §10 · Anti-entropy and the window with fewer than three copies — **MEASURED 10 Oct 2026**
+
+**What it answers.** Content-addressed copies cannot disagree, so what is left of read repair and anti-entropy is
+*missing* copies (D-093): how long an acknowledged chunk has fewer than three, and what repair's periodic check of a
+healthy ring costs before and after the per-arc digest.
+
+**Method.** `scripts/bench-ae.py`, harness committed (`854e2b0`), each commit built with `make clean && make` in its own
+clean worktree; `854e2b0` is the last commit before the digest, `bc1e6c7` adds it. Each of 3 runs per commit:
+`scripts/cluster.sh up 8` (three tracker replicas, 8 node processes × 8 members, metrics on, repair's full scan every 5
+rounds of 1 s), the ring oracle waited for, then one 64 MiB file uploaded in 16 KiB chunks (4,096 chunks, 12,288 copies)
+with 8 workers and W = 2.
+- *Full-scan cost*: every node's `chordfs_chunk_requests_total` by verb, over three full-scan periods of a ring with
+  nothing to repair, summed over nodes, per full scan; bytes counted from the message formats, each with its repair
+  round's 21-byte request id (a `HAVE` of 20 keys: 847 + 26 bytes; a `DIGEST`: 62 + 54).
+- *The window*: every coordinator's log line for each of the 4,097 writes (chunks and the manifest) — "answered after a
+  ms, last copy after b ms" — gives b − a, the time an acknowledged chunk had two copies, not three.
+- *Restore*: 20 chunk files deleted from one node's store directory behind its back; the time until all 20 are back.
+
+| | before (`854e2b0`) | **after (`bc1e6c7`)** |
+|---|---:|---:|
+| `HAVE` listings per full scan, all nodes | 932 (792 – 932) | **0** |
+| `DIGEST`s per full scan | — | 258 |
+| bytes per full scan (requests and replies) | 813,636 | **29,928 — 27× less** |
+| chunks re-sent by the scan of a healthy ring | 0 | 0 |
+
+The 258 digests are 128 owner checks (64 arcs × 2 replicas) and 130 for the full scan's hand-off, which used to ask the
+owner about every chunk a process held as a *replica* — two thirds of everything stored — a `HAVE` per twenty, every
+scan. Both are now one exchange per arc while the replicas are in step.
+
+| The window with fewer than three copies (4,097 writes a run, medians of 3) | |
+|---|---:|
+| writes whose third copy had landed when the write was acknowledged | 2,530 – 2,717 of 4,097 (two thirds) |
+| ack → last copy, p50 | 0 ms |
+| ack → last copy, p99 | 5 – 7 ms |
+| ack → last copy, the longest | 21 – 32 ms (50 ms in one run) |
+| 20 copies deleted behind a node's back: all back on its disk | 2.8 – 3.1 s (1.2 – 3.8 s over 6 runs; the scan period is 5 s) |
+
+**What the window means.** With `W = 2` a write is acknowledged when two copies are flushed; the third normally lands
+within milliseconds, because the coordinator sends both copies at once (D-046). The window is not staleness — no copy
+is ever *wrong* — but the time a single further failure would leave one copy. A copy lost on a live process is noticed
+by that process's own scrub, at its next full scan: here every 5 s, by default every 60 s.
 
 ---
 

@@ -116,3 +116,8 @@ replica whether the owner has it — does the same in the other direction.
 | **Subsumed: measure only** | true of read repair, but leaves a `HAVE` per twenty chunks every full scan |
 | **Merkle trees on every node** | a tree per arc kept in step with every write and restart, to speed up only the case where chunks must move anyway |
 | **Read repair of missing copies** | the reader would upload a chunk on its own link, and after the ring moves it often cannot tell who should hold it |
+
+**Measured** ([`BENCHMARKS.md`](../BENCHMARKS.md) §10): a full scan of a healthy ring holding 12,288 copies on 8 nodes
+sent 932 `HAVE` listings (813,636 bytes) before and 258 digests (29,928 bytes) after — 27× less. The window an
+acknowledged chunk spends with two copies instead of three: p50 0 ms, p99 5–7 ms (W = 2; the coordinator sends both
+other copies at once). A copy deleted behind a live node's back is restored by that node's scrub at its next full scan.
