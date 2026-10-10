@@ -101,3 +101,18 @@ brute-force oracle on 30 random rings, `W` against dead and slow replicas, reads
 copy, repair after a death) and `scripts/e2e-chunk.sh` (6 processes × 4 members: placement on disk
 against a Python oracle, corruption, two of three replicas killed, hostile requests, repair). See
 [`testing.md`](testing.md).
+
+## Anti-entropy: one digest per arc — [D-093](../ARCHITECTURE.md#d-093--anti-entropy-compares-one-digest-per-arc-before-listing-keys-read-repair-stays-subsumed-and-the-window-with-fewer-than-three-copies-is-measured)
+
+Content-addressed copies cannot disagree (D-014), so the only thing left for anti-entropy to find is a *missing*
+copy. Repair's arc check (after a ring change, and in every full scan) first asks each replica
+`DIGEST <from> <to>` — the number of keys it holds in the arc and the SHA-1 of them in order. A match means the replica
+holds exactly the owner's keys there, and the check is over in one exchange; a mismatch falls back to the `HAVE`
+listing, twenty keys at a time. The full scan's hand-off — each process asking the owner of every chunk it holds as a
+replica whether the owner has it — does the same in the other direction.
+
+| Alternative | Why not |
+|---|---|
+| **Subsumed: measure only** | true of read repair, but leaves a `HAVE` per twenty chunks every full scan |
+| **Merkle trees on every node** | a tree per arc kept in step with every write and restart, to speed up only the case where chunks must move anyway |
+| **Read repair of missing copies** | the reader would upload a chunk on its own link, and after the ring moves it often cannot tell who should hold it |

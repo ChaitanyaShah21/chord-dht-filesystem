@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-092: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-093: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -254,13 +254,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-092 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-093 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 84 recorded here (F1–F83 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 85 recorded here (F1–F84 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -352,6 +352,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F81** | **Who collects unreferenced chunks, and how does it learn what is live?** A separate collector that reads every name, walks every manifest tree through verified reads, lists each node's chunks and asks it to drop the rest; the Raft leader doing it; every node marking for itself; or nodes deleting whatever is not in a live set they are sent. | Decides which component may destroy data, what one bogus name or one unreadable manifest does to collection, and how much work a collection is. | **RESOLVED** — D-090 |
 | **F82** | **An upload has stored its chunks but not yet registered its name, and the collector runs. What stops it deleting them?** A grace period measured by each node's monotonic clock, renewed whenever a chunk is written again, with a restart counting as a write; generations with upload leases through Raft; a pin per chunk; or stopping uploads during a collection. | The race that turns garbage collection into data loss — made worse by deduplication, where an upload's chunk may be an old orphan the collector already marked. | **RESOLVED** — D-091 |
 | **F83** | **Who may tell a node to drop a chunk?** A shared key held by the nodes and the collector; anyone; a signed request with a nonce; or the node checking reachability itself. | `DROP` is the first request on the data plane that destroys anything; without access control any process that can reach a node could delete old chunks. | **RESOLVED** — D-092 |
+| **F84** | **What do read repair and anti-entropy mean when replicas cannot disagree?** Record them as subsumed and measure only the window with fewer than three copies; compare a digest of each arc's keys with each replica before listing them; Merkle trees kept by every node; or read repair of *missing* copies by the reader. | Decides whether repair's periodic check costs a message per twenty chunks or one per arc, and what "the staleness window" means for content-addressed data. | **RESOLVED** — D-093 |
 
 ---
 
@@ -4681,3 +4682,46 @@ whole mark (D-090) on every node.
 
 **Cost accepted.** The key crosses the network in cleartext with every `DROP`; anyone who can watch the traffic can
 reuse it. Like every message here, it needs TLS to be private.
+
+---
+
+### D-093 — Anti-entropy compares one digest per arc before listing keys; read repair stays subsumed, and the window with fewer than three copies is measured
+
+**Fork:** F84. **Date:** 9 Oct 2026. **Depends on:** D-014, D-049, D-050. **Gates:** the plan's "read repair and
+anti-entropy" phase.
+
+**What the phase means now.** Read repair and anti-entropy exist to reconcile replicas that hold *different values*
+for a key. Here a key is the hash of its value (D-014), so two copies cannot differ: a copy is right or it is
+missing, and a reader already rejects a wrong one by its hash (D-049). What is left of both is *missing* copies —
+and the time a key spends with fewer than three of them.
+
+**The decision.**
+- **A digest before a listing.** Repair's arc check (D-050) — after a ring change, and in every full scan — first
+  sends each replica `DIGEST <from> <to>`; the replica answers with the number of keys it holds in that arc and the
+  SHA-1 of them in order. If the owner's own count and digest match, the replica holds exactly the owner's keys
+  there, and the check is done in one exchange. Only on a mismatch does it list them with `HAVE`, as before.
+- **The same in the other direction.** The full scan's hand-off — every process asking the owner of each chunk it holds
+  but does not own whether the owner has it — was a `HAVE` per twenty *replica* copies, two thirds of everything
+  stored. It now sends the owner a digest of the owner's arc first; a replica in step with its owner matches.
+- **Read repair stays subsumed** by repair, and is not built (below).
+- **The window is measured**, not assumed: the time from a write's acknowledgement to its last copy (the
+  `chordfs_put_replication_lag_seconds` histogram, under load), and the time from a copy disappearing to its return.
+
+**Why a digest and not a tree.** In a healthy ring every arc's replicas match, and one exchange per arc and replica is
+the floor; a tree would only make the *mismatched* case cheaper, and a mismatch already means chunks have to move,
+which costs more than listing their keys. A replica holding *more* than the owner (a copy the owner lacks) also
+mismatches every time; the `HAVE` path then runs as before, and the full scan's hand-off moves that copy to the owner.
+
+**Rejected: subsumed, measure only.** True of read repair, but leaves repair's full scan sending a `HAVE` for every
+twenty chunks every minute, forever — the cost D-050 named and left.
+
+**Rejected: Merkle trees on every node** (Dynamo's anti-entropy). O(differences) to find what differs, but a tree per
+arc kept in step with every write, rebuilt or persisted across restarts — state to get wrong, for a saving that only
+matters when arcs differ.
+
+**Rejected: read repair of missing copies** (the reader sends a chunk back to a replica that answered `MISSING`).
+Every fall-through read would upload a chunk from the client's link; repair restores it anyway within a scan; and when
+the ring has moved, the reader often cannot tell which process *should* hold the chunk.
+
+**Cost accepted.** The replica computes its digest by scanning its keys (O(keys held) of CPU, no I/O); a replica with
+extra copies in an arc costs the old `HAVE` listing on every check until the hand-off moves them.

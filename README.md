@@ -216,6 +216,12 @@ has every alternative considered and what it would have cost.
 | **A grace period on each node's monotonic clock, renewed by every write** (D-091) | an upload that has stored chunks but not yet registered — or reused an old orphan — cannot lose them; no acknowledged upload is ever collected | upload leases through Raft, which need the same timeout for crashed clients |
 | **A shared key on `DROP`** (D-092) | the data plane's first destructive request is not open to anyone who can reach a node | no check |
 
+**Anti-entropy** — what is left of it when copies cannot disagree; depth in [`docs/storage.md`](docs/storage.md):
+
+| Decision | Why | Rejected alternative |
+|---|---|---|
+| **A digest per arc before any listing** (D-093) | a healthy replica set is checked in one exchange per arc, not one per twenty chunks; read repair has nothing to fix when copies cannot differ | Merkle trees on every node; read repair of missing copies by the reader |
+
 ## Project structure
 
 ```
