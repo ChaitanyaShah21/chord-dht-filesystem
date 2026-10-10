@@ -181,7 +181,15 @@ std::shared_ptr<void> hold_body(ChunkNode &n) {
 
 bool is_chunk_request(const std::string &line) {
     const std::string verb = line.substr(0, line.find(' '));
-    return verb == "PUT" || verb == "STORE" || verb == "GET" || verb == "HAVE" || verb == "KEYS" || verb == "DROP";
+    return verb == "PUT" || verb == "STORE" || verb == "GET" || verb == "HAVE" || verb == "DIGEST" || verb == "KEYS" ||
+           verb == "DROP";
+}
+
+std::string keys_digest(const std::vector<std::string> &keys) {
+    std::string all;
+    all.reserve(keys.size() * 41);
+    for (const std::string &k : keys) all += k + "\n";
+    return std::to_string(keys.size()) + " " + chunk_key(all);
 }
 
 bool same_secret(const std::string &a, const std::string &b) {
@@ -262,6 +270,14 @@ ChunkHandled handle_chunk_request(ChunkNode &n, Frame request) {
             bits += store_has(*n.store, w[i]) ? '1' : '0';
         }
         return reply("HAVE " + bits);
+    }
+
+    // What this process holds in one arc, as one line (D-093): repair's owner compares
+    // it with its own before listing anything.
+    if (verb == "DIGEST" && w.size() == 3) {
+        Id from = 0, to = 0;
+        if (!id_from_hex(w[1], from) || !id_from_hex(w[2], to)) return reply("ERR malformed DIGEST");
+        return reply("DIGEST " + keys_digest(store_keys_in_arc(*n.store, from, to)));
     }
 
     // A page of what this process holds, and how long its grace is, for the

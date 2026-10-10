@@ -1048,6 +1048,83 @@ void test_repair() {
     check(under_replicated(c, {skey}) == 0, "a chunk held only by a non-owner reaches all three of its processes");
 }
 
+// Anti-entropy by digest (D-093): a replica holding exactly the owner's keys in an
+// arc is checked in one exchange; any difference falls back to listing them.
+void test_digest() {
+    std::printf("repair: an arc whose replicas match costs one DIGEST; a difference falls back to HAVE\n");
+    std::mt19937_64 rng(31);
+    Cluster c;
+    build(c, rng, 6, 3, true);
+    const Peer start = c.procs.begin()->second->members[0]->self;
+    std::vector<std::string> keys;
+    for (int i = 0; i < 80; ++i) {
+        const std::string chunk = random_bytes(rng, 1000 + i);
+        if (put_chunk(start, chunk, 3, c.route, c.send).ok) keys.push_back(chunk_key(chunk));
+    }
+    check(keys.size() == 80 && under_replicated(c, keys) == 0, "80 chunks fully placed");
+
+    std::map<std::string, RepairState> states;
+    auto full_scan = [&]() {
+        RepairReport total;
+        for (auto &kv : c.procs) {
+            const RepairReport r = repair_round(*kv.second->chunks, states[kv.first], c.route, 1);
+            total.digests_sent += r.digests_sent;
+            total.digests_matched += r.digests_matched;
+            total.have_sent += r.have_sent;
+            total.chunks_sent += r.chunks_sent;
+        }
+        return total;
+    };
+    RepairReport r = full_scan();
+    check(r.digests_sent > 0 && r.digests_matched == r.digests_sent && r.have_sent == 0 && r.chunks_sent == 0,
+          "a full scan of a healthy ring: " + std::to_string(r.digests_sent) + " digests, all matched, no HAVE at all");
+
+    // One copy lost from a replica that stays up (removed from its index too, so the scrub has nothing to find).
+    const std::string key = keys[11];
+    Id k;
+    id_from_key(key, k);
+    const std::vector<std::string> holders = expected_holders(c.all_members(true), k, RF);
+    store_remove(*c.at(holders[2]).store, key);
+    r = full_scan();
+    check(r.digests_sent > r.digests_matched && r.have_sent > 0 && r.have_sent < 10 && under_replicated(c, {key}) == 0,
+          "a replica missing one chunk: its arc's digest differs, that arc alone is listed (" + std::to_string(r.have_sent) +
+              " HAVE), and the copy is restored");
+    r = full_scan();
+    check(r.digests_matched == r.digests_sent && r.have_sent == 0, "and the next scan matches everywhere again");
+
+    // The digest is of the keys in the arc, in order: a replica holding the same number of
+    // DIFFERENT keys does not match.
+    std::vector<std::string> a{keys[0], keys[1]}, b{keys[0], keys[2]};
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    check(keys_digest(a) != keys_digest(b) && keys_digest(a).compare(0, 2, "2 ") == 0 && keys_digest({}).compare(0, 2, "0 ") == 0,
+          "same count, different keys: different digests; the count leads the line");
+
+    // A node that does not know DIGEST (an older one) answers ERR: repair lists as before.
+    Process &old = c.at(holders[1]);
+    const FrameTransport real = c.send;
+    for (auto &kv : c.procs)
+        kv.second->chunks->send = [&, real](const Peer &to, const std::string &line, const std::string &body, Frame &reply) {
+            if (addr(to) == old.address && line.compare(0, 7, "DIGEST ") == 0) {
+                reply.line = "ERR malformed chunk request";
+                reply.body.clear();
+                return Delivery::Ok;
+            }
+            return real(to, line, body, reply);
+        };
+    store_remove(*old.store, key);
+    r = full_scan();
+    check(r.have_sent > 0 && under_replicated(c, {key}) == 0, "a replica that answers DIGEST with ERR is listed by HAVE, and repaired");
+    for (auto &kv : c.procs) kv.second->chunks->send = real;
+
+    Process &any = *c.procs.begin()->second;
+    check(handle_chunk_request(*any.chunks, Frame{"DIGEST 0000000000000001", ""}).reply.compare(0, 4, "ERR ") == 0 &&
+              handle_chunk_request(*any.chunks, Frame{"DIGEST zz 0000000000000001", ""}).reply.compare(0, 4, "ERR ") == 0,
+          "a malformed DIGEST is refused");
+    const std::string whole = handle_chunk_request(*any.chunks, Frame{"DIGEST 0000000000000007 0000000000000007", ""}).reply;
+    check(whole == "DIGEST " + keys_digest(store_keys(*any.store)), "the arc (n, n] is the whole ring: every key held");
+}
+
 }  // namespace
 
 int main() {
@@ -1068,6 +1145,7 @@ int main() {
     test_reads();
     test_body_cap();
     test_repair();
+    test_digest();
     remove_tmpdirs();
 
     if (failures == 0) {

@@ -22,6 +22,7 @@
 //   STORE <key> <length>    + body   keep one copy, forward nothing  (D-046)
 //   GET <key>                        -> CHUNK <length> + body | MISSING  (D-049)
 //   HAVE <key> [<key> ...]           -> HAVE <0/1 per key>           (D-050)
+//   DIGEST <from-id> <to-id>         -> DIGEST <n> <sha1>            (D-093: the keys held in (from, to])
 //   KEYS <after|->                   -> KEYS <n> <grace-s> <key> ... (D-090: a page of what is held)
 //   DROP <gc-key> <key> [<key> ...]  -> DROPPED <0/1 per key> <bytes> (D-090, D-091, D-092)
 //
@@ -94,7 +95,7 @@ struct ChunkHandled {
     std::shared_ptr<void> hold;
 };
 
-// Is this line a chunk request (PUT, STORE, GET, HAVE, KEYS or DROP)?
+// Is this line a chunk request (PUT, STORE, GET, HAVE, DIGEST, KEYS or DROP)?
 bool is_chunk_request(const std::string &line);
 
 // Answer one chunk request whose body, if it has one, has already been read.
@@ -112,6 +113,11 @@ std::vector<Peer> replica_set(const NodeState &member, int rf = RF);
 // successor list of the member just before a key, which a reader gets from
 // NEIGHBOURS (D-049).
 std::vector<Peer> distinct_processes(const std::vector<Peer> &from_owner, int rf = RF);
+
+// A set of keys in one line (D-093): "<count> <SHA-1 of the keys in order, each
+// followed by a newline>". Two sets that give the same digest are the same set.
+// `keys` must be sorted, as store_keys_in_arc returns them.
+std::string keys_digest(const std::vector<std::string> &keys);
 
 // Equal, in time that does not depend on where the first difference is (D-092): a
 // secret cannot be guessed one character at a time by timing the answers. Only the

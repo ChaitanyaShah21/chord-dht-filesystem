@@ -43,6 +43,9 @@ struct RepairReport {
     int send_failures = 0;   // HAVE or STORE exchanges that failed (retried next round)
     int handed_off    = 0;   // chunks stored at an owner by the hand-off
     int scrubbed      = 0;   // local files removed because they no longer hash to their key
+    int digests_sent    = 0; // arcs offered to a replica by digest first (D-093)
+    int digests_matched = 0; // ... where the replica held exactly the owner's keys: no listing needed
+    int have_sent       = 0; // HAVE listings sent (20 keys each)
     int restored      = 0;   // of those, replaced by a verified copy read through the ring
     bool full_scan    = false;
 };

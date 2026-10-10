@@ -106,7 +106,7 @@ std::map<std::string, Histogram *> g_chunk_seconds;   // by verb
 std::map<std::string, Counter *> g_lookup_failures;   // by lookup_error_name
 std::map<std::string, Counter *> g_repair;            // by what a repair round did
 
-const char *const CHUNK_VERBS[] = {"put", "store", "get", "have", "keys", "drop"};
+const char *const CHUNK_VERBS[] = {"put", "store", "get", "have", "digest", "keys", "drop"};
 const char *const CHUNK_RESULTS[] = {"ok", "missing", "busy", "error"};
 const char *const ERROR_TYPES[] = {"deadline", "line_too_long", "malformed", "too_large", "busy", "closed_mid_body"};
 
@@ -132,7 +132,8 @@ std::string verb_of(const std::string &line) {
 // What a chunk reply means, as one of CHUNK_RESULTS.
 const char *result_of(const std::string &reply) {
     if (reply == "OK" || reply.compare(0, 3, "OK ") == 0 || reply.compare(0, 6, "CHUNK ") == 0 ||
-        reply.compare(0, 5, "HAVE ") == 0 || reply.compare(0, 5, "KEYS ") == 0 || reply.compare(0, 8, "DROPPED ") == 0)
+        reply.compare(0, 5, "HAVE ") == 0 || reply.compare(0, 5, "KEYS ") == 0 || reply.compare(0, 8, "DROPPED ") == 0 ||
+        reply.compare(0, 7, "DIGEST ") == 0)
         return "ok";
     if (reply == "MISSING") return "missing";
     if (reply == "ERR busy") return "busy";
@@ -151,7 +152,7 @@ void record_chunk(const std::string &line, const std::string &reply, std::uint64
     // HAVE and KEYS are bookkeeping, many per round: debug. The rest is one line per
     // chunk, or per DROP batch. A DROP's first word after the verb is the collection
     // key, so it is never logged (D-092): its "key" field is left empty.
-    const Level level = verb == "have" || verb == "keys" ? Level::Debug : Level::Info;
+    const Level level = verb == "have" || verb == "keys" || verb == "digest" ? Level::Debug : Level::Info;
     if (!log_enabled(level)) return;
     char ms[32];
     std::snprintf(ms, sizeof ms, "%.3f", seconds * 1000);
@@ -322,6 +323,9 @@ void repair(int period_ms, int scan_rounds) {
             count(g_repair, "handed_off", static_cast<std::uint64_t>(r.handed_off));
             count(g_repair, "scrubbed", static_cast<std::uint64_t>(r.scrubbed));
             if (r.full_scan) count(g_repair, "full_scans");
+            count(g_repair, "digests_sent", static_cast<std::uint64_t>(r.digests_sent));
+            count(g_repair, "digests_matched", static_cast<std::uint64_t>(r.digests_matched));
+            count(g_repair, "have_sent", static_cast<std::uint64_t>(r.have_sent));
         }
         // The repair queue: arcs this process owns whose last check failed or that
         // changed since, so they are checked again next round.
@@ -485,7 +489,8 @@ void register_metrics(double started) {
             [] { return static_cast<double>(g_chunks.gc_grace.count()) / 1000; });
 
     // Repair (D-050).
-    for (const char *what : {"rounds", "full_scans", "chunks_sent", "failures", "handed_off", "scrubbed"})
+    for (const char *what : {"rounds", "full_scans", "chunks_sent", "failures", "handed_off", "scrubbed", "digests_sent",
+                             "digests_matched", "have_sent"})
         g_repair[what] = &r.counter(std::string("chordfs_repair_") + what + "_total",
                                     std::string("Repair: ") + what + ", summed over rounds (D-050).");
     r.gauge("chordfs_repair_pending_arcs", "Owned arcs to be checked again next round.",

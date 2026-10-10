@@ -22,8 +22,26 @@ void replace_corrupt(ChunkNode &n, const Transport &route, const std::string &ke
 // whole replica set gets it at once. Returns false if any exchange failed, so the
 // caller tries again next round. A local copy that no longer hashes to its key is
 // replaced instead of sent: repair must never spread a corrupt chunk.
+//
+// With `arc`, the replica is first asked for a digest of what it holds in that arc
+// (D-093): the same count and SHA-1 as the owner's own keys there means it holds
+// exactly them, and nothing more needs to cross the network. Any other answer -- a
+// difference, a failure, an older node that does not know DIGEST -- falls back to
+// the listing below.
 bool offer(ChunkNode &n, const Transport &route, const Peer &to, const std::vector<std::string> &keys,
-           RepairReport &rep, bool as_put = false) {
+           RepairReport &rep, bool as_put = false, const std::pair<Id, Id> *arc = nullptr) {
+    if (arc) {
+        // Everything held in the arc, which may be more than `keys`: the hand-off's
+        // batch stops where the key order wraps past zero.
+        const std::vector<std::string> held = store_keys_in_arc(*n.store, arc->first, arc->second);
+        Frame answer;
+        ++rep.digests_sent;
+        if (n.send(to, "DIGEST " + id_to_hex(arc->first) + " " + id_to_hex(arc->second), "", answer) == Delivery::Ok &&
+            answer.line == "DIGEST " + keys_digest(held)) {
+            ++rep.digests_matched;
+            return true;
+        }
+    }
     bool ok = true;
     for (std::size_t i = 0; i < keys.size(); i += MAX_HAVE_KEYS) {
         const std::size_t end = std::min(keys.size(), i + MAX_HAVE_KEYS);
@@ -31,6 +49,7 @@ bool offer(ChunkNode &n, const Transport &route, const Peer &to, const std::vect
         for (std::size_t j = i; j < end; ++j) line += " " + keys[j];
 
         Frame answer;
+        ++rep.have_sent;
         const Delivery d = n.send(to, line, "", answer);
         // Exactly one digit per key asked, or the answer is not believed.
         if (d != Delivery::Ok || answer.line.compare(0, 5, "HAVE ") != 0 || answer.line.size() != 5 + (end - i)) {
@@ -103,8 +122,13 @@ void hand_off(ChunkNode &n, const Transport &route, const std::vector<std::pair<
             batch.push_back(foreign[i++]);
         }
         if (same_process(r.owner, start)) continue;   // one of our own members owns them after all
+        // `batch` is every key this process holds in the owner's arc (from, owner]. A
+        // replica in step with its owner holds exactly the owner's keys there, so the
+        // digest settles it in one exchange (D-093); a leftover from an older ring
+        // differs, and is listed and handed over.
+        const std::pair<Id, Id> arc{from, r.owner.id};
         const int before = rep.chunks_sent;
-        offer(n, route, r.owner, batch, rep, true);
+        offer(n, route, r.owner, batch, rep, true, &arc);
         rep.handed_off += rep.chunks_sent - before;
     }
 }
@@ -145,7 +169,8 @@ RepairReport repair_round(ChunkNode &n, RepairState &st, const Transport &route,
 
         const std::vector<std::string> keys = store_keys_in_arc(*n.store, pred, m->self.id);
         bool ok = true;
-        for (std::size_t i = 1; i < set.size(); ++i) ok = offer(n, route, set[i], keys, rep) && ok;
+        const std::pair<Id, Id> arc{pred, m->self.id};
+        for (std::size_t i = 1; i < set.size(); ++i) ok = offer(n, route, set[i], keys, rep, false, &arc) && ok;
         ++rep.arcs_checked;
         if (ok) st.checked[m->self.id] = now;          // done: until the arc or the set changes again
         else    st.checked.erase(m->self.id);          // something failed: check again next round
