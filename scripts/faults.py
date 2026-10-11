@@ -18,6 +18,9 @@ schedule side by side, and afterwards checks invariants from outside the system.
   --netem    runs everything inside a new user and network namespace (`unshare -rn`), where the
              harness may change the loopback interface's queueing (netem) without being root
 
+Also counted from every process's structured log (not judged -- the invariants judge): coordinated
+writes that failed and were retried by the client, strikes, evictions by evidence, tracker elections.
+
 Invariants, checked after the faults stop and every process is back:
   I-a  every acknowledged upload resolves to the key its upload reported (no acknowledged name lost)
   I-b  every acknowledged upload downloads byte for byte (no acknowledged data lost)
@@ -194,7 +197,8 @@ class Run:
             subprocess.run(["tc", "qdisc", "del", "dev", "lo", "root"], capture_output=True)
 
     def injector(self):
-        kinds = ["kill-node", "stop-node", "kill-leader", "stop-follower"] + (["netem"] if self.a.netem else [])
+        # With --netem, the network fault is drawn a third of the time (a seed once drew none at 1 in 5).
+        kinds = ["kill-node", "stop-node", "kill-leader", "stop-follower"] + (["netem", "netem"] if self.a.netem else [])
         pending = []                          # (time, action)
         next_fault = 10.0
         while not self.stop.is_set():
@@ -260,6 +264,27 @@ class Run:
         for _, act in sorted(pending, key=lambda p: p[0]):
             act()
 
+    # ---- what the processes logged (counted, not judged: the invariants judge) ----
+    def log_counts(self):
+        """Coordinated writes that failed (the client retried them), strikes, evictions by
+        evidence, and tracker elections, from every process's structured log (D-086)."""
+        c = {"puts_failed_at_coordinator": 0, "strikes": 0, "evictions_refused": 0, "evictions_strikes": 0,
+             "tracker_candidacies": 0, "tracker_max_term": 0}
+        logs = os.path.join(self.dir, "logs")
+        for name in os.listdir(logs):
+            for line in open(os.path.join(logs, name), errors="replace"):
+                if "event=chunk.put" in line and "result=error" in line:
+                    c["puts_failed_at_coordinator"] += 1
+                elif 'msg="strike ' in line:
+                    c["strikes"] += 1
+                elif 'msg="evict ' in line:
+                    c["evictions_strikes" if "second strike" in line else "evictions_refused"] += 1
+                elif "event=raft.role" in line:
+                    c["tracker_candidacies"] += "role=candidate" in line
+                    term = int(line.split("term=")[1].split()[0])
+                    c["tracker_max_term"] = max(c["tracker_max_term"], term)
+        return c
+
     # ---- invariants ----
     def chunk_keys(self, name):
         key, _, path = self.acked[name]
@@ -293,6 +318,7 @@ class Run:
             g = self.client("get", name, dest)
             if g.returncode != 0 or hashlib.sha1(open(dest, "rb").read()).hexdigest() != sha:
                 wrong_bytes.append(name)
+        out.update(self.log_counts())
         out["acked"] = len(self.acked)
         out["I-a_names_lost"] = lost_names
         out["I-b_not_downloadable"] = wrong_bytes
