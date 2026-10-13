@@ -61,6 +61,8 @@ for row, label in enumerate(labels):
     top.legend(list(top.get_legend_handles_labels()[0]) + handles, ["uploaded", "downloaded"] + names, frameon=False,
                fontsize=7.5, ncol=4, loc="upper right")
     bottom.bar(xs, err, width=BIN, align="edge", color=RED)
+    bottom.set_ylim(0, max(1, max(err)) * 1.15)
+    bottom.yaxis.get_major_locator().set_params(integer=True)
     bottom.set_ylabel("failed ops", color=INK)
     bottom.set_xlabel("seconds since the workload started", color=INK)
     for kind in sorted({f["kind"] for f in faults}):

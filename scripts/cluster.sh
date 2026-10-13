@@ -18,6 +18,8 @@
 #                   which scripts/observe.sh hands to Prometheus
 #   LOG_LEVEL     debug, info, warn or error (D-086)        (default info)
 #   NODE_ARGS     anything else to pass every node
+#   TRACKER_ARGS  anything else to pass every tracker replica
+#                 (the real-network profile, D-095: NODE_ARGS="--timeout 1200" TRACKER_ARGS="--election 1200")
 #
 # The first node creates the ring and the others join through it (D-029). `up`
 # returns once every process is listening, the tracker group answers (it has
@@ -105,8 +107,9 @@ up() {
     if [[ $TRACKERS -eq 1 ]]; then tgroup=(); else tgroup=(--group "$group" --id "$i"); fi
     mkdir -p "$DIR/tracker-$port"
     # shellcheck disable=SC2046
+    # shellcheck disable=SC2086
     "$ROOT/tracker" "$port" --dir "$DIR/tracker-$port" --ip 127.0.0.1 "${tgroup[@]}" $(metrics_args "$port") \
-        --log-level "$LOG_LEVEL" > "$DIR/logs/tracker-$port.log" 2>&1 &
+        --log-level "$LOG_LEVEL" ${TRACKER_ARGS:-} > "$DIR/logs/tracker-$port.log" 2>&1 &
     pid=$!
     echo "$pid tracker-$port" >> "$PIDS"
     wait_listening "$port" "$pid" || { echo "cluster: tracker $port did not start (see $DIR/logs/tracker-$port.log)"; down; return 1; }

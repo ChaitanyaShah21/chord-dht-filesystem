@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """faults.py -- uploads and downloads while processes are killed, frozen and restarted (plan phase 14).
 
-    scripts/faults.py <label> [--seconds 180] [--seed 1] [--nodes 6] [--netem] [--keep]
+    scripts/faults.py <label> [--seconds 180] [--seed 1] [--nodes 6] [--netem] [--profile network] [--keep]
 
 Starts a cluster with scripts/cluster.sh (three tracker replicas, --nodes node processes x 8
 members, metrics on), waits for the ring oracle, then for --seconds runs a workload and a fault
@@ -17,6 +17,9 @@ schedule side by side, and afterwards checks invariants from outside the system.
              down or frozen at a time.
   --netem    runs everything inside a new user and network namespace (`unshare -rn`), where the
              harness may change the loopback interface's queueing (netem) without being root
+  --profile network
+             the real-network timer profile (D-095): every node's call deadline 1,200 ms and the
+             tracker's election base 1,200 ms, above a SYN's 1 s retransmission timeout
 
 Also counted from every process's structured log (not judged -- the invariants judge): coordinated
 writes that failed and were retried by the client, strikes, evictions by evidence, tracker elections.
@@ -69,9 +72,12 @@ class Run:
         self.nodes = [NODE_BASE + i for i in range(a.nodes)]
         self.group = ",".join(f"127.0.0.1:{p}" for p in self.trackers)
         self.ring = ",".join(f"127.0.0.1:{p}" for p in self.nodes[:3])
+        # The timer profile (D-095): the loopback defaults, or deadlines above a SYN's retransmission.
+        self.node_extra = ["--timeout", "1200"] if a.profile == "network" else []
+        self.tracker_extra = ["--election", "1200"] if a.profile == "network" else []
         self.env = dict(os.environ, CLUSTER_DIR=self.dir, TRACKERS="3", TRACKER_PORT=str(TRACKER_PORT),
                         NODE_BASE=str(NODE_BASE), VNODES=str(VNODES), PERIOD="1000", METRICS_OFFSET=str(OFFSET),
-                        NODE_ARGS="--scan 10")
+                        NODE_ARGS=" ".join(["--scan", "10"] + self.node_extra), TRACKER_ARGS=" ".join(self.tracker_extra))
         self.procs = {}                      # port -> pid
         self.down = {}                       # port -> what is wrong with it
         self.rng = random.Random(a.seed)
@@ -111,14 +117,15 @@ class Run:
         log = open(os.path.join(self.dir, "logs", f"node-{port}.log"), "a")
         p = subprocess.Popen([f"{ROOT}/node", "127.0.0.1", str(port), "--join", f"127.0.0.1:{others[0]}", "--vnodes", str(VNODES),
                               "--period", "1000", "--store", os.path.join(self.dir, f"store-{port}"), "--metrics",
-                              str(port + OFFSET), "--scan", "10"], stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
+                              str(port + OFFSET), "--scan", "10"] + self.node_extra, stdout=subprocess.DEVNULL, stderr=log,
+                             start_new_session=True)
         self.procs[port] = p.pid
 
     def start_tracker(self, port):
         i = self.trackers.index(port)
         log = open(os.path.join(self.dir, "logs", f"tracker-{port}.log"), "a")
         p = subprocess.Popen([f"{ROOT}/tracker", str(port), "--dir", os.path.join(self.dir, f"tracker-{port}"), "--ip", "127.0.0.1",
-                              "--group", self.group, "--id", str(i), "--metrics", str(port + OFFSET)],
+                              "--group", self.group, "--id", str(i), "--metrics", str(port + OFFSET)] + self.tracker_extra,
                              stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
         self.procs[port] = p.pid
 
@@ -333,6 +340,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--nodes", type=int, default=6)
     ap.add_argument("--netem", action="store_true")
+    ap.add_argument("--profile", choices=["loopback", "network"], default="loopback")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--scratch", default=os.path.join(os.environ.get("TMPDIR", "/tmp"), "faults"))
     ap.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
@@ -365,7 +373,8 @@ def main():
             run.down_all()
     ops = run.ops
     puts, gets = [o for o in ops if o["op"] == "put"], [o for o in ops if o["op"] == "get"]
-    summary.update({"label": a.label, "seed": a.seed, "seconds": a.seconds, "netem": a.netem, "faults": len(run.faults),
+    summary.update({"label": a.label, "seed": a.seed, "seconds": a.seconds, "netem": a.netem, "profile": a.profile,
+                    "faults": len(run.faults),
                     "puts": len(puts), "puts_ok": sum(o["ok"] for o in puts), "gets": len(gets), "gets_ok": sum(o["ok"] for o in gets)})
     raw = os.path.join(ROOT, "bench", "raw")
     os.makedirs(raw, exist_ok=True)
