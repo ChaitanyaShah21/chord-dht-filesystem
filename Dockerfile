@@ -1,8 +1,6 @@
 # Dockerfile -- the tracker, node and client in one image (decision D-064).
 #
-# NOT YET RUN. Written without Docker on the development machine; nothing here has
-# been built or started. Until it has, scripts/cluster.sh is the tested way to run
-# a cluster on one machine.
+# Tested by scripts/e2e-compose.sh, locally and in CI on x86-64 and arm64.
 #
 # Built from source in the first stage, so the image is for whatever architecture
 # builds it (arm64 or amd64). The runtime stage carries only the three programs
@@ -15,7 +13,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY Makefile ./
 COPY src ./src
-RUN make tracker node client
+RUN make -j"$(nproc)" tracker node client
 
 FROM ubuntu:24.04
 # libssl3t64 is Ubuntu 24.04's name for the OpenSSL 3 runtime library (libcrypto).

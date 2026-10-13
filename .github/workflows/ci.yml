@@ -1,8 +1,5 @@
 # Continuous integration (decision D-065).
 #
-# NOT YET RUN: it runs once the repository is pushed. No status badge is shown in
-# the README until a run has passed.
-#
 # Every push and pull request: the build (any compiler warning fails it), the unit
 # tests, and every end-to-end suite that is fast and does not depend on timing under
 # load, on x86-64 and on arm64 (the development machine's architecture). The churn
@@ -40,6 +37,19 @@ jobs:
             scripts/$s.sh || { echo "::endgroup::"; echo "$s failed"; exit 1; }
             echo "::endgroup::"
           done
+
+  # The container deployment: the image built from this commit, compose.yaml started,
+  # a file through it, a killed leader and node, and a full restart (D-064).
+  containers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The compose stack, end to end
+        run: scripts/e2e-compose.sh
 
   timing-sensitive:
     if: github.event_name == 'workflow_dispatch'

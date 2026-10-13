@@ -1,11 +1,12 @@
 # compose.yaml -- a three-replica tracker group, a five-node ring, and Prometheus and
 # Grafana watching them (decisions D-064, D-069, D-088).
 #
-# NOT YET RUN. Written without Docker on the development machine; see the README.
-# scripts/cluster.sh and scripts/observe.sh are the tested way to run the same thing.
+# Tested by scripts/e2e-compose.sh: start, a file in and out, a killed leader and node,
+# rejoin, and a full restart on the volumes. scripts/cluster.sh and scripts/observe.sh
+# run the same thing as plain processes.
 #
 #   docker compose up -d --build
-#   docker compose run --rm client put /work/somefile somefile
+#   docker compose run --rm client put /work/somefile somefile    (/work is this directory)
 #   docker compose run --rm client get somefile /work/copy
 #   open http://localhost:3000/d/chordfs
 #   docker compose down            (add -v to delete the stores and the tracker logs)
