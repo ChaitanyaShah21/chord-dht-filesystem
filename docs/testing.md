@@ -154,7 +154,7 @@ Every defect found this way is in [`failures.md`](failures.md) or the decision i
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` builds (any warning fails), runs `make check` and the fast end-to-end suites
-on x86-64 and arm64 runners; the churn suite and the ThreadSanitizer runs are started by hand, because
-they kill and freeze processes on timers (D-065). **It has not run yet**: it runs once the repository
-is pushed.
+`.github/workflows/ci.yml` builds (any warning fails), runs `make check`, the fast end-to-end suites and
+`e2e-compose.sh` on x86-64 and arm64 runners; the churn, consensus, observability and deletion suites and the
+ThreadSanitizer runs are started by hand, because they kill and freeze processes on timers (D-065). It has passed on
+both runners since its first run.

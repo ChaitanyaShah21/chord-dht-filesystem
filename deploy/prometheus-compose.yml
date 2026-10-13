@@ -1,4 +1,4 @@
-# prometheus-compose.yml -- the same scrape, for compose.yaml (NOT YET RUN; see D-064).
+# prometheus-compose.yml -- the same scrape, for compose.yaml (D-064; tested by scripts/e2e-compose.sh).
 # Every container's metrics port is 8001; the addresses are compose.yaml's fixed ones.
 
 global:
