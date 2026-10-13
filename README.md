@@ -1,5 +1,8 @@
 # chord-dht-filesystem
 
+[![ci](https://github.com/ChaitanyaShah21/chord-dht-filesystem/actions/workflows/ci.yml/badge.svg)](https://github.com/ChaitanyaShah21/chord-dht-filesystem/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Fault-tolerant distributed file storage in C++17. A file is cut into **content-addressed chunks**,
 each named by the SHA-1 of its own bytes and stored on **three different processes** of a
 **Chord ring**; a small **tracker** maps each file name to the hash of the file's manifest and holds
@@ -296,8 +299,8 @@ chord-dht-filesystem/
 ├── docs/                   # A guide per subsystem, the design document, the failure log, the postmortem;
 │                           #   figures/ holds the plots and the summary data each is drawn from
 ├── Makefile                # Hand-written. Objects go to build/, programs to the repository root
-├── Dockerfile, compose.yaml # Three tracker replicas, five nodes, Prometheus and Grafana in containers -- written, not yet run
-├── .github/workflows/ci.yml # Build, unit tests and the fast end-to-end suites on x86-64 and arm64 -- not yet run
+├── Dockerfile, compose.yaml # Three tracker replicas, five nodes, Prometheus and Grafana in containers (e2e-compose.sh)
+├── .github/workflows/ci.yml # Build, unit tests, the fast end-to-end suites and the containers, on x86-64 and arm64
 ├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-095)
 ├── BENCHMARKS.md           # Every number, its method and its commit
 └── SCALE_NOTES.md          # Where the design breaks at 10x, recorded while building
@@ -359,7 +362,7 @@ machine has no Docker; `scripts/cluster.sh` is the tested way.
 
 ```bash
 make check                              # eleven unit-test programs, 956 checks
-for s in scripts/e2e-*.sh; do "$s" || break; done   # fourteen suites on real processes, about four and a half minutes
+for s in scripts/e2e-*.sh; do "$s" || break; done   # fifteen suites on real processes, about seven minutes
 ```
 
 Two layers, because each catches what the other cannot. **In process**, every module takes the network
@@ -381,8 +384,10 @@ earlier term's entry by counting, forgetting a vote, voting for a stale log, app
 three first survived, and each became a new test. The node, the client and the tracker also run under
 ThreadSanitizer with no report. Details: [`docs/testing.md`](docs/testing.md).
 
-A continuous-integration workflow is written (`.github/workflows/ci.yml`) but **has not run yet**; it
-runs once the repository is pushed, and no badge is shown until it has passed.
+**Continuous integration** (`.github/workflows/ci.yml`) runs on every push, on x86-64 and arm64: the warning-free
+build, the unit tests, the ten end-to-end suites that do not depend on timing under load, and `e2e-compose.sh` on the
+container deployment. The churn, consensus, observability and deletion suites and the ThreadSanitizer runs kill and
+freeze processes on timers, so they run on demand, where a shared runner's scheduling cannot make them flaky.
 
 ## Limitations
 
@@ -412,5 +417,7 @@ runs once the repository is pushed, and no badge is shown until it has passed.
   264 at 16 on this disk. Group commit and a parallel leader flush are the known fixes;
   neither is built.
 - **No resumable downloads**, and a `SIGKILL`ed client leaves a `.part-` file behind.
-- **The container files and the CI workflow have not been run.**
-- **No licence has been chosen yet.**
+
+## Licence
+
+[MIT](LICENSE).

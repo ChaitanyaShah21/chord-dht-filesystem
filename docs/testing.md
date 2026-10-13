@@ -1,12 +1,12 @@
 # Testing strategy
 
-Eleven unit-test programs, fourteen end-to-end suites on real processes, ThreadSanitizer builds, and
-mutation testing to check that the tests can fail. The whole set runs in about four and a half minutes on
-the development machine.
+Eleven unit-test programs, fifteen end-to-end suites on real processes (one of them on the container deployment),
+ThreadSanitizer builds, and mutation testing to check that the tests can fail. The fourteen suites on plain processes
+run in about four and a half minutes on the development machine; the container suite takes about two and a half more.
 
 ```bash
 make clean && make && make check                 # build (warning-free) and the unit tests
-for s in scripts/e2e-*.sh; do "$s" || break; done # the end-to-end suites
+for s in scripts/e2e-*.sh; do "$s" || break; done # the end-to-end suites (e2e-compose.sh needs Docker)
 make tsan                                         # ThreadSanitizer builds: node, client, tracker, test-replica, test-obs, test-gc
 ```
 
@@ -51,6 +51,7 @@ that does not use the tested code at all, real sockets, real signals, real disks
 | `e2e-framing.sh` | one request, one reply, one line, on a raw socket, for every malformed-input path |
 | `e2e-hangup.sh` | a client that vanishes mid-conversation does not take the tracker with it |
 | `e2e-observe.sh` | every process's `/metrics` accepted by an independent parser (and `promtool`); the numbers checked against what was done — bytes, copies, leaders, commit indices, evictions by refusal, leader changes; hostile requests to the metrics port; one upload and one download reconstructed from every process's log by request id |
+| `e2e-compose.sh` | the container deployment from `compose.yaml`: every process scraped and one leader; the ring correct by the oracle, reached from the host over the bridge network; Grafana provisioned and every dashboard query returning data; a file in and out by SHA-1; the leader and a node killed — the file still whole, a new file acknowledged, every chunk back on three correct live processes; rejoin, and a full restart on the volumes with both files intact. Also run in CI on x86-64 and arm64 |
 | `e2e-gc.sh` | only an upload's token deletes its name, and no secret reaches a log; a chunk shared by two files survives deleting one; only old, unused copies are dropped, the bytes freed matching the stores; an upload in flight and a re-upload of old orphans survive a collection; the upload limit; the collector's refusals; a restarted node keeps everything |
 
 Each suite uses its own ports and kills only its own processes, matched by port — never a

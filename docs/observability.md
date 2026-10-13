@@ -83,12 +83,13 @@ and passes it on in every call it makes for that request — a coordinator's cop
 
 `deploy/` holds the Prometheus configuration, Grafana's provisioning and the dashboard as JSON.
 `scripts/observe.sh up` runs both against the cluster from `scripts/cluster.sh`, using the official release
-binaries unpacked outside the repository; `compose.yaml` has the same services for Docker (not yet run).
+binaries unpacked outside the repository; `compose.yaml` runs the same two services from their official images
+beside the containers, and `scripts/e2e-compose.sh` checks that every dashboard query returns data there too.
 
 | Alternative | Why not |
 |---|---|
 | **Configuration only** | queries that have never run are guesses |
-| **Waiting for Docker** | not installed, and not needed for this |
+| **Waiting for Docker** | not installed when this was built, and not needed for it; the compose stack was run later (D-064) |
 
 ## The metrics, and why each one is there
 
