@@ -171,6 +171,17 @@ never acknowledged. The cost is stalls: up to 25 s per run in which nothing comp
 and 247 elections in a run, against 14 and 6 with a real-network profile at 1.2 s (D-095). Commits `2cdd569`,
 `c6242fe`. [`BENCHMARKS.md`](BENCHMARKS.md) §11, [`docs/faults.md`](docs/faults.md).
 
+### It runs as containers, and a dead container is not a dead process
+
+`compose.yaml` — three tracker replicas, five nodes, Prometheus and Grafana — passes the same kind of suite as the plain
+processes, in CI on x86-64 and arm64: the ring correct by the oracle, every dashboard query answering, the leader and a
+node killed with every file still whole and every chunk back on three live processes, then a full restart on the
+volumes. A 100 MiB file goes up at 43.6 MB/s and comes back at 161 MB/s (medians of 5). Running it found what loopback
+cannot show: **a container's address dies with it, so nothing refuses the connection** — the kernel gives up after
+3.08 s instead of answering in 4 ms. Every death becomes a timeout, evicted by two strikes like a freeze, and while the
+first tracker a client tries is down, every command takes **3.08 s to resolve a name instead of 9 ms** (D-096). Commit
+`5b9d686`. [`BENCHMARKS.md`](BENCHMARKS.md) §12.
+
 ### Every process is observable, at no measurable cost
 
 ![The Grafana dashboard over a 240 s fault-injection run](docs/figures/dashboard.png)
@@ -254,6 +265,7 @@ has every alternative considered and what it would have cost.
 | Decision | Why | Rejected alternative |
 |---|---|---|
 | **Faults as signals and netem, judged by invariants** (D-094) | real processes killed, frozen and restarted under a live workload, and packets lost and delayed without root, from a seed; four invariants decide, not the absence of errors | a proxy between every pair, which would change every address and so the ring |
+| **A silent dead host is suspicion, not proof** (D-096) | a container's or a host's address refuses nothing once it dies; an unreachable host is also what a brief network loss looks like, so eviction stays two strikes; the client's 3 s per command while one tracker host is down is recorded, its fix named | treating `EHOSTUNREACH` as proof; a client deadline below a lost SYN's 1 s retransmission |
 | **Loopback defaults, and a measured real-network profile** (D-095) | the 200 ms node deadline and Raft's 150 ms base sit below TCP's retransmission timeouts; a profile at 1,200 ms is measured under packet loss, and every earlier number stays tied to its own settings | new defaults, which would detach every measured number from the configuration it describes |
 
 ## Project structure
@@ -301,7 +313,7 @@ chord-dht-filesystem/
 ├── Makefile                # Hand-written. Objects go to build/, programs to the repository root
 ├── Dockerfile, compose.yaml # Three tracker replicas, five nodes, Prometheus and Grafana in containers (e2e-compose.sh)
 ├── .github/workflows/ci.yml # Build, unit tests, the fast end-to-end suites and the containers, on x86-64 and arm64
-├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-095)
+├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-096)
 ├── BENCHMARKS.md           # Every number, its method and its commit
 └── SCALE_NOTES.md          # Where the design breaks at 10x, recorded while building
 ```
@@ -353,10 +365,20 @@ and creates `/tmp/movie` only once it is complete. `--workers` sets how many chu
 by manifest key with no tracker at all. Run `./client`, `./node` or `./tracker` with no arguments for
 every option.
 
-**Containers:** `docker compose up -d --build` should bring up three tracker replicas, five nodes, Prometheus and
-Grafana, with
-`docker compose run --rm client …` as the client. **These files have not been run** — the development
-machine has no Docker; `scripts/cluster.sh` is the tested way.
+**Containers** — the same system from `compose.yaml`: three tracker replicas, five nodes, Prometheus and Grafana,
+each container at a fixed address on one bridge network. Tested end to end by `scripts/e2e-compose.sh`, locally and
+in CI.
+
+```bash
+docker compose up -d --build
+docker compose run --rm client put /work/testdata/large.dat movie     # /work is this directory
+docker compose run --rm client get movie /work/testdata/copy.dat
+cmp testdata/large.dat testdata/copy.dat && echo identical
+docker compose run --rm client ls
+                                                                      # the dashboard: http://localhost:3000/d/chordfs
+docker compose kill tracker1 node3                                    # it keeps serving
+docker compose down -v                                                # -v also deletes the stores and logs
+```
 
 ## Testing
 
@@ -417,6 +439,9 @@ freeze processes on timers, so they run on demand, where a shared runner's sched
   264 at 16 on this disk. Group commit and a parallel leader flush are the known fixes;
   neither is built.
 - **No resumable downloads**, and a `SIGKILL`ed client leaves a `.part-` file behind.
+- **A client starts at the first tracker address it is given.** While that replica's host or container is down, every
+  command waits out one 3 s deadline before reaching a live replica (D-096); asking every replica at once is the known
+  fix, not built.
 
 ## Licence
 

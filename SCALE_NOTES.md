@@ -675,3 +675,22 @@ retransmission timeout. At 5 % loss and the ~10 connections one chunk needs, abo
 **Would do:** a persistent connection per peer with request identifiers (the reuse D-024 and D-071 rejected for
 simplicity on loopback), which pays the handshake once; failing that, a smaller initial retransmission timeout is a
 kernel setting, not this program's. **Confidence:** `MEASURED` stalls; the arithmetic is an estimate.
+
+---
+
+### 13 Oct 2026 — in containers, and across hosts, a death is silent: the refusal fast path disappears
+
+**Observed:** `MEASURED` at `5b9d686` (§12). A killed container's address answers nothing; `connect()` to it fails only
+when ARP gives up, after 3.08 s, while a closed port on a live container refuses in 4 ms. Every caller's deadline is
+shorter, so the death reads as a timeout: the survivors evicted the dead node's members 10 times by strikes and only 8
+by refusal, and with the first-listed tracker replica dead every new client paid 3.08 s per command to resolve a name.
+
+**At 10x:** on a real deployment every *host* failure looks like this, and hosts, not processes, are what fail across
+machines. Detection then always costs two strikes — two call deadlines — rather than one refusal, so D-095's 1.2 s
+profile puts a dead host's eviction near 2.4 s plus a round. With N clients each running one-shot commands, a dead
+first-listed tracker costs every one of them 3 s; with more tracker replicas listed first in different orders the cost
+spreads but never vanishes.
+
+**Would do:** a client that asks every replica at once and takes the first answer (Happy Eyeballs, RFC 8305), or a
+long-lived client holding a connection to the replica that last answered; for nodes, nothing — two strikes is the
+designed path. **Confidence:** `MEASURED` on one host's bridge network; the multi-host behaviour `REASONED` from it.

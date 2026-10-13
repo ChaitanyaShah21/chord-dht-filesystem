@@ -10,7 +10,7 @@ measurement.
 > **Status:** every entry is measured — §1, the single-peer transfer baseline; §2, lookup hop count
 > versus ring size; §4, time to reconverge after nodes are killed, and §4a, the 256-node false
 > evictions explained; §5, parallel chunked transfer, deduplication and the tracker; §6, chunk
-> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion; §10, anti-entropy and the window with fewer than three copies; §11, fault injection. §1 was taken deliberately *before* any optimisation, because a
+> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion; §10, anti-entropy and the window with fewer than three copies; §11, fault injection; §12, the container deployment. §1 was taken deliberately *before* any optimisation, because a
 > "before" number cannot be recovered afterwards. (There is no §3; section numbers are kept stable
 > because other documents cite them.)
 
@@ -71,6 +71,8 @@ The headline results. Each links to its full entry below.
 | *Acknowledged with fewer than three copies* | p50 **0 ms**, p99 5–7 ms from acknowledgement to the third copy (W = 2, 4,097 writes) | — | `bc1e6c7` | §10 |
 | *Faults under load* | **0 acknowledged names or bytes lost** in 6 runs, 75 kills, freezes, leader kills and 10 s episodes of 5 % loss; three copies back within 5 s of the last fault; 3 of 7,684 uploads failed, none acknowledged | — | `2cdd569` | §11 |
 | *Timers under 5 % loss* | real-network profile: **14 strikes, 1 false eviction, 6 elections** in a run | the loopback defaults: 492, 69, 247 | `c6242fe` | §11 |
+| *The container deployment* | `compose.yaml` passes its end-to-end suite (20 checks: a killed leader and node, a full restart); 100 MiB **put 43.6 MB/s, get 161 MB/s** (medians of 5, 5 processes × 8) | — | `5b9d686` | §12 |
+| *A dead container's address* | **every new client takes 3.08 s to resolve a name** while the first-listed tracker's container is down, against **9 ms** healthy (n = 10): its 3 s call deadline, since a vanished address refuses nothing | the same death on loopback is refused in milliseconds | `5b9d686` | §12 |
 | *Lookup hops track ½ log₂ N* | **9.87 hops mean** at 2²⁰ nodes (½ log₂ N = 10); **5.38** on 2048 real processes (½ log₂ N = 5.5) | — a scaling curve, not an optimisation | `e042857` | §2 |
 
 
@@ -1072,6 +1074,68 @@ experience:** p99 latency and throughput are the same within the spread, because
 fresh connection (D-024), each exposed to a lost SYN's full second. That is the next limit, and connection reuse its
 known fix (SCALE_NOTES). In the run without loss, the profile's cost shows: a frozen node takes longer to evict, so
 operations through it wait longer (download p99 0.46 s against 0.35 s).
+
+### §12 · The container deployment, and what a dead container's address costs — **MEASURED 13 Oct 2026**
+
+**What it answers.** Does `compose.yaml` run what the rest of this file measured on plain processes — and what changes
+when every process has its own address that disappears with it (D-064, D-096)?
+
+**Method.** `scripts/bench-compose.py`, harness committed at `f44dbd6`, run from a clean tree at `5b9d686` (the
+programs are those of `2d0a3b2`; the commits between change the Dockerfile's `make` to `-j`, documents and harnesses).
+Docker 29.9.0, Compose 5.6.0, on the machine above. `docker compose up -d --build`: three tracker replicas, five node
+processes × 8 members, Prometheus and Grafana, each container at a fixed address on one bridge network
+(172.28.0.0/24). The ring oracle is waited for from the host, then:
+1. five uploads and downloads through the client container, each of its own seeded random 100 MiB file — a file
+   already stored would deduplicate chunk by chunk and measure that instead (the harness's first version did exactly
+   this; its uploads read 223 MB/s and were discarded) — every download compared by SHA-1, timed by the client's own
+   `total_ms` (download: including the final flush and rename; the destination is a bind mount);
+2. `node3` killed with `docker compose kill`; the survivors' eviction counters by evidence, read by Prometheus before
+   and 20 s after; then ten trials of `connect()` from a fresh container to the dead container's address, and to a
+   closed port on a live one, timed inside the container with no deadline of its own;
+3. ten timed runs of `client resolve <name>` (the process in its container, its tracker calls and its exit), healthy
+   and then with `tracker1` — the first address every new client tries — killed; then five whole downloads.
+
+**Healthy transfers** (100 MiB, 512 KiB chunks, 8 workers, W = 2):
+
+| | median | min – max (n = 5) |
+|---|---:|---:|
+| upload | **43.6 MB/s** | 35.3 – 67.9 |
+| download, flushed and renamed | **161.0 MB/s** | 139.3 – 188.0 |
+
+Not comparable with §5 point for point: five processes, not sixteen; every exchange crosses a bridge and a network
+namespace rather than loopback; the download lands on a bind mount. They answer whether the deployment works and
+roughly what it costs, not a scaling question.
+
+**A dead container's address answers nothing.** On loopback, and on a real host whose *process* died, a connection to
+the dead port is refused at once — the proof that D-013 evicts on. A container takes its address with it:
+
+| connect() to | median | min – max (n = 10) | result |
+|---|---:|---:|---|
+| a live container's closed port | **4 ms** | 3 – 6 | `ECONNREFUSED` |
+| a killed container's address | **3,082 ms** | 3,062 – 3,129 | `EHOSTUNREACH`, when ARP gives up (3 probes, 1 s apart) |
+
+So no program here ever sees the death as a refusal once the address is gone: a node's call runs to its 200 ms
+deadline, a client's tracker call to its 3,000 ms deadline (`src/client.cpp`), each reported as `timeout` — checked
+directly by `client --tracker 172.28.0.10:7000 --tracker-wait 1 ls` with `tracker1` killed, three times: `172.28.0.10:7000
+timeout` after 3,077–3,146 ms. A timeout is a strike, not proof (D-035), so:
+
+| Effect | Measured |
+|---|---|
+| members of `node3` evicted by the four survivors, by evidence | **8 by refusal, 10 by two strikes** — refusals only in the moments before Docker removed the dead container's endpoint |
+| `client resolve`, healthy | **9 ms** median (8 – 15, n = 10) |
+| `client resolve`, `tracker1` dead | **3,084 ms** median (3,038 – 3,092, n = 10) |
+| a whole 100 MiB download, `tracker1` dead | **3,588 ms** median (3,504 – 3,611, n = 5), against 651 ms healthy |
+
+Every new client process starts at the first address it was given, so while that replica's container is down, every
+command pays one 3 s deadline before it reaches a live replica — the group itself is unaffected (a new leader in the
+usual time, every download whole). The same holds on a real network for a whole *host* that dies, which is what a
+container death resembles. Recorded as a limit, with its fix named (D-096).
+
+**The end-to-end suite.** `scripts/e2e-compose.sh` at `5f31567`: 20 of 20 checks in 2 min 23 s — every process scraped,
+one leader, the ring correct by the oracle, Grafana provisioned and every one of the dashboard's 36 queries returning
+data, a file in and out by SHA-1, the leader and a node killed (the file still whole, a new file acknowledged, all 53
+chunks back on their three correct live processes), rejoin, and a full stop and start on the volumes with both files
+intact.
 
 ---
 

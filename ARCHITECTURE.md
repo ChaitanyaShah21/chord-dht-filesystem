@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-095: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-096: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -10,7 +10,7 @@ README's design rationales and [`docs/design.md`](docs/design.md) summarise it; 
 > Chord ring, and a small tracker — a Raft group of three replicas — maps names to manifest keys. Names can be
 > deleted by their owner's secret and unused chunks collected (D-089 – D-092); every process serves metrics and logs
 > structured lines carrying request ids (D-083 – D-088); repair checks a healthy arc with one digest (D-093); and the
-> whole system has run under injected faults (D-094, D-095). Everything in the current-state
+> whole system has run under injected faults (D-094, D-095) and as containers from `compose.yaml` (D-064, D-096). Everything in the current-state
 > sections below is built, tested and measured ([`BENCHMARKS.md`](BENCHMARKS.md)). The coursework
 > system this repository began as — a tracker with users, groups and seeder lists, and peers serving
 > pieces to each other — was retired in Phase 5 (D-060); it is described in the decisions that
@@ -192,6 +192,7 @@ acknowledged, so a kill loses nothing acknowledged. Worker threads are joined.
 |---|---|---|---|---|
 | A node process dies | a refused connection, by any caller (D-013, D-035) | the next call to it; at most a stabilisation period | evicted; reads and writes fall through to the next replica (D-049); its chunks re-replicated by their new owners (D-050) | `BENCHMARKS.md` §4, §6; `e2e-transfer.sh` (killed mid-download) |
 | A node is frozen | two timed-out calls (D-035) | about two periods | as above, once evicted | §4, §6 |
+| A whole host dies, or a container with its own address | nothing refuses, so two timed-out calls, as for a freeze (D-096) | about two periods; a client waits out its 3 s tracker deadline per command while the first-listed replica is gone | as above, once evicted | §12; `e2e-compose.sh` |
 | A chunk copy rots on disk | the reader's hash check; the scrub | at read time; within a full scan | read from the next replica; the copy replaced (D-050) | `e2e-chunk.sh`, `e2e-transfer.sh` |
 | A chunk is lost from every replica | every replica fails the read | at read time | none: the download fails and writes nothing (D-055) | `e2e-transfer.sh` |
 | The tracker leader dies or freezes | followers stop hearing heartbeats | an election timeout, E to 2E | a follower with an up-to-date log is elected; clients are redirected to it (D-073, D-081) | `BENCHMARKS.md` §7; `e2e-raft.sh` |
@@ -257,12 +258,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
 | 8 | 9 – 13 Oct 2026 | observability, deletion, anti-entropy and fault injection, every fork decided before its code; their benchmarks and the fault runs | D-083 – D-095 |
+| 9 | 13 Oct 2026 | the container files run for the first time, tested end to end and in CI; what a dead container's address costs | D-096 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 87 recorded here (F1–F86 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 88 recorded here (F1–F87 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -357,6 +359,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F84** | **What do read repair and anti-entropy mean when replicas cannot disagree?** Record them as subsumed and measure only the window with fewer than three copies; compare a digest of each arc's keys with each replica before listing them; Merkle trees kept by every node; or read repair of *missing* copies by the reader. | Decides whether repair's periodic check costs a message per twenty chunks or one per arc, and what "the staleness window" means for content-addressed data. | **RESOLVED** — D-093 |
 | **F85** | **How are faults injected, and what counts as passing?** Signals to real processes (kill, freeze, restart) under a live workload, plus packet loss and delay with netem inside an unprivileged network namespace; signals only; a hand-written proxy between every pair of processes; or partitions with firewall rules. | Decides which failures the system is shown to survive, what "survive" means, and whether the run can be reproduced from a seed. | **RESOLVED** — D-094 |
 | **F86** | **The node's 200 ms call deadline and Raft's E = 150 ms were chosen on a lossless loopback, below TCP's retransmission timeouts. What now?** Record it as a measured limit; keep the loopback defaults and add a real-network profile with deadlines above a SYN's retransmission, measured under loss; or change the defaults. | Decides whether one lost packet is a strike, a failed copy and an election, and whether the numbers already measured stay tied to the settings they were measured with. | **RESOLVED** — D-095 |
+| **F87** | **In containers a dead process's address disappears with it, so nothing refuses its connections: a client's call runs to its 3 s deadline, a node's to 200 ms. What now?** Record it as a measured limit and name the fix; treat an unreachable host as proof, like a refusal; a shorter client deadline; or a client that starts at a random replica or races all of them. | Decides whether a host-level death is ever mistaken for proof, what every client command costs while one tracker replica is down, and whether the client changes after its numbers were measured. | **RESOLVED** — D-096 |
 
 ---
 
@@ -3653,6 +3656,13 @@ existing Docker network on the host that runs it.
 
 **Evidence (8 Oct):** `scripts/cluster.sh` brings up the cluster for `e2e-smoke.sh` and its `down` leaves no port listening. The container files have not been run.
 
+**Evidence (13 Oct, once Docker was installed):** the container files ran unchanged on the first attempt — the image
+built for arm64 (150 MB), the tracker group elected, all five nodes joined, and a 100 MB file went in and came back
+byte-identical. `scripts/e2e-compose.sh` now tests them end to end (20 checks: every process scraped, the ring correct
+by the oracle from the host, Grafana and every dashboard query, a killed leader and node, rejoin, a full restart on the
+volumes) and runs in CI on x86-64 and arm64. The only change was `make -j` in the build stage. Measured in
+`BENCHMARKS.md` §12, which also found what loopback could not show: a dead container's address refuses nothing (D-096).
+
 ---
 
 ### D-065 — Continuous integration builds, runs the unit tests and the fast end-to-end suites; the timing-sensitive runs are on demand
@@ -4525,7 +4535,7 @@ client, so a hostile client can reuse another's — it is for tracing, not for s
   from the official arm64 or amd64 release archives unpacked in a directory **outside the repository**
   (`~/.local/opt` by default). Neither is linked into anything: they are tools, like Python for the harnesses.
 - `compose.yaml` gains the same two services from their official images, beside a three-replica tracker group —
-  written, not yet run, like the rest of the container files (D-064).
+  written then without being run, like the rest of the container files (D-064); run and tested on 13 Oct.
 
 **Rejected: configuration only.** Queries that have never run against a live system are guesses; a dashboard that has
 never rendered is a description.
@@ -4814,3 +4824,44 @@ detection would be a cost with no benefit. A profile keeps both measured, each a
 strikes 492 → 14 and 454 → 40, live nodes evicted by two timeouts 69 → 1 and 88 → 2, coordinated writes failed 45 → 0
 and 34 → 0, tracker candidacies 247 → 6 and 221 → 15. Throughput and p99 latency did not change within the spread:
 every exchange is a fresh connection, so a lost SYN still costs a second (SCALE_NOTES, 13 Oct).
+
+---
+
+### D-096 — A dead container's address refuses nothing: recorded as a measured limit, with the fix named
+
+**Fork:** F87. **Date:** 13 Oct 2026. **Depends on:** D-013, D-025, D-035, D-064, D-081, D-095. **Gates:** what the
+system promises when a whole host, or a container with its own address, dies.
+
+**What running the containers showed** (`BENCHMARKS.md` §12). D-013 evicts at once on a refused connection, because a
+refusal is proof that nothing listens. On loopback every death is refused: the host's kernel answers for the dead
+port. A container's address disappears with the container, so a connection to it gets no answer at all; the kernel
+gives up only when ARP does, after 3.08 s, with `EHOSTUNREACH`. Every program here has a shorter deadline — a node's
+call 200 ms, a client's tracker call 3 s — so each sees the death as a **timeout**, which is suspicion. Measured: the
+survivors evicted the killed node's members 8 times by refusal (in the moments before Docker removed its endpoint) and
+10 times by two strikes; and while `tracker1`, the first address every new client tries, was dead, `client resolve`
+took **3,084 ms** against 9 ms healthy. The same is true on a real network of any host that dies, as opposed to a
+process on a host that lives.
+
+**The decision.** Record it as a measured limit. Nothing in the protocol changes: a death without a refusal is handled
+exactly as a frozen process is, by two strikes (D-035), and the tracker group fails over in its usual time. The cost is
+the client's: one 3 s deadline per command while the first-listed replica's host is down. **The known fix**, not built:
+a client that asks every replica at once and takes the first answer (as Happy Eyeballs races addresses, RFC 8305),
+or a long-lived client that remembers which replica answered.
+
+**Rejected: treat `EHOSTUNREACH` as proof, like a refusal.** It is also what a host on a live network returns during
+a brief loss of its route or a neighbour's ARP entry — evicting on it would turn a network blip into evictions, the
+false deaths D-013 exists to avoid. And it would not help here: every deadline expires before it arrives.
+
+**Rejected: a shorter client deadline.** Below about 1 s it breaks D-095's rule — a deadline must outlast a lost SYN's
+1 s retransmission — and it would only shrink the cost, not remove it.
+
+**Rejected: start each client at a random replica, or race all three, now.** The first only spreads the cost (one
+client in three still pays it); the second is new code in the client after its numbers were measured. Both are the
+fix named above, for a deployment where it matters.
+
+**Cost accepted.** A failure detector that, in containers and across hosts, evicts a dead peer by two strikes rather
+than one refusal — slower by one round — and a 3 s pause per client command while one tracker host is down.
+
+**Evidence (13 Oct, `BENCHMARKS.md` §12, `5b9d686`):** connect to a dead container's address 3,082 ms median (n = 10),
+to a live container's closed port 4 ms; the client's own report `172.28.0.10:7000 timeout` after 3,077–3,146 ms; node3's
+members evicted 8 by refusal, 10 by strikes; `client resolve` 9 → 3,084 ms; every download whole.

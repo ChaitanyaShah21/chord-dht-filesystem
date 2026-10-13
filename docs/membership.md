@@ -66,6 +66,11 @@ Every period T (default 1000 ms, a fixed delay, first round at a random offset),
 **Leaving is crashing** (D-033): a node stops; its next connection is refused; its neighbours repair
 the ring as they repair any death. One recovery path, exercised every time anything stops.
 
+**When nothing refuses** (D-096): a refusal needs a live kernel at the dead address. A container's address — or a
+whole host's — disappears with it, so calls to it time out instead, and the dead node is evicted by two strikes, as
+if it were frozen. Measured in `BENCHMARKS.md` §12: of the evictions of a killed container's members, 8 were by
+refusal (before Docker removed its endpoint) and 10 by strikes.
+
 ## A node that loses everyone it knew
 
 If eviction leaves a member knowing no other node, it does not fall back to itself — `(n, n]` would
