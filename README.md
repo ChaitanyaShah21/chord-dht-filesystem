@@ -155,6 +155,19 @@ of a healthy ring holding 12,288 copies on 8 nodes now exchanges one digest per 
 instead of a listing per twenty chunks: 932 messages, 813,636 bytes (27×). An acknowledged write has its third copy
 within 5–7 ms at p99. Commit `bc1e6c7`. [`BENCHMARKS.md`](BENCHMARKS.md) §10, [`docs/storage.md`](docs/storage.md).
 
+### Killed, frozen and starved of packets, it loses nothing it acknowledged
+
+![Throughput and failed operations over time, faults shaded](docs/figures/faults.png)
+
+Two uploaders and two downloaders ran for 180 s while every 8–15 s a seeded fault struck: a node killed and restarted,
+a node frozen, the tracker leader killed, a follower frozen, or 5 % packet loss for 10 s (netem, in a private network
+namespace). **Across 9 runs and 114 faults no acknowledged name or byte was lost**, no download returned wrong bytes,
+and every chunk was back on three correct processes within 5 s of the last fault; 3 of 11,224 uploads failed and were
+never acknowledged. The cost is stalls: up to 25 s per run in which nothing completed. Loss exposed a design limit: the
+200 ms node deadline and 150 ms Raft timer, chosen on loopback, sit below TCP's retransmission timeouts — 492 strikes
+and 247 elections in a run, against 14 and 6 with a real-network profile at 1.2 s (D-095). Commits `2cdd569`,
+`c6242fe`. [`BENCHMARKS.md`](BENCHMARKS.md) §11, [`docs/faults.md`](docs/faults.md).
+
 ### Every process is observable, at no measurable cost
 
 Every node, tracker replica and client serves Prometheus metrics, and every request line carries a request id that
@@ -364,7 +377,10 @@ runs once the repository is pushed, and no badge is shown until it has passed.
 ## Limitations
 
 - **All measurements are on one host.** Loopback has no propagation delay, and every process shares
-  one page cache and eight cores; nothing has been measured across machines.
+  one page cache and eight cores; nothing has been measured across machines. The default timers (a 200 ms node deadline,
+  Raft's 150 ms base) are for this host: under packet loss they mistake lost packets for dead processes. A real-network
+  profile (1.2 s each) is measured under emulated loss only (D-095), and every exchange is a fresh TCP connection, so a
+  lost SYN still costs a second.
 - **The tracker group's membership is fixed.** A replica whose disk is lost cannot be replaced while the
   group runs — membership change is not built — and losing a majority stops registration and resolution
   (downloads by manifest key still work). Pre-vote is not built, so a replica returning from a partition

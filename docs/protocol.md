@@ -208,6 +208,10 @@ output file.
 | An upload, from the client's start to its registration | 1 h, or the name is not registered | `client --upload-limit <s>` | D-091 |
 | A chunk's age before a node will drop it | 2 h since it was last written, or since the node started | `node --gc-grace <s>` | D-091 |
 | The collector's last `DROP`, after it began listing names | 30 min | `gc --deadline <s>` | D-091 |
+
+The 200 ms node deadline and the 150 ms Raft base are for this host's loopback. Across a network they sit below TCP's
+retransmission timeouts (200 ms minimum; 1 s for a lost SYN), so a lost packet reads as a dead process; the measured
+real-network profile is `node --timeout 1200` and `tracker --election 1200` (D-095, `BENCHMARKS.md` §11).
 | Each exchange a client makes with one tracker replica | 3 s; 10 s overall across replicas and retries | `client --tracker-wait <ms>` | D-081 |
 
 The send and receive timeouts are set **before** `connect`, so a host that never answers the

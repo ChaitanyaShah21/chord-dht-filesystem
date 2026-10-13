@@ -659,3 +659,19 @@ every arc it replicates asks — O(arcs × keys) per scan per node.
 **Would do:** keep keys in an index ordered by ring identifier (a key's first 16 hex characters already sort as its
 identifier), so an arc is a range, not a scan; cache each arc's digest until a write lands in it.
 **Confidence:** `MEASURED` message counts; the CPU growth `REASONED`.
+
+---
+
+### 13 Oct 2026 — under packet loss, a fresh connection per exchange costs a second per lost SYN
+
+**Observed:** `MEASURED` at `2cdd569` and `c6242fe` (§11). With 5 % loss and 10 ± 5 ms delay, throughput fell to near
+zero for every 10 s episode, with the default timers and with the real-network profile alike; p99 upload latency was
+about 4 s in both. The profile removed the false failures (strikes, evictions, elections), not the stalls.
+
+**At 10x:** every lookup hop and every chunk opens a TCP connection (D-024); a lost SYN waits the kernel's 1 s initial
+retransmission timeout. At 5 % loss and the ~10 connections one chunk needs, about 40 % of chunks would wait a second
+(`ESTIMATE`, 1 − 0.95¹⁰). Larger rings mean more hops, so more connections per chunk.
+
+**Would do:** a persistent connection per peer with request identifiers (the reuse D-024 and D-071 rejected for
+simplicity on loopback), which pays the handshake once; failing that, a smaller initial retransmission timeout is a
+kernel setting, not this program's. **Confidence:** `MEASURED` stalls; the arithmetic is an estimate.

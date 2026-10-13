@@ -57,6 +57,12 @@ Each suite uses its own ports and kills only its own processes, matched by port 
 machine-wide `pkill`, which once let two suites kill each other's processes and produced a failure
 that looked exactly like a product regression.
 
+**Under faults (`scripts/faults.py`, D-094).** Not a pass/fail suite but a measured run: three minutes of real
+uploads and downloads while a seeded schedule kills, freezes and restarts nodes and tracker replicas and — inside a
+private network namespace — drops and delays packets, then four invariants checked from outside (no acknowledged name
+lost, no acknowledged byte lost, three copies restored, no wrong download). Nine runs, 114 faults: all held
+([`faults.md`](faults.md)).
+
 ## The oracle lives in the harness, never in the node
 
 Wherever a test or a benchmark judges correctness, the answer is computed **independently of the

@@ -10,7 +10,7 @@ measurement.
 > **Status:** every entry is measured — §1, the single-peer transfer baseline; §2, lookup hop count
 > versus ring size; §4, time to reconverge after nodes are killed, and §4a, the 256-node false
 > evictions explained; §5, parallel chunked transfer, deduplication and the tracker; §6, chunk
-> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion; §10, anti-entropy and the window with fewer than three copies. §1 was taken deliberately *before* any optimisation, because a
+> placement, replication and repair; §7, the replicated tracker; §8, observability's cost; §9, deletion; §10, anti-entropy and the window with fewer than three copies; §11, fault injection. §1 was taken deliberately *before* any optimisation, because a
 > "before" number cannot be recovered afterwards. (There is no §3; section numbers are kept stable
 > because other documents cite them.)
 
@@ -69,6 +69,8 @@ The headline results. Each links to its full entry below.
 | *A collection's sweep* | **5,634 copies dropped a second**; 48,009 copies collected in 8.5 s | 255 a second, a directory flush per drop (`7a08d90`) — 22× | `478cee0` | §9 |
 | *Repair's full scan of a healthy ring* | **29,928 bytes** a scan (258 one-line digests) for 12,288 copies on 8 nodes | 813,636 bytes, 932 `HAVE` listings (`854e2b0`) — 27× | `bc1e6c7` | §10 |
 | *Acknowledged with fewer than three copies* | p50 **0 ms**, p99 5–7 ms from acknowledgement to the third copy (W = 2, 4,097 writes) | — | `bc1e6c7` | §10 |
+| *Faults under load* | **0 acknowledged names or bytes lost** in 6 runs, 75 kills, freezes, leader kills and 10 s episodes of 5 % loss; three copies back within 5 s of the last fault; 3 of 7,684 uploads failed, none acknowledged | — | `2cdd569` | §11 |
+| *Timers under 5 % loss* | real-network profile: **14 strikes, 1 false eviction, 6 elections** in a run | the loopback defaults: 492, 69, 247 | `c6242fe` | §11 |
 | *Lookup hops track ½ log₂ N* | **9.87 hops mean** at 2²⁰ nodes (½ log₂ N = 10); **5.38** on 2048 real processes (½ log₂ N = 5.5) | — a scaling curve, not an optimisation | `e042857` | §2 |
 
 
@@ -1012,6 +1014,64 @@ scan. Both are now one exchange per arc while the replicas are in step.
 within milliseconds, because the coordinator sends both copies at once (D-046). The window is not staleness — no copy
 is ever *wrong* — but the time a single further failure would leave one copy. A copy lost on a live process is noticed
 by that process's own scrub, at its next full scan: here every 5 s, by default every 60 s.
+
+---
+
+### §11 · Fault injection: invariants under kills, freezes and packet loss — **MEASURED 11–13 Oct 2026**
+
+**What it answers.** With uploads and downloads running, does anything acknowledged get lost when processes are
+killed, frozen and restarted and packets are lost (D-094)? What does each fault cost while it lasts — and, found by
+these runs, what do the timers chosen on loopback do under loss (D-095)?
+
+![Throughput and failed operations over time, faults shaded](docs/figures/faults.png)
+
+**Method.** `scripts/faults.py`, harness committed, each campaign run from a clean worktree built with
+`make clean && make`: `2cdd569` for the default timers, `c6242fe` (the same programs, plus the harness's
+`--profile network`) for the real-network profile. Each run: `scripts/cluster.sh up 6` (three tracker replicas, 6 node
+processes × 8 members, metrics on, repair's full scan every 10 rounds), the ring oracle waited for, then 180 s of two
+uploaders (files of 256 KiB–3 MiB) and two downloaders (byte-compared) using the real `client`, while every 8–15 s a
+seeded fault is injected: a node `SIGKILL`ed and restarted from its store 5–10 s later, a node `SIGSTOP`ped for 4 s,
+the tracker leader `SIGKILL`ed and restarted 3 s later, a follower frozen for 3 s, and with `--netem` (the whole run
+inside `unshare -rn`) 5 % loss with 10 ± 5 ms of delay on every connection for 10 s. Then the four invariants (D-094),
+and counts from every process's structured log.
+
+| Run (seed) | faults | uploads ok | downloads ok | three copies back after the last fault | invariants |
+|---|---:|---:|---:|---:|---|
+| signals (1) | 12 | 1,387 / 1,389 | 3,742 / 3,742 | 2.06 s | all held |
+| signals (2) | 13 | 1,286 / 1,287 | 3,874 / 3,874 | 4.90 s | all held |
+| signals (3) | 13 | 1,393 / 1,393 | 4,255 / 4,255 | 2.97 s | all held |
+| in the namespace, no loss drawn (1) | 11 | 1,371 / 1,371 | 4,232 / 4,232 | 3.10 s | all held |
+| netem (2): 7 × 10 s of loss | 12 | 1,100 / 1,100 | 3,223 / 3,223 | 1.37 s | all held |
+| netem (3): 5 × 10 s of loss | 14 | 1,144 / 1,144 | 3,382 / 3,382 | 2.16 s | all held |
+
+**Across 6 runs and 75 faults: no acknowledged name or byte was lost, no download returned wrong bytes, and every
+chunk was back on its three correct processes within 5 s of the last fault.** 3 of 7,684 uploads failed (each with both
+of a chunk's other copies timing out, after the client's retries) — unacknowledged, so the name was never registered.
+What faults cost is time: 9–25 seconds per run in which no operation completed, every one of them during or within a
+second of a fault (the figure). A frozen node stalls transfers through it until two strikes evict it; a 10 s episode
+of loss stalls nearly everything.
+
+**The timers under loss** — the same seeds and fault schedules, default timers (`2cdd569`) against the real-network
+profile (`c6242fe`: node call deadline 1,200 ms, Raft E = 1,200 ms):
+
+| Run | strikes | live nodes evicted by two timeouts | coordinated writes failed (retried) | tracker candidacies (highest term) | upload p99 | download p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| netem (2), defaults | 492 | 69 | 45 | 247 (176) | 4.41 s | 2.18 s |
+| netem (2), **profile** | **14** | **1** | **0** | **6 (6)** | 4.02 s | 2.37 s |
+| netem (3), defaults | 454 | 88 | 34 | 221 (148) | 4.18 s | 1.87 s |
+| netem (3), **profile** | **40** | **2** | **0** | **15 (14)** | 4.21 s | 1.87 s |
+| signals (2), defaults | 223 | 72 | 50 | 37 (25) | 1.64 s | 0.35 s |
+| signals (2), **profile** | 54 | 4 | 0 | 7 (7) | 1.96 s | 0.46 s |
+
+The three profile runs held every invariant too: 3,540 of 3,540 uploads, 9,737 of 9,737 downloads, three copies back
+within 2.3 s. The default 200 ms node deadline and 150 ms Raft base sit below TCP's retransmission timeouts (200 ms minimum; 1 s for a
+lost SYN), so each lost packet became a strike, an eviction, a failed copy or an election. With every deadline above a
+SYN's retransmission the failure detector stops reporting the network's loss as dead processes — strikes fell 12–35×,
+false evictions from 69–88 to 1–2, elections from 221–247 to 6–15. **What it did not change is the client's
+experience:** p99 latency and throughput are the same within the spread, because every lookup hop and every chunk is a
+fresh connection (D-024), each exposed to a lost SYN's full second. That is the next limit, and connection reuse its
+known fix (SCALE_NOTES). In the run without loss, the profile's cost shows: a frozen node takes longer to evict, so
+operations through it wait longer (download p99 0.46 s against 0.35 s).
 
 ---
 

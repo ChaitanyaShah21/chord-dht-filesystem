@@ -4769,6 +4769,10 @@ the Raft suite already covers with `SIGSTOP`.
 **Cost accepted.** Netem shapes every connection alike; there are no asymmetric partitions. One host: a killed process
 is a crash, not a power cut, so the disk always keeps what was flushed — and also what was not (D-045).
 
+
+**Evidence (11–13 Oct, `BENCHMARKS.md` §11):** 9 runs of 180 s, 114 faults, 11,224 uploads and 32,445 downloads: every
+invariant held in every run; three copies back within 5 s of the last fault; 3 uploads failed, none acknowledged.
+Found by the runs: the timers chosen on loopback misread packet loss (D-095).
 ---
 
 ### D-095 — The loopback defaults stay; a real-network profile puts every deadline above a SYN's retransmission timeout, measured under loss
@@ -4802,3 +4806,8 @@ detection would be a cost with no benefit. A profile keeps both measured, each a
 
 **Cost accepted.** With the profile a frozen node takes about 2.4 s to be evicted (two strikes of 1.2 s) instead of
 0.4 s, and a dead leader is replaced in about 1.5 s instead of 0.2 s (`BENCHMARKS.md` §7's E = 1,200 ms row).
+
+**Evidence (13 Oct, `BENCHMARKS.md` §11, `c6242fe` against `2cdd569`, the same seeds and schedules):** under 5 % loss,
+strikes 492 → 14 and 454 → 40, live nodes evicted by two timeouts 69 → 1 and 88 → 2, coordinated writes failed 45 → 0
+and 34 → 0, tracker candidacies 247 → 6 and 221 → 15. Throughput and p99 latency did not change within the spread:
+every exchange is a fresh connection, so a lost SYN still costs a second (SCALE_NOTES, 13 Oct).
