@@ -28,6 +28,8 @@ def panel(kind, title, targets, x, y, w, h, unit="short", desc="", **extra):
         p["options"] = {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
     if kind == "stat":
         p["options"] = {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"}
+        # One colour: these are counts, not alarms (Grafana's default turns anything above 80 red).
+        p["fieldConfig"]["defaults"]["color"] = {"mode": "fixed", "fixedColor": "#2a78d6"}
     p.update(extra)
     panels.append(p)
     next_id += 1
@@ -47,15 +49,15 @@ def row(title, y):
 
 # ---- the cluster at a glance ------------------------------------------------
 row("Cluster", 0)
-panel("stat", "Nodes up", [('sum(up{role="node"})', "")], 0, 1, 3, 4)
-panel("stat", "Tracker replicas up", [('sum(up{role="tracker"})', "")], 3, 1, 3, 4)
+panel("stat", "Nodes up", [('sum(up{component="node"})', "")], 0, 1, 3, 4)
+panel("stat", "Tracker replicas up", [('sum(up{component="tracker"})', "")], 3, 1, 3, 4)
 panel("stat", "Raft leaders", [('sum(chordfs_raft_role{role="leader"})', "")], 6, 1, 3, 4,
       desc="Replicas that believe they lead. 1 when healthy; 0 during an election.")
 panel("stat", "Raft term", [("max(chordfs_raft_term)", "")], 9, 1, 3, 4)
 panel("stat", "Chunks held (all copies)", [("sum(chordfs_store_chunks)", "")], 12, 1, 4, 4)
 panel("stat", "Bytes held (all copies)", [("sum(chordfs_store_bytes)", "")], 16, 1, 4, 4, unit="bytes")
 panel("stat", "Names", [('max(chordfs_names)', "")], 20, 1, 4, 4)
-panel("state-timeline", "Process up (a gap is a fault)", [("up", "{{instance}} {{role}}")], 0, 5, 24, 6,
+panel("state-timeline", "Process up (a gap is a fault)", [("up", "{{instance}} {{component}}")], 0, 5, 24, 6,
       options={"showValue": "never", "mergeValues": True, "rowHeight": 0.8},
       fieldConfig={"defaults": {"unit": "short", "mappings": [
           {"type": "value", "options": {"0": {"text": "down", "color": "red"}, "1": {"text": "up", "color": "green"}}}],
@@ -70,11 +72,12 @@ panel("timeseries", "Throughput through the nodes",
       desc="Chunk bytes received (PUT, STORE) and sent (CHUNK) by every node, summed: the system's throughput "
            "whatever the clients' lifetimes (D-085).")
 panel("timeseries", "Chunk request latency at the node, p50 and p99",
-      [(quantile(0.5, "chordfs_chunk_request_seconds", "verb"), "p50 {{verb}}"),
-       (quantile(0.99, "chordfs_chunk_request_seconds", "verb"), "p99 {{verb}}")], 12, 12, 12, 8, unit="s",
+      [(quantile(0.5, "chordfs_chunk_request_seconds", "verb").replace("_bucket[", '_bucket{verb=~"put|store|get"}['), "p50 {{verb}}"),
+       (quantile(0.99, "chordfs_chunk_request_seconds", "verb").replace("_bucket[", '_bucket{verb=~"put|store|get"}['), "p99 {{verb}}")],
+      12, 12, 12, 8, unit="s",
       desc="From the request read to the reply sent. A PUT is answered once W copies exist.")
 panel("timeseries", "Chunk requests by result",
-      [(f"sum by (verb, result) (rate(chordfs_chunk_requests_total[{RATE}]))", "{{verb}} {{result}}")],
+      [(f"sum by (verb, result) (rate(chordfs_chunk_requests_total[{RATE}])) > 0", "{{verb}} {{result}}")],
       0, 20, 12, 8, unit="reqps")
 panel("timeseries", "Lookup hops (nodes' own lookups)",
       [(quantile(0.5, "chordfs_lookup_hops"), "p50"), (quantile(0.99, "chordfs_lookup_hops"), "p99"),
@@ -111,7 +114,7 @@ panel("timeseries", "Log flush (fdatasync), p50 and p99",
       [(quantile(0.5, "chordfs_raft_flush_seconds"), "p50"), (quantile(0.99, "chordfs_raft_flush_seconds"), "p99")],
       16, 46, 8, 8, unit="s", desc="Each step's batch, flushed before any reply (D-074); the write path's main cost (D-082).")
 panel("timeseries", "Tracker requests by result",
-      [(f"sum by (verb, result) (rate(chordfs_tracker_requests_total[{RATE}]))", "{{verb}} {{result}}")],
+      [(f"sum by (verb, result) (rate(chordfs_tracker_requests_total[{RATE}])) > 0", "{{verb}} {{result}}")],
       0, 54, 12, 8, unit="reqps")
 panel("timeseries", "Tracker request latency, p99",
       [(quantile(0.99, "chordfs_tracker_request_seconds", "verb"), "{{verb}}")], 12, 54, 12, 8, unit="s")
@@ -122,7 +125,7 @@ panel("timeseries", "Errors by type",
       [(f"sum by (type) (rate(chordfs_request_errors_total[{RATE}]))", "{{type}}"),
        (f"sum by (error) (rate(chordfs_lookup_failures_total[{RATE}]))", "lookup: {{error}}")], 0, 63, 12, 8, unit="ops")
 panel("timeseries", "Open connections (a thread each)",
-      [("sum by (role) (chordfs_connections_open)", "{{role}}")], 12, 63, 12, 8)
+      [("sum by (component) (chordfs_connections_open)", "{{component}}")], 12, 63, 12, 8)
 
 dashboard = {
     "uid": "chordfs", "title": "chord-dht-filesystem", "tags": ["chordfs"], "timezone": "browser",

@@ -44,13 +44,15 @@ PIDS="$DIR/pids"
 # --metrics <port + offset>, or nothing when metrics are off.
 metrics_args() { if [[ "$METRICS_OFFSET" -gt 0 ]]; then echo "--metrics $(($1 + METRICS_OFFSET))"; fi; }
 
-# The Prometheus file-discovery list: every process's metrics address, by role.
+# The Prometheus file-discovery list: every process's metrics address, by component. (Not "role":
+# the trackers export a metric label of that name, the Raft role, and a target label
+# of the same name would rename it.)
 write_targets() {                # write_targets <tracker ports> -- <node ports>
   local first=1 port
   {
-    printf '[{"labels": {"role": "tracker"}, "targets": ['
+    printf '[{"labels": {"component": "tracker"}, "targets": ['
     for port in "$@"; do
-      if [[ "$port" == "--" ]]; then printf ']}, {"labels": {"role": "node"}, "targets": ['; first=1; continue; fi
+      if [[ "$port" == "--" ]]; then printf ']}, {"labels": {"component": "node"}, "targets": ['; first=1; continue; fi
       [[ $first -eq 1 ]] || printf ', '
       printf '"127.0.0.1:%s"' $((port + METRICS_OFFSET)); first=0
     done

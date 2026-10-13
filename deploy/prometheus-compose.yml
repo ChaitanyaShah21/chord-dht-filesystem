@@ -10,6 +10,6 @@ scrape_configs:
   - job_name: chordfs
     static_configs:
       - targets: ["172.28.0.10:8001", "172.28.0.20:8001", "172.28.0.30:8001"]
-        labels: { role: tracker }
+        labels: { component: tracker }
       - targets: ["172.28.0.11:8001", "172.28.0.12:8001", "172.28.0.13:8001", "172.28.0.14:8001", "172.28.0.15:8001"]
-        labels: { role: node }
+        labels: { component: node }

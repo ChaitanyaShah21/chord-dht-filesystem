@@ -49,13 +49,17 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "sum(up{role=\"node\"})",
+     "expr": "sum(up{component=\"node\"})",
      "legendFormat": ""
     }
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "short"
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -91,13 +95,17 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "sum(up{role=\"tracker\"})",
+     "expr": "sum(up{component=\"tracker\"})",
      "legendFormat": ""
     }
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "short"
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -139,7 +147,11 @@
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "short"
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -181,7 +193,11 @@
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "short"
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -223,7 +239,11 @@
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "short"
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -265,7 +285,11 @@
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "bytes"
+     "unit": "bytes",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -307,7 +331,11 @@
    ],
    "fieldConfig": {
     "defaults": {
-     "unit": "short"
+     "unit": "short",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#2a78d6"
+     }
     },
     "overrides": []
    },
@@ -344,7 +372,7 @@
       "uid": "chordfs-prom"
      },
      "expr": "up",
-     "legendFormat": "{{instance}} {{role}}"
+     "legendFormat": "{{instance}} {{component}}"
     }
    ],
    "fieldConfig": {
@@ -472,7 +500,7 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "histogram_quantile(0.5, sum by (le, verb) (rate(chordfs_chunk_request_seconds_bucket[$__rate_interval])))",
+     "expr": "histogram_quantile(0.5, sum by (le, verb) (rate(chordfs_chunk_request_seconds_bucket{verb=~\"put|store|get\"}[$__rate_interval])))",
      "legendFormat": "p50 {{verb}}"
     },
     {
@@ -481,7 +509,7 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "histogram_quantile(0.99, sum by (le, verb) (rate(chordfs_chunk_request_seconds_bucket[$__rate_interval])))",
+     "expr": "histogram_quantile(0.99, sum by (le, verb) (rate(chordfs_chunk_request_seconds_bucket{verb=~\"put|store|get\"}[$__rate_interval])))",
      "legendFormat": "p99 {{verb}}"
     }
    ],
@@ -528,7 +556,7 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "sum by (verb, result) (rate(chordfs_chunk_requests_total[$__rate_interval]))",
+     "expr": "sum by (verb, result) (rate(chordfs_chunk_requests_total[$__rate_interval])) > 0",
      "legendFormat": "{{verb}} {{result}}"
     }
    ],
@@ -1076,7 +1104,7 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "sum by (verb, result) (rate(chordfs_tracker_requests_total[$__rate_interval]))",
+     "expr": "sum by (verb, result) (rate(chordfs_tracker_requests_total[$__rate_interval])) > 0",
      "legendFormat": "{{verb}} {{result}}"
     }
    ],
@@ -1239,8 +1267,8 @@
       "type": "prometheus",
       "uid": "chordfs-prom"
      },
-     "expr": "sum by (role) (chordfs_connections_open)",
-     "legendFormat": "{{role}}"
+     "expr": "sum by (component) (chordfs_connections_open)",
+     "legendFormat": "{{component}}"
     }
    ],
    "fieldConfig": {
