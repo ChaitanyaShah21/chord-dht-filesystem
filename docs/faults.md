@@ -26,3 +26,20 @@ covers the decision, the harness, the invariants and what the runs found. The de
 | **Signals only** | loopback never loses or delays a packet |
 | **A proxy between every pair** | the proxy's addresses would become the ring's identifiers |
 | **Firewall partitions** | root, for a fault the Raft suite covers with `SIGSTOP` |
+
+## The real-network profile — [D-095](../ARCHITECTURE.md#d-095--the-loopback-defaults-stay-a-real-network-profile-puts-every-deadline-above-a-syns-retransmission-timeout-measured-under-loss)
+
+Under packet loss the default timers turn every lost packet into a failure: a node's calls give up after 200 ms and
+Raft's after 150 ms, but TCP retransmits a lost segment after at least 200 ms and a lost SYN after 1 s. The defaults
+stay — they were chosen by measured rules on this host, and every benchmark is tied to them — and a profile for a real
+network puts every deadline above a SYN's retransmission:
+
+```bash
+NODE_ARGS="--timeout 1200" TRACKER_ARGS="--election 1200" scripts/cluster.sh up 6
+scripts/faults.py net --profile network --netem       # measured in BENCHMARKS.md §11
+```
+
+| Alternative | Why not |
+|---|---|
+| **Record it as a limit only** | leaves no tested answer for running across machines |
+| **Change the defaults** | every number measured since D-039 would describe settings nobody runs |

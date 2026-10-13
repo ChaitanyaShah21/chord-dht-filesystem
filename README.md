@@ -234,6 +234,7 @@ has every alternative considered and what it would have cost.
 | Decision | Why | Rejected alternative |
 |---|---|---|
 | **Faults as signals and netem, judged by invariants** (D-094) | real processes killed, frozen and restarted under a live workload, and packets lost and delayed without root, from a seed; four invariants decide, not the absence of errors | a proxy between every pair, which would change every address and so the ring |
+| **Loopback defaults, and a measured real-network profile** (D-095) | the 200 ms node deadline and Raft's 150 ms base sit below TCP's retransmission timeouts; a profile at 1,200 ms is measured under packet loss, and every earlier number stays tied to its own settings | new defaults, which would detach every measured number from the configuration it describes |
 
 ## Project structure
 

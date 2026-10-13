@@ -1,7 +1,7 @@
 # Architecture — chord-dht-filesystem
 
 The current design first — what the system is, its parts, what must always hold, how it behaves
-under concurrency and failure — and then the full **decision log**, D-001 to D-094: every decision,
+under concurrency and failure — and then the full **decision log**, D-001 to D-095: every decision,
 the alternatives it rejected, and the evidence that has since confirmed or contradicted it. The
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
@@ -254,13 +254,13 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-094 |
+| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-095 |
 
 ---
 
 ## Open forks
 
-**No fork is open.** All 86 recorded here (F1–F85 and F6a; F3a was decided inside D-014) are resolved, each by
+**No fork is open.** All 87 recorded here (F1–F86 and F6a; F3a was decided inside D-014) are resolved, each by
 the decision named in its last column. The rule while building was that nothing is implemented until
 its fork is decided; the first five were held open until the Chord paper had been read, so that none
 was decided by habit. The table is kept in the order the forks were raised.
@@ -354,6 +354,7 @@ was decided by habit. The table is kept in the order the forks were raised.
 | **F83** | **Who may tell a node to drop a chunk?** A shared key held by the nodes and the collector; anyone; a signed request with a nonce; or the node checking reachability itself. | `DROP` is the first request on the data plane that destroys anything; without access control any process that can reach a node could delete old chunks. | **RESOLVED** — D-092 |
 | **F84** | **What do read repair and anti-entropy mean when replicas cannot disagree?** Record them as subsumed and measure only the window with fewer than three copies; compare a digest of each arc's keys with each replica before listing them; Merkle trees kept by every node; or read repair of *missing* copies by the reader. | Decides whether repair's periodic check costs a message per twenty chunks or one per arc, and what "the staleness window" means for content-addressed data. | **RESOLVED** — D-093 |
 | **F85** | **How are faults injected, and what counts as passing?** Signals to real processes (kill, freeze, restart) under a live workload, plus packet loss and delay with netem inside an unprivileged network namespace; signals only; a hand-written proxy between every pair of processes; or partitions with firewall rules. | Decides which failures the system is shown to survive, what "survive" means, and whether the run can be reproduced from a seed. | **RESOLVED** — D-094 |
+| **F86** | **The node's 200 ms call deadline and Raft's E = 150 ms were chosen on a lossless loopback, below TCP's retransmission timeouts. What now?** Record it as a measured limit; keep the loopback defaults and add a real-network profile with deadlines above a SYN's retransmission, measured under loss; or change the defaults. | Decides whether one lost packet is a strike, a failed copy and an election, and whether the numbers already measured stay tied to the settings they were measured with. | **RESOLVED** — D-095 |
 
 ---
 
@@ -4767,3 +4768,37 @@ the Raft suite already covers with `SIGSTOP`.
 
 **Cost accepted.** Netem shapes every connection alike; there are no asymmetric partitions. One host: a killed process
 is a crash, not a power cut, so the disk always keeps what was flushed — and also what was not (D-045).
+
+---
+
+### D-095 — The loopback defaults stay; a real-network profile puts every deadline above a SYN's retransmission timeout, measured under loss
+
+**Fork:** F86. **Date:** 13 Oct 2026. **Depends on:** D-039, D-042, D-073, D-094. **Gates:** what the system promises
+off this host.
+
+**What the fault runs showed** (`BENCHMARKS.md` §11). Under 5 % packet loss with 10 ± 5 ms of delay, for 10 s at a time:
+hundreds of strikes, live nodes evicted by two timeouts, coordinated writes failing because both copies timed out, and
+the tracker group electing over and over — 221–247 candidacies in three minutes, the term reaching 148–176. The client
+hid all of it, retrying and following redirects — in the two runs with loss, 2,244 of 2,244 uploads and 6,605
+of 6,605 downloads succeeded and no acknowledged write was lost — but throughput stalled. **The cause:** a node's call deadline is 200 ms (D-039, D-042) and Raft's base E is 150 ms, so its
+calls give up after 150 ms and a follower stands after 150–300 ms of silence (D-073). Both were chosen by rules applied
+on loopback, where nothing is lost. TCP retransmits a lost segment after at least 200 ms and a lost SYN after 1 s — so on
+a lossy network a single lost packet becomes a timeout, and a timeout becomes a strike, a failed copy or an election.
+
+**The decision.**
+- **The defaults stay** as their rules chose them, and every number measured with them stays tied to its commit.
+- **A real-network profile** is documented and measured: a node's call deadline 1,200 ms (`node --timeout 1200`) and
+  E = 1,200 ms (`tracker --election 1200`) — each above a SYN's 1 s initial retransmission timeout, so one lost packet
+  costs a retransmission, not a failure. `scripts/cluster.sh` takes `NODE_ARGS` and `TRACKER_ARGS`; the fault harness
+  takes `--profile network`.
+- **The rule, restated for a network:** a call deadline must exceed the transport's own recovery from one loss — here
+  TCP's SYN retransmission timeout — or the failure detector measures the network's packet loss, not its processes.
+
+**Rejected: record it as a limit only.** True, but it leaves no tested answer to "what would you run across machines?".
+
+**Rejected: change the defaults.** Every measured number since D-039 is tied to them (reconvergence 0.63 s, failover
+219 ms); new defaults would make them describe a configuration nobody runs, and on this loopback-only host the slower
+detection would be a cost with no benefit. A profile keeps both measured, each at its own commit.
+
+**Cost accepted.** With the profile a frozen node takes about 2.4 s to be evicted (two strikes of 1.2 s) instead of
+0.4 s, and a dead leader is replaced in about 1.5 s instead of 0.2 s (`BENCHMARKS.md` §7's E = 1,200 ms row).
