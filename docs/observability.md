@@ -5,7 +5,8 @@ touched. This guide covers the decisions and the alternatives considered for eac
 there, the log format, the request id, and the dashboard. Every decision links to its full entry in
 [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
-> **Status:** decided; being built.
+> **Status:** built, tested and measured ([`BENCHMARKS.md`](../BENCHMARKS.md) §8); the dashboard has run against the
+> cluster — every one of its 36 queries returned data — and is shown below over a fault-injection run.
 
 ## The decisions
 
@@ -189,3 +190,18 @@ scripts/cluster.sh up 5          # metrics on every port + 1000, listed in clust
 scripts/observe.sh up            # Prometheus on :9090, Grafana on :3000/d/chordfs
 scripts/observe.sh down
 ```
+
+![The dashboard over a 240 s fault-injection run](figures/dashboard.png)
+
+**Run and checked** on 13 Oct 2026 with the official release archives of Prometheus 3.15.0
+(`prometheus-3.15.0.linux-arm64.tar.gz`, from github.com/prometheus/prometheus/releases, checked against its
+`sha256sums.txt`) and Grafana OSS 13.2.3 (`grafana-13.2.3.linux-arm64.tar.gz`, from dl.grafana.com, checked against its
+`.sha256`), unpacked in `~/.local/opt/`. Every target answered (`up` = 1 for all seven to nine processes), and every one
+of the dashboard's 36 queries returned data against a live cluster. The screenshot is of `scripts/faults.py` (seed 2,
+240 s), rendered by headless Chromium after the run, of exactly its time range, so that the browser took no CPU from the
+run it shows.
+
+One thing running it found: the target lists first labelled processes `role="node"` and `role="tracker"`. A tracker's
+`chordfs_raft_role` metric has a label of the same name, and Prometheus renames a scraped label that collides with a
+target label (to `exported_role`) — so `sum(chordfs_raft_role{role="leader"})` returned nothing. The target label is now
+`component`.

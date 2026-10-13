@@ -170,7 +170,11 @@ and 247 elections in a run, against 14 and 6 with a real-network profile at 1.2 
 
 ### Every process is observable, at no measurable cost
 
-Every node, tracker replica and client serves Prometheus metrics, and every request line carries a request id that
+![The Grafana dashboard over a 240 s fault-injection run](docs/figures/dashboard.png)
+
+The dashboard in `deploy/`, rendered by Grafana 13.2.3 from Prometheus 3.15.0 scraping every process every 2 s, over a
+240 s fault-injection run (18 faults: nodes killed and frozen, three leader kills, followers frozen — the red marks in
+the process timeline; 1,545 of 1,545 uploads and 4,526 of 4,526 downloads succeeded). Every node, tracker replica and client serves Prometheus metrics, and every request line carries a request id that
 `scripts/trace.py` follows through every process's log. A 100 MB download runs at 375 MB/s against 384 before
 (medians of 10 alternating runs; 10 MB: 287 against 284 over 20); a scrape is 0.33 ms at the median and 2.3 ms at p99
 during transfers. Commit `dcf18f8`. [`BENCHMARKS.md`](BENCHMARKS.md) §8, [`docs/observability.md`](docs/observability.md).
@@ -294,7 +298,7 @@ chord-dht-filesystem/
 ├── Makefile                # Hand-written. Objects go to build/, programs to the repository root
 ├── Dockerfile, compose.yaml # Three tracker replicas, five nodes, Prometheus and Grafana in containers -- written, not yet run
 ├── .github/workflows/ci.yml # Build, unit tests and the fast end-to-end suites on x86-64 and arm64 -- not yet run
-├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-082)
+├── ARCHITECTURE.md         # Current design and the full decision log (D-001 ... D-095)
 ├── BENCHMARKS.md           # Every number, its method and its commit
 └── SCALE_NOTES.md          # Where the design breaks at 10x, recorded while building
 ```
@@ -306,7 +310,7 @@ chord-dht-filesystem/
 | [`docs/storage.md`](docs/storage.md) | the chunk store, replica sets, `W`, verified reads, repair |
 | [`docs/transfer.md`](docs/transfer.md) | manifests, the worker pool, the part file, the tracker's namespace |
 | [`docs/protocol.md`](docs/protocol.md) | every message, its replies and errors, framing, deadlines |
-| [`docs/consensus.md`](docs/consensus.md) | the replicated tracker: Raft, each decision with its alternatives (being built) |
+| [`docs/consensus.md`](docs/consensus.md) | the replicated tracker: Raft, each decision with its alternatives |
 | [`docs/observability.md`](docs/observability.md) | metrics and why each one, the log format, the request id, the dashboard |
 | [`docs/deletion.md`](docs/deletion.md) | deleting a name with its owner's secret, the mark-and-sweep collector, the race with uploads |
 | [`docs/faults.md`](docs/faults.md) | the fault-injection harness, its invariants, the recovery plots and what the runs found |
@@ -331,17 +335,23 @@ T=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002
 ./client --tracker $T --ring 127.0.0.1:7010,127.0.0.1:7011 get movie /tmp/movie
 cmp testdata/large.dat /tmp/movie && echo identical
 ./client --tracker $T ls
+scripts/trace.py <request-id> cluster/logs     # one request through every process's log (ids are in --log output)
 
+scripts/observe.sh up        # Prometheus :9090 and Grafana :3000/d/chordfs, from release archives in ~/.local/opt
+scripts/observe.sh down
 scripts/cluster.sh down      # stops exactly the processes `up` started; `wipe` also deletes the stores
 ```
 
-`put` prints the manifest key, chunk count and timings; `get` verifies every chunk against its key
+`put` prints the manifest key, chunk count, timings and the **token** that owns the name — `./client --tracker $T
+delete movie <token>` unnames it, and `./gc --tracker $T --ring … --gc-key <file>` later frees chunks no file uses
+(nodes started with `NODE_ARGS="--gc-key <file>"`); `get` verifies every chunk against its key
 and creates `/tmp/movie` only once it is complete. `--workers` sets how many chunks move at once,
 `--w` how many copies must exist before a chunk counts as stored; `get-key <key> <file>` reads a file
 by manifest key with no tracker at all. Run `./client`, `./node` or `./tracker` with no arguments for
 every option.
 
-**Containers:** `docker compose up -d --build` should bring up a single tracker and five nodes, with
+**Containers:** `docker compose up -d --build` should bring up three tracker replicas, five nodes, Prometheus and
+Grafana, with
 `docker compose run --rm client …` as the client. **These files have not been run** — the development
 machine has no Docker; `scripts/cluster.sh` is the tested way.
 

@@ -6,9 +6,11 @@ the alternatives it rejected, and the evidence that has since confirmed or contr
 README's design rationales and [`docs/design.md`](docs/design.md) summarise it; the guides in
 [`docs/`](docs/) describe each subsystem's code.
 
-> **State as of 9 Oct 2026.** Files are cut into content-addressed chunks stored three times on a
-> Chord ring, and a small tracker — a Raft group of three replicas — maps names to manifest keys.
-> Everything in the current-state
+> **State as of 13 Oct 2026.** Files are cut into content-addressed chunks stored three times on a
+> Chord ring, and a small tracker — a Raft group of three replicas — maps names to manifest keys. Names can be
+> deleted by their owner's secret and unused chunks collected (D-089 – D-092); every process serves metrics and logs
+> structured lines carrying request ids (D-083 – D-088); repair checks a healthy arc with one digest (D-093); and the
+> whole system has run under injected faults (D-094, D-095). Everything in the current-state
 > sections below is built, tested and measured ([`BENCHMARKS.md`](BENCHMARKS.md)). The coursework
 > system this repository began as — a tracker with users, groups and seeder lists, and peers serving
 > pieces to each other — was retired in Phase 5 (D-060); it is described in the decisions that
@@ -254,7 +256,7 @@ then (`node.cpp`); since D-068 the sources are under `src/`.
 | 5 | 8 Oct 2026 | files through the ring; the tracker as a namespace; the transfer benchmark | D-054 – D-067 |
 | 6 | 8 Oct 2026 | documentation and repository layout; no behaviour change | D-068 |
 | 7 | 8 – 9 Oct 2026 | the replicated tracker: Raft, every fork decided before its code; the failover and write benchmarks | D-069 – D-082 |
-| 8 | 9 Oct 2026 – | observability, deletion, anti-entropy and fault injection, every fork decided before its code | D-083 – D-095 |
+| 8 | 9 – 13 Oct 2026 | observability, deletion, anti-entropy and fault injection, every fork decided before its code; their benchmarks and the fault runs | D-083 – D-095 |
 
 ---
 
