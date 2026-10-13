@@ -3671,8 +3671,7 @@ A second job, started by hand (`workflow_dispatch`), runs `e2e-churn` and the Th
 freeze processes on timers, and a shared runner's scheduling makes them the likeliest to fail for reasons that are
 not bugs.
 
-**It has not run.** It runs only once the repository is pushed, and nothing has been pushed during this work. No status
-badge is added until a run has passed.
+No status badge was added until a run had passed.
 
 **Rejected: unit tests only.** Misses the case the end-to-end suites exist for: a program that does not use the tested
 code.
@@ -3686,7 +3685,9 @@ re-run and then to ignore.
 newer offering whose availability is checked by the first run, not assumed. The timing-sensitive suites only run when
 someone asks.
 
-**Evidence:** none — not run; it runs once the repository is pushed.
+**Evidence (13 Oct 2026):** the first two pushes ran it, and both passed on both runners — at `5c6b677` (run
+38035187295, about 2 min 20 s per runner) and at `2d0a3b2` (run 38410387111). The hosted arm runner was available, so it
+stays. The status badge was added to the README after those runs.
 
 ---
 
